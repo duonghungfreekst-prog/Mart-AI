@@ -1,0 +1,1420 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/coder/websocket"
+)
+
+const (
+	cdpViewportWidth  = 1100
+	cdpViewportHeight = 680
+	cdpDefaultUA      = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
+const cdpStealthAndPopupHookJS = `
+(function() {
+  try {
+    Object.defineProperty(navigator, 'webdriver', { get: function() { return undefined; } });
+  } catch (_) {}
+  window.open = function(url) {
+    if (url) { location.href = url; }
+    return window;
+  };
+  document.addEventListener('click', function(ev) {
+    var a = ev.target && ev.target.closest ? ev.target.closest('a[target="_blank"]') : null;
+    if (a && a.href) { a.removeAttribute('target'); }
+  }, true);
+})();
+`
+
+const cdpMuseSnapshotJS = `
+(function() {
+  function nodeToMd(n, listDepth) {
+    if (!n) return "";
+    if (n.nodeType === 3) return n.textContent || "";
+    if (n.nodeType !== 1) return "";
+    var tag = (n.tagName || "").toLowerCase();
+    if (tag === "button" || tag === "svg" || tag === "style" || tag === "script") return "";
+    if (tag === "pre") {
+      var codeEl = n.querySelector("code");
+      var lang = "";
+      if (codeEl && codeEl.className) {
+        var m = codeEl.className.match(/language-([a-zA-Z0-9_+-]+)/);
+        if (m) lang = m[1];
+      }
+      var rawCode = (codeEl ? codeEl.textContent : n.textContent) || "";
+      return "\n\x60\x60\x60" + lang + "\n" + rawCode.replace(/\n$/, "") + "\n\x60\x60\x60\n\n";
+    }
+    if (tag === "code") return "\x60" + (n.textContent || "") + "\x60";
+    if (tag === "strong" || tag === "b") {
+      return "**" + Array.from(n.childNodes).map(function(c){ return nodeToMd(c, listDepth); }).join("") + "**";
+    }
+    if (tag === "em" || tag === "i") {
+      return "*" + Array.from(n.childNodes).map(function(c){ return nodeToMd(c, listDepth); }).join("") + "*";
+    }
+    if (tag === "a") {
+      var txt = Array.from(n.childNodes).map(function(c){ return nodeToMd(c, listDepth); }).join("").trim();
+      var href = n.getAttribute("href") || "";
+      return href ? "[" + (txt || href) + "](" + href + ")" : txt;
+    }
+    if (tag === "ul" || tag === "ol") {
+      return "\n" + Array.from(n.children).map(function(li, idx) {
+        var prefix = tag === "ol" ? (idx + 1) + ". " : "- ";
+        var indent = listDepth > 0 ? "  ".repeat(listDepth) : "";
+        var body = Array.from(li.childNodes).map(function(c){ return nodeToMd(c, listDepth + 1); }).join("").trim();
+        return indent + prefix + body;
+      }).join("\n") + "\n\n";
+    }
+    if (tag === "li") {
+      var ind = listDepth > 1 ? "  ".repeat(listDepth - 1) : "";
+      var b = Array.from(n.childNodes).map(function(c){ return nodeToMd(c, listDepth); }).join("").trim();
+      return ind + "- " + b + "\n";
+    }
+    if (tag === "p" || tag === "div" || tag === "h1" || tag === "h2" || tag === "h3" || tag === "h4") {
+      var inner = Array.from(n.childNodes).map(function(c){ return nodeToMd(c, listDepth); }).join("").trim();
+      return inner ? inner + "\n\n" : "";
+    }
+    if (tag === "br") return "\n";
+    if (tag === "img" && n.src) return "\n![" + (n.alt || "Hình ảnh") + "](" + n.src + ")\n";
+    return Array.from(n.childNodes).map(function(c){ return nodeToMd(c, listDepth); }).join("");
+  }
+  var composer = document.querySelector('textarea[aria-label="Message"], textarea, [contenteditable="true"]');
+  var els = Array.from(document.querySelectorAll('.prose'));
+  var count = els.length;
+  var lastMd = count > 0 ? nodeToMd(els[count - 1], 0).replace(/\n{3,}/g, "\n\n").trim() : "";
+  return JSON.stringify({
+    hasComposer: !!composer,
+    count: count,
+    lastMd: lastMd,
+    url: location.href
+  });
+})()
+`
+
+type cdpRPCError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+type cdpRPCResponse struct {
+	ID     int64           `json:"id"`
+	Result json.RawMessage `json:"result"`
+	Error  *cdpRPCError    `json:"error"`
+}
+
+type cdpClient struct {
+	ws       *websocket.Conn
+	writeMu  sync.Mutex
+	nextID   atomic.Int64
+	pending  sync.Map
+	closed   chan struct{}
+	closeOne sync.Once
+}
+
+func dialCDPClient(ctx context.Context, wsURL string) (*cdpClient, error) {
+	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	ws, _, err := websocket.Dial(dialCtx, wsURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	ws.SetReadLimit(32 * 1024 * 1024)
+
+	c := &cdpClient{
+		ws:     ws,
+		closed: make(chan struct{}),
+	}
+	go c.readLoop()
+	return c, nil
+}
+
+func (c *cdpClient) readLoop() {
+	defer c.Close()
+	for {
+		_, data, err := c.ws.Read(context.Background())
+		if err != nil {
+			return
+		}
+		var msg cdpRPCResponse
+		if err := json.Unmarshal(data, &msg); err != nil {
+			continue
+		}
+		if msg.ID > 0 {
+			if chAny, ok := c.pending.LoadAndDelete(msg.ID); ok {
+				if ch, okCast := chAny.(chan cdpRPCResponse); okCast {
+					ch <- msg
+				}
+			}
+		}
+	}
+}
+
+func (c *cdpClient) Call(ctx context.Context, method string, params interface{}, out interface{}) error {
+	select {
+	case <-c.closed:
+		return errors.New("ERR_CDP_CONNECTION_CLOSED")
+	default:
+	}
+
+	id := c.nextID.Add(1)
+	ch := make(chan cdpRPCResponse, 1)
+	c.pending.Store(id, ch)
+	defer c.pending.Delete(id)
+
+	reqPayload := map[string]interface{}{
+		"id":     id,
+		"method": method,
+	}
+	if params != nil {
+		reqPayload["params"] = params
+	}
+	raw, err := json.Marshal(reqPayload)
+	if err != nil {
+		return err
+	}
+
+	c.writeMu.Lock()
+	errWrite := c.ws.Write(ctx, websocket.MessageText, raw)
+	c.writeMu.Unlock()
+	if errWrite != nil {
+		return errWrite
+	}
+
+	select {
+	case resp := <-ch:
+		if resp.Error != nil {
+			return fmt.Errorf("CDP %s error (%d): %s", method, resp.Error.Code, resp.Error.Message)
+		}
+		if out != nil && len(resp.Result) > 0 {
+			return json.Unmarshal(resp.Result, out)
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.closed:
+		return errors.New("ERR_CDP_CONNECTION_CLOSED")
+	}
+}
+
+func (c *cdpClient) Close() {
+	c.closeOne.Do(func() {
+		close(c.closed)
+		_ = c.ws.CloseNow()
+	})
+}
+
+type RemoteLoginSession struct {
+	mu               sync.RWMutex
+	renderMu         sync.Mutex
+	ID               string
+	Label            string
+	ProxyURL         string
+	BrowserContextID string
+	TargetID         string
+	Page             *cdpClient
+	Status           string // "waiting", "completed", "error", "cancelled"
+	CurrentURL       string
+	FrameDataURL     string
+	Node             *MuseAccountNode
+	ErrorMsg         string
+	CreatedAt        time.Time
+	LastActive       time.Time
+	cancelFn         context.CancelFunc
+}
+
+type cdpWarmTab struct {
+	Fingerprint      string
+	BrowserContextID string
+	TargetID         string
+	Page             *cdpClient
+	LastUsed         time.Time
+}
+
+type CDPBrowserManager struct {
+	mu          sync.Mutex
+	dataDir     string
+	pool        *MuseRouterPool
+	cmd         *exec.Cmd
+	debugPort   int
+	browserWS   *cdpClient
+	sessionsMu  sync.RWMutex
+	sessions    map[string]*RemoteLoginSession
+	chatMu      sync.Mutex
+	warmTabs    map[string]*cdpWarmTab
+	lastUsed    time.Time
+	stopReaper  chan struct{}
+	reaperOnce  sync.Once
+}
+
+func NewCDPBrowserManager(dataDir string, pool *MuseRouterPool) *CDPBrowserManager {
+	m := &CDPBrowserManager{
+		dataDir:    dataDir,
+		pool:       pool,
+		sessions:   make(map[string]*RemoteLoginSession),
+		warmTabs:   make(map[string]*cdpWarmTab),
+		stopReaper: make(chan struct{}),
+	}
+	go m.idleReaperLoop()
+	return m
+}
+
+func (m *CDPBrowserManager) HasBrowserAvailable() bool {
+	bin, _ := findChromeBinary()
+	return bin != ""
+}
+
+func findChromeBinary() (string, bool) {
+	if envBin := strings.TrimSpace(os.Getenv("CHROME_BIN")); envBin != "" {
+		if st, err := os.Stat(envBin); err == nil && !st.IsDir() {
+			return envBin, strings.Contains(strings.ToLower(filepath.Base(envBin)), "headless-shell")
+		}
+	}
+
+	exePath, _ := os.Executable()
+	exeDir := filepath.Dir(exePath)
+
+	var candidates []string
+	if runtime.GOOS == "windows" {
+		candidates = []string{
+			`C:\Program Files\Google\Chrome\Application\chrome.exe`,
+			`C:\Program Files (x86)\Google\Chrome\Application\chrome.exe`,
+			`C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`,
+			`C:\Program Files\Microsoft\Edge\Application\msedge.exe`,
+		}
+	} else {
+		candidates = []string{
+			filepath.Join(".", "chrome_bin", "chrome-headless-shell-linux64", "chrome-headless-shell"),
+			filepath.Join("..", "chrome_bin", "chrome-headless-shell-linux64", "chrome-headless-shell"),
+			filepath.Join(exeDir, "chrome_bin", "chrome-headless-shell-linux64", "chrome-headless-shell"),
+			"/usr/bin/google-chrome-stable",
+			"/usr/bin/google-chrome",
+			"/usr/bin/chromium",
+			"/usr/bin/chromium-browser",
+		}
+	}
+
+	for _, c := range candidates {
+		if st, err := os.Stat(c); err == nil && !st.IsDir() {
+			abs, errAbs := filepath.Abs(c)
+			if errAbs == nil {
+				c = abs
+			}
+			return c, strings.Contains(strings.ToLower(filepath.Base(c)), "headless-shell")
+		}
+	}
+	return "", false
+}
+
+func pickFreeLocalPort() (int, error) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	defer ln.Close()
+	addr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		return 0, errors.New("ERR_NO_FREE_PORT")
+	}
+	return addr.Port, nil
+}
+
+func (m *CDPBrowserManager) ensureBrowserLocked(ctx context.Context) (*cdpClient, int, error) {
+	if m.browserWS != nil && m.cmd != nil && m.cmd.Process != nil {
+		select {
+		case <-m.browserWS.closed:
+			m.shutdownLocked()
+		default:
+			m.lastUsed = time.Now()
+			return m.browserWS, m.debugPort, nil
+		}
+	}
+
+	binPath, isHeadlessShell := findChromeBinary()
+	if binPath == "" {
+		return nil, 0, errors.New("Không tìm thấy trình duyệt Chrome/Chromium trên máy chủ")
+	}
+
+	port, err := pickFreeLocalPort()
+	if err != nil {
+		return nil, 0, err
+	}
+
+	profileDir := filepath.Join(m.dataDir, fmt.Sprintf("cdp_profile_%d", port))
+	_ = os.MkdirAll(profileDir, 0700)
+
+	headlessFlag := "--headless=new"
+	if isHeadlessShell {
+		headlessFlag = "--headless"
+	}
+
+	args := []string{
+		headlessFlag,
+		"--no-sandbox",
+		"--disable-setuid-sandbox",
+		"--disable-dev-shm-usage",
+		"--disable-gpu",
+		"--disable-blink-features=AutomationControlled",
+		"--user-agent=" + cdpDefaultUA,
+		"--no-first-run",
+		"--no-default-browser-check",
+		"--disable-background-networking",
+		"--disable-sync",
+		"--disable-translate",
+		"--mute-audio",
+		"--renderer-process-limit=2",
+		"--js-flags=--max-old-space-size=192",
+		fmt.Sprintf("--window-size=%d,%d", cdpViewportWidth, cdpViewportHeight),
+		"--remote-debugging-address=127.0.0.1",
+		fmt.Sprintf("--remote-debugging-port=%d", port),
+		"--remote-allow-origins=*",
+		"--user-data-dir=" + profileDir,
+		"about:blank",
+	}
+
+	cmd := exec.Command(binPath, args...)
+	env := os.Environ()
+	if runtime.GOOS != "windows" {
+		exePath, _ := os.Executable()
+		exeDir := filepath.Dir(exePath)
+		var libDirs []string
+		var shareDirs []string
+		for _, base := range []string{".", "..", exeDir} {
+			for _, sub := range []string{"usr/lib/x86_64-linux-gnu", "lib/x86_64-linux-gnu"} {
+				cand := filepath.Join(base, "chrome_libs", sub)
+				if st, errSt := os.Stat(cand); errSt == nil && st.IsDir() {
+					if abs, errAbs := filepath.Abs(cand); errAbs == nil {
+						libDirs = append(libDirs, abs)
+					}
+				}
+			}
+			candShare := filepath.Join(base, "chrome_libs", "usr", "share")
+			if st, errSt := os.Stat(candShare); errSt == nil && st.IsDir() {
+				if abs, errAbs := filepath.Abs(candShare); errAbs == nil {
+					shareDirs = append(shareDirs, abs)
+				}
+			}
+		}
+		if len(libDirs) > 0 {
+			curLD := os.Getenv("LD_LIBRARY_PATH")
+			if curLD != "" {
+				libDirs = append(libDirs, curLD)
+			}
+			env = append(env, "LD_LIBRARY_PATH="+strings.Join(libDirs, ":"))
+		}
+		if len(shareDirs) > 0 {
+			curXDG := os.Getenv("XDG_DATA_DIRS")
+			if curXDG == "" {
+				curXDG = "/usr/local/share:/usr/share"
+			}
+			shareDirs = append(shareDirs, curXDG)
+			env = append(env, "XDG_DATA_DIRS="+strings.Join(shareDirs, ":"))
+		}
+	}
+	cmd.Env = env
+
+	if err := cmd.Start(); err != nil {
+		return nil, 0, fmt.Errorf("Không thể khởi động trình duyệt ngầm: %v", err)
+	}
+
+	// Chờ cổng CDP sẵn sàng
+	versionURL := fmt.Sprintf("http://127.0.0.1:%d/json/version", port)
+	httpCli := &http.Client{Timeout: 1500 * time.Millisecond}
+	var wsDebuggerURL string
+	deadline := time.Now().Add(14 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, errGet := httpCli.Get(versionURL)
+		if errGet == nil {
+			raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				var parsed struct {
+					WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
+				}
+				if json.Unmarshal(raw, &parsed) == nil && parsed.WebSocketDebuggerURL != "" {
+					wsDebuggerURL = parsed.WebSocketDebuggerURL
+					break
+				}
+			}
+		}
+		time.Sleep(120 * time.Millisecond)
+	}
+
+	if wsDebuggerURL == "" {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		_ = os.RemoveAll(profileDir)
+		return nil, 0, errors.New("Trình duyệt ngầm khởi động quá thời gian chờ CDP")
+	}
+
+	bClient, err := dialCDPClient(ctx, wsDebuggerURL)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		_ = os.RemoveAll(profileDir)
+		return nil, 0, err
+	}
+
+	m.cmd = cmd
+	m.debugPort = port
+	m.browserWS = bClient
+	m.lastUsed = time.Now()
+	LogInfo("Started server-side headless browser on 127.0.0.1:%d (%s)", port, SanitizeLog(filepath.Base(binPath)))
+	return bClient, port, nil
+}
+
+func (m *CDPBrowserManager) createIsolatedPage(ctx context.Context) (string, string, *cdpClient, error) {
+	m.mu.Lock()
+	bClient, port, err := m.ensureBrowserLocked(ctx)
+	m.mu.Unlock()
+	if err != nil {
+		return "", "", nil, err
+	}
+
+	var ctxRes struct {
+		BrowserContextID string `json:"browserContextId"`
+	}
+	if err := bClient.Call(ctx, "Target.createBrowserContext", map[string]interface{}{
+		"disposeOnDetach": false,
+	}, &ctxRes); err != nil {
+		// Một số bản build không hỗ trợ đa context -> dùng context mặc định
+		ctxRes.BrowserContextID = ""
+	}
+
+	createParams := map[string]interface{}{
+		"url":    "about:blank",
+		"width":  cdpViewportWidth,
+		"height": cdpViewportHeight,
+	}
+	if ctxRes.BrowserContextID != "" {
+		createParams["browserContextId"] = ctxRes.BrowserContextID
+	}
+
+	var targetRes struct {
+		TargetID string `json:"targetId"`
+	}
+	if err := bClient.Call(ctx, "Target.createTarget", createParams, &targetRes); err != nil {
+		return "", "", nil, err
+	}
+
+	pageWSURL := fmt.Sprintf("ws://127.0.0.1:%d/devtools/page/%s", port, targetRes.TargetID)
+	pageClient, err := dialCDPClient(ctx, pageWSURL)
+	if err != nil {
+		_ = bClient.Call(context.Background(), "Target.closeTarget", map[string]interface{}{"targetId": targetRes.TargetID}, nil)
+		return "", "", nil, err
+	}
+
+	_ = pageClient.Call(ctx, "Page.enable", nil, nil)
+	_ = pageClient.Call(ctx, "Network.enable", nil, nil)
+	_ = pageClient.Call(ctx, "Runtime.enable", nil, nil)
+	_ = pageClient.Call(ctx, "Network.setUserAgentOverride", map[string]interface{}{
+		"userAgent":      cdpDefaultUA,
+		"acceptLanguage": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+		"platform":       "Win32",
+	}, nil)
+	_ = pageClient.Call(ctx, "Emulation.setDeviceMetricsOverride", map[string]interface{}{
+		"width":             cdpViewportWidth,
+		"height":            cdpViewportHeight,
+		"deviceScaleFactor": 1,
+		"mobile":            false,
+	}, nil)
+	_ = pageClient.Call(ctx, "Page.addScriptToEvaluateOnNewDocument", map[string]interface{}{
+		"source": cdpStealthAndPopupHookJS,
+	}, nil)
+
+	return ctxRes.BrowserContextID, targetRes.TargetID, pageClient, nil
+}
+
+func (m *CDPBrowserManager) closeIsolatedPage(browserCtxID string, targetID string, page *cdpClient) {
+	if page != nil {
+		page.Close()
+	}
+	m.mu.Lock()
+	bClient := m.browserWS
+	m.mu.Unlock()
+	if bClient == nil {
+		return
+	}
+	bg, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if targetID != "" {
+		_ = bClient.Call(bg, "Target.closeTarget", map[string]interface{}{"targetId": targetID}, nil)
+	}
+	if browserCtxID != "" {
+		_ = bClient.Call(bg, "Target.disposeBrowserContext", map[string]interface{}{"browserContextId": browserCtxID}, nil)
+	}
+}
+
+func (m *CDPBrowserManager) StartRemoteLoginSession(parentCtx context.Context, label string, proxyURL string, startURL string) (*RemoteLoginSession, error) {
+	ctx, cancel := context.WithTimeout(parentCtx, 25*time.Second)
+	defer cancel()
+
+	browserCtxID, targetID, page, err := m.createIsolatedPage(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if strings.TrimSpace(startURL) == "" {
+		startURL = "https://muse.ai/api/oidc/start?return_to=%2F"
+	}
+	if err := page.Call(ctx, "Page.navigate", map[string]interface{}{"url": startURL}, nil); err != nil {
+		m.closeIsolatedPage(browserCtxID, targetID, page)
+		return nil, err
+	}
+
+	loopCtx, loopCancel := context.WithCancel(context.Background())
+	sess := &RemoteLoginSession{
+		ID:               fmt.Sprintf("rlogin_%d", time.Now().UnixNano()),
+		Label:            strings.TrimSpace(label),
+		ProxyURL:         strings.TrimSpace(proxyURL),
+		BrowserContextID: browserCtxID,
+		TargetID:         targetID,
+		Page:             page,
+		Status:           "waiting",
+		CurrentURL:       startURL,
+		CreatedAt:        time.Now(),
+		LastActive:       time.Now(),
+		cancelFn:         loopCancel,
+	}
+
+	m.sessionsMu.Lock()
+	m.sessions[sess.ID] = sess
+	m.sessionsMu.Unlock()
+
+	go m.monitorRemoteLoginLoop(loopCtx, sess)
+	return sess, nil
+}
+
+type cdpCookieEntry struct {
+	Name   string `json:"name"`
+	Value  string `json:"value"`
+	Domain string `json:"domain"`
+}
+
+func readMuseCookiesFromCDP(ctx context.Context, page *cdpClient, browserCtxID string) ([]cdpCookieEntry, string) {
+	var res struct {
+		Cookies []cdpCookieEntry `json:"cookies"`
+	}
+	params := map[string]interface{}{}
+	if browserCtxID != "" {
+		params["browserContextId"] = browserCtxID
+	}
+	if err := page.Call(ctx, "Storage.getCookies", params, &res); err != nil || len(res.Cookies) == 0 {
+		_ = page.Call(ctx, "Network.getCookies", map[string]interface{}{
+			"urls": []string{"https://muse.ai/", "https://www.muse.ai/", "https://auth.muse.ai/"},
+		}, &res)
+	}
+	sessVal := ""
+	var filtered []cdpCookieEntry
+	seen := map[string]bool{}
+	for _, c := range res.Cookies {
+		dom := strings.TrimPrefix(strings.ToLower(c.Domain), ".")
+		if strings.HasSuffix(dom, "muse.ai") && c.Name != "" && c.Value != "" {
+			if c.Name == "hatch_sess" {
+				sessVal = c.Value
+			}
+			if !seen[c.Name] {
+				seen[c.Name] = true
+				filtered = append(filtered, c)
+			}
+		}
+	}
+	return filtered, sessVal
+}
+
+func capturePageFrameAndURL(ctx context.Context, page *cdpClient) (string, string) {
+	var urlEval struct {
+		Result struct {
+			Value string `json:"value"`
+		} `json:"result"`
+	}
+	_ = page.Call(ctx, "Runtime.evaluate", map[string]interface{}{
+		"expression":    "location.href",
+		"returnByValue": true,
+	}, &urlEval)
+
+	var shot struct {
+		Data string `json:"data"`
+	}
+	errShot := page.Call(ctx, "Page.captureScreenshot", map[string]interface{}{
+		"format":  "jpeg",
+		"quality": 70,
+	}, &shot)
+	if errShot != nil || shot.Data == "" {
+		return "", urlEval.Result.Value
+	}
+	return "data:image/jpeg;base64," + shot.Data, urlEval.Result.Value
+}
+
+func (m *CDPBrowserManager) monitorRemoteLoginLoop(ctx context.Context, sess *RemoteLoginSession) {
+	defer func() {
+		m.closeIsolatedPage(sess.BrowserContextID, sess.TargetID, sess.Page)
+	}()
+
+	deadline := time.Now().Add(240 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		sess.mu.RLock()
+		lastAct := sess.LastActive
+		curStatus := sess.Status
+		sess.mu.RUnlock()
+		if curStatus != "waiting" {
+			return
+		}
+		if time.Since(lastAct) > 150*time.Second {
+			sess.mu.Lock()
+			sess.Status = "cancelled"
+			sess.ErrorMsg = "Phiên đăng nhập tự đóng do không có thao tác"
+			sess.mu.Unlock()
+			return
+		}
+
+		stepCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+		cookies, sessVal := readMuseCookiesFromCDP(stepCtx, sess.Page, sess.BrowserContextID)
+		if sessVal != "" {
+			// Chờ thêm 500ms để các cookie phụ (hatch_gw, datr) kịp ghi đầy đủ
+			time.Sleep(500 * time.Millisecond)
+			cookies, _ = readMuseCookiesFromCDP(stepCtx, sess.Page, sess.BrowserContextID)
+			cancel()
+
+			var parts []string
+			for _, c := range cookies {
+				parts = append(parts, c.Name+"="+c.Value)
+			}
+			cookieHdr := strings.Join(parts, "; ")
+
+			saveCtx, saveCancel := context.WithTimeout(context.Background(), 20*time.Second)
+			var savedNode *MuseAccountNode
+			var saveErr error
+			if sess.ProxyURL != "" {
+				savedNode, saveErr = m.pool.AddAccountNode(saveCtx, sess.Label, "Muse.ai", "cookie", "https://muse.ai", cookieHdr, 0, sess.ProxyURL)
+			} else {
+				savedNode, _, saveErr = m.pool.IngestAccountCookie(saveCtx, sess.Label, cookieHdr)
+			}
+			saveCancel()
+
+			sess.mu.Lock()
+			if saveErr != nil {
+				sess.Status = "error"
+				sess.ErrorMsg = saveErr.Error()
+			} else {
+				sess.Status = "completed"
+				sess.Node = savedNode
+			}
+			sess.mu.Unlock()
+			return
+		}
+
+		sess.renderMu.Lock()
+		frame, curURL := capturePageFrameAndURL(stepCtx, sess.Page)
+		sess.renderMu.Unlock()
+		cancel()
+
+		sess.mu.Lock()
+		if frame != "" {
+			sess.FrameDataURL = frame
+		}
+		if curURL != "" {
+			sess.CurrentURL = curURL
+		}
+		sess.mu.Unlock()
+		m.mu.Lock()
+		m.lastUsed = time.Now()
+		m.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(520 * time.Millisecond):
+		}
+	}
+
+	sess.mu.Lock()
+	if sess.Status == "waiting" {
+		sess.Status = "error"
+		sess.ErrorMsg = "Hết thời gian chờ đăng nhập (4 phút)"
+	}
+	sess.mu.Unlock()
+}
+
+func (m *CDPBrowserManager) GetRemoteLoginSnapshot(sessionID string) (map[string]interface{}, error) {
+	m.sessionsMu.RLock()
+	sess, ok := m.sessions[sessionID]
+	m.sessionsMu.RUnlock()
+	if !ok {
+		return nil, errors.New("ERR_SESSION_NOT_FOUND")
+	}
+
+	sess.mu.Lock()
+	sess.LastActive = time.Now()
+	out := map[string]interface{}{
+		"session_id": sess.ID,
+		"status":     sess.Status,
+		"url":        sess.CurrentURL,
+		"frame":      sess.FrameDataURL,
+		"width":      cdpViewportWidth,
+		"height":     cdpViewportHeight,
+	}
+	if sess.Node != nil {
+		out["node"] = sess.Node
+	}
+	if sess.ErrorMsg != "" {
+		out["error"] = sess.ErrorMsg
+	}
+	done := sess.Status != "waiting"
+	sess.mu.Unlock()
+
+	if done {
+		go func(id string) {
+			time.Sleep(15 * time.Second)
+			m.sessionsMu.Lock()
+			delete(m.sessions, id)
+			m.sessionsMu.Unlock()
+		}(sessionID)
+	}
+	return out, nil
+}
+
+type RemoteLoginInputReq struct {
+	SessionID string  `json:"session_id"`
+	Type      string  `json:"type"` // "click", "scroll", "text", "key", "clear", "reload"
+	X         float64 `json:"x"`
+	Y         float64 `json:"y"`
+	DeltaX    float64 `json:"delta_x"`
+	DeltaY    float64 `json:"delta_y"`
+	Text      string  `json:"text"`
+	Key       string  `json:"key"`
+}
+
+func virtualKeyCodeForKey(k string) (int, string) {
+	switch k {
+	case "Enter":
+		return 13, "Enter"
+	case "Backspace":
+		return 8, "Backspace"
+	case "Tab":
+		return 9, "Tab"
+	case "Escape":
+		return 27, "Escape"
+	case "Delete":
+		return 46, "Delete"
+	case "ArrowLeft":
+		return 37, "ArrowLeft"
+	case "ArrowUp":
+		return 38, "ArrowUp"
+	case "ArrowRight":
+		return 39, "ArrowRight"
+	case "ArrowDown":
+		return 40, "ArrowDown"
+	}
+	return 0, ""
+}
+
+func (m *CDPBrowserManager) SendRemoteLoginInput(parentCtx context.Context, req RemoteLoginInputReq) (map[string]interface{}, error) {
+	m.sessionsMu.RLock()
+	sess, ok := m.sessions[req.SessionID]
+	m.sessionsMu.RUnlock()
+	if !ok {
+		return nil, errors.New("ERR_SESSION_NOT_FOUND")
+	}
+
+	sess.mu.Lock()
+	sess.LastActive = time.Now()
+	st := sess.Status
+	page := sess.Page
+	sess.mu.Unlock()
+
+	if st != "waiting" || page == nil {
+		return m.GetRemoteLoginSnapshot(req.SessionID)
+	}
+
+	ctx, cancel := context.WithTimeout(parentCtx, 5*time.Second)
+	defer cancel()
+
+	switch req.Type {
+	case "click":
+		_ = page.Call(ctx, "Input.dispatchMouseEvent", map[string]interface{}{
+			"type": "mouseMoved",
+			"x":    req.X,
+			"y":    req.Y,
+		}, nil)
+		_ = page.Call(ctx, "Input.dispatchMouseEvent", map[string]interface{}{
+			"type":       "mousePressed",
+			"x":          req.X,
+			"y":          req.Y,
+			"button":     "left",
+			"clickCount": 1,
+		}, nil)
+		_ = page.Call(ctx, "Input.dispatchMouseEvent", map[string]interface{}{
+			"type":       "mouseReleased",
+			"x":          req.X,
+			"y":          req.Y,
+			"button":     "left",
+			"clickCount": 1,
+		}, nil)
+		time.Sleep(110 * time.Millisecond)
+
+	case "scroll":
+		_ = page.Call(ctx, "Input.dispatchMouseEvent", map[string]interface{}{
+			"type":   "mouseWheel",
+			"x":      req.X,
+			"y":      req.Y,
+			"deltaX": req.DeltaX,
+			"deltaY": req.DeltaY,
+		}, nil)
+		time.Sleep(80 * time.Millisecond)
+
+	case "text":
+		if req.Text != "" {
+			_ = page.Call(ctx, "Input.insertText", map[string]interface{}{
+				"text": req.Text,
+			}, nil)
+			time.Sleep(80 * time.Millisecond)
+		}
+
+	case "key":
+		vk, code := virtualKeyCodeForKey(req.Key)
+		if vk > 0 {
+			downParams := map[string]interface{}{
+				"type":                  "rawKeyDown",
+				"key":                   req.Key,
+				"code":                  code,
+				"windowsVirtualKeyCode": vk,
+				"nativeVirtualKeyCode":  vk,
+			}
+			if req.Key == "Enter" {
+				downParams["text"] = "\r"
+				downParams["unmodifiedText"] = "\r"
+			}
+			_ = page.Call(ctx, "Input.dispatchKeyEvent", downParams, nil)
+			if req.Key == "Enter" {
+				_ = page.Call(ctx, "Input.dispatchKeyEvent", map[string]interface{}{
+					"type": "char",
+					"text": "\r",
+				}, nil)
+			}
+			_ = page.Call(ctx, "Input.dispatchKeyEvent", map[string]interface{}{
+				"type":                  "keyUp",
+				"key":                   req.Key,
+				"code":                  code,
+				"windowsVirtualKeyCode": vk,
+				"nativeVirtualKeyCode":  vk,
+			}, nil)
+			time.Sleep(90 * time.Millisecond)
+		}
+
+	case "clear":
+		clearJS := `(function(){
+			var el = document.activeElement;
+			if (!el || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA')) return;
+			var proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+			var desc = Object.getOwnPropertyDescriptor(proto, 'value');
+			if (desc && desc.set) { desc.set.call(el, ''); } else { el.value = ''; }
+			el.dispatchEvent(new Event('input', { bubbles: true }));
+			el.dispatchEvent(new Event('change', { bubbles: true }));
+		})()`
+		_ = page.Call(ctx, "Runtime.evaluate", map[string]interface{}{"expression": clearJS}, nil)
+		time.Sleep(60 * time.Millisecond)
+
+	case "reload":
+		_ = page.Call(ctx, "Page.reload", nil, nil)
+		time.Sleep(250 * time.Millisecond)
+
+	case "restart_login":
+		_ = page.Call(ctx, "Page.navigate", map[string]interface{}{
+			"url": "https://muse.ai/api/oidc/start?return_to=%2F",
+		}, nil)
+		time.Sleep(350 * time.Millisecond)
+	}
+
+	sess.renderMu.Lock()
+	frame, curURL := capturePageFrameAndURL(ctx, page)
+	sess.renderMu.Unlock()
+	sess.mu.Lock()
+	if frame != "" {
+		sess.FrameDataURL = frame
+	}
+	if curURL != "" {
+		sess.CurrentURL = curURL
+	}
+	sess.mu.Unlock()
+
+	return m.GetRemoteLoginSnapshot(req.SessionID)
+}
+
+func (m *CDPBrowserManager) CancelRemoteLoginSession(sessionID string) {
+	m.sessionsMu.Lock()
+	sess, ok := m.sessions[sessionID]
+	delete(m.sessions, sessionID)
+	m.sessionsMu.Unlock()
+	if !ok {
+		return
+	}
+	sess.mu.Lock()
+	if sess.Status == "waiting" {
+		sess.Status = "cancelled"
+	}
+	cancel := sess.cancelFn
+	sess.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+type cdpMuseSnap struct {
+	HasComposer bool   `json:"hasComposer"`
+	Count       int    `json:"count"`
+	LastMd      string `json:"lastMd"`
+	URL         string `json:"url"`
+}
+
+func evalMuseSnap(ctx context.Context, page *cdpClient) (*cdpMuseSnap, error) {
+	var evalRes struct {
+		Result struct {
+			Value string `json:"value"`
+		} `json:"result"`
+	}
+	if err := page.Call(ctx, "Runtime.evaluate", map[string]interface{}{
+		"expression":    cdpMuseSnapshotJS,
+		"returnByValue": true,
+	}, &evalRes); err != nil {
+		return nil, err
+	}
+	if evalRes.Result.Value == "" {
+		return nil, errors.New("empty snapshot")
+	}
+	var snap cdpMuseSnap
+	if err := json.Unmarshal([]byte(evalRes.Result.Value), &snap); err != nil {
+		return nil, err
+	}
+	return &snap, nil
+}
+
+func parseCookieHeaderToMap(raw string) map[string]string {
+	out := map[string]string{}
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return out
+	}
+	if !strings.Contains(trimmed, "=") {
+		out["hatch_sess"] = trimmed
+		return out
+	}
+	for _, part := range strings.Split(trimmed, ";") {
+		p := strings.TrimSpace(part)
+		idx := strings.IndexByte(p, '=')
+		if idx > 0 {
+			k := strings.TrimSpace(p[:idx])
+			v := strings.TrimSpace(p[idx+1:])
+			if k != "" && v != "" {
+				out[k] = v
+			}
+		}
+	}
+	return out
+}
+
+func (m *CDPBrowserManager) getOrCreateWarmChatTab(ctx context.Context, fp string, cookieHeader string, targetOrigin string) (*cdpWarmTab, error) {
+	if fp == "" {
+		fp = "default_fp"
+	}
+	if targetOrigin == "" {
+		targetOrigin = "https://muse.ai"
+	}
+
+	if existing, ok := m.warmTabs[fp]; ok && existing.Page != nil {
+		select {
+		case <-existing.Page.closed:
+			delete(m.warmTabs, fp)
+		default:
+			if snap, err := evalMuseSnap(ctx, existing.Page); err == nil && snap.HasComposer {
+				existing.LastUsed = time.Now()
+				return existing, nil
+			}
+			m.closeIsolatedPage(existing.BrowserContextID, existing.TargetID, existing.Page)
+			delete(m.warmTabs, fp)
+		}
+	}
+
+	// Giới hạn tối đa 2 warm tabs để bảo vệ RAM 512MB trên Render
+	if len(m.warmTabs) >= 2 {
+		var oldestKey string
+		var oldestTime time.Time
+		for k, wt := range m.warmTabs {
+			if oldestKey == "" || wt.LastUsed.Before(oldestTime) {
+				oldestKey = k
+				oldestTime = wt.LastUsed
+			}
+		}
+		if oldestKey != "" {
+			old := m.warmTabs[oldestKey]
+			m.closeIsolatedPage(old.BrowserContextID, old.TargetID, old.Page)
+			delete(m.warmTabs, oldestKey)
+		}
+	}
+
+	browserCtxID, targetID, page, err := m.createIsolatedPage(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	cMap := parseCookieHeaderToMap(cookieHeader)
+	if len(cMap) > 0 {
+		var cdpCookies []map[string]interface{}
+		isHTTPS := strings.HasPrefix(strings.ToLower(targetOrigin), "https://")
+		for k, v := range cMap {
+			entry := map[string]interface{}{
+				"url":      targetOrigin + "/",
+				"name":     k,
+				"value":    v,
+				"path":     "/",
+				"secure":   isHTTPS,
+				"httpOnly": k == "hatch_sess" || k == "datr",
+			}
+			if strings.Contains(targetOrigin, "muse.ai") {
+				entry["domain"] = ".muse.ai"
+			}
+			cdpCookies = append(cdpCookies, entry)
+		}
+		_ = page.Call(ctx, "Network.setCookies", map[string]interface{}{"cookies": cdpCookies}, nil)
+	}
+
+	if err := page.Call(ctx, "Page.navigate", map[string]interface{}{"url": targetOrigin + "/"}, nil); err != nil {
+		m.closeIsolatedPage(browserCtxID, targetID, page)
+		return nil, err
+	}
+
+	wt := &cdpWarmTab{
+		Fingerprint:      fp,
+		BrowserContextID: browserCtxID,
+		TargetID:         targetID,
+		Page:             page,
+		LastUsed:         time.Now(),
+	}
+	m.warmTabs[fp] = wt
+	return wt, nil
+}
+
+func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate *MuseAccountNode, userPrompt string) (string, int64, int, error) {
+	rawCred, err := m.pool.rustBridge.DecryptSecret(candidate.EncryptedCredential)
+	if err != nil {
+		return "", 0, 0, err
+	}
+
+	m.chatMu.Lock()
+	defer m.chatMu.Unlock()
+
+	startTs := time.Now()
+	ctx, cancel := context.WithTimeout(parentCtx, 75*time.Second)
+	defer cancel()
+
+	targetOrigin := strings.TrimRight(strings.TrimSpace(candidate.UpstreamURL), "/")
+	if targetOrigin == "" {
+		targetOrigin = "https://muse.ai"
+	}
+
+	wt, err := m.getOrCreateWarmChatTab(ctx, candidate.Fingerprint, rawCred, targetOrigin)
+	if err != nil {
+		return "", 0, 0, err
+	}
+
+	var baseline *cdpMuseSnap
+	prevCnt := -1
+	for i := 0; i < 40; i++ {
+		snap, errSnap := evalMuseSnap(ctx, wt.Page)
+		if errSnap == nil && snap.HasComposer {
+			if i >= 2 && snap.Count == prevCnt {
+				baseline = snap
+				break
+			}
+			prevCnt = snap.Count
+			baseline = snap
+		}
+		select {
+		case <-ctx.Done():
+			return "", 0, 0, ctx.Err()
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+
+	if baseline == nil || !baseline.HasComposer {
+		m.closeIsolatedPage(wt.BrowserContextID, wt.TargetID, wt.Page)
+		delete(m.warmTabs, candidate.Fingerprint)
+		return "", 0, 0, errors.New("Phiên đăng nhập muse.ai đã hết hạn hoặc trang chưa sẵn sàng — hãy đăng nhập lại tài khoản")
+	}
+
+	promptJSON, _ := json.Marshal(userPrompt)
+	fillJS := fmt.Sprintf(`(function(txt){
+		var el = document.querySelector('textarea[aria-label="Message"], textarea, [contenteditable="true"]');
+		if (!el) return false;
+		el.focus();
+		if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
+			var proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+			var desc = Object.getOwnPropertyDescriptor(proto, 'value');
+			if (desc && desc.set) { desc.set.call(el, txt); } else { el.value = txt; }
+			el.dispatchEvent(new InputEvent('input', { bubbles: true, data: txt, inputType: 'insertText' }));
+			el.dispatchEvent(new Event('change', { bubbles: true }));
+		} else {
+			document.execCommand('selectAll', false, null);
+			document.execCommand('insertText', false, txt);
+			el.dispatchEvent(new InputEvent('input', { bubbles: true, data: txt, inputType: 'insertText' }));
+		}
+		return true;
+	})(%s)`, string(promptJSON))
+
+	_ = wt.Page.Call(ctx, "Runtime.evaluate", map[string]interface{}{"expression": fillJS}, nil)
+	time.Sleep(150 * time.Millisecond)
+
+	// Gửi phím Enter thật qua CDP Input (giống hệt Playwright page.keyboard.press("Enter"))
+	_ = wt.Page.Call(ctx, "Input.dispatchKeyEvent", map[string]interface{}{
+		"type":                  "rawKeyDown",
+		"key":                   "Enter",
+		"code":                  "Enter",
+		"windowsVirtualKeyCode": 13,
+		"nativeVirtualKeyCode":  13,
+		"text":                  "\r",
+		"unmodifiedText":        "\r",
+	}, nil)
+	_ = wt.Page.Call(ctx, "Input.dispatchKeyEvent", map[string]interface{}{
+		"type":                  "keyUp",
+		"key":                   "Enter",
+		"code":                  "Enter",
+		"windowsVirtualKeyCode": 13,
+		"nativeVirtualKeyCode":  13,
+	}, nil)
+
+	// Dự phòng click nút submit nếu sau 140ms ô nhập vẫn còn chữ
+	time.Sleep(140 * time.Millisecond)
+	clickSubmitFallbackJS := `(function(){
+		var el = document.querySelector('textarea[aria-label="Message"], textarea, [contenteditable="true"]');
+		if (!el) return;
+		var rem = (el.value !== undefined ? el.value : el.textContent || '').trim();
+		if (!rem) return;
+		if (el.form) {
+			var btn = el.form.querySelector('button[type="submit"]:not(:disabled)');
+			if (btn) { btn.click(); return; }
+		}
+		var root = el.parentElement;
+		for (var d = 0; d < 4 && root; d++) {
+			var b = root.querySelector('button[type="submit"]:not(:disabled), button[aria-label*="Send" i]:not(:disabled), button[aria-label*="Gửi" i]:not(:disabled)');
+			if (b) { b.click(); return; }
+			root = root.parentElement;
+		}
+	})()`
+	_ = wt.Page.Call(ctx, "Runtime.evaluate", map[string]interface{}{"expression": clickSubmitFallbackJS}, nil)
+
+	cleanPrompt := strings.TrimSpace(userPrompt)
+	deadline := time.Now().Add(55 * time.Second)
+	lastNewMd := ""
+	stableTicks := 0
+
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return "", 0, 0, ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
+
+		cur, errCur := evalMuseSnap(ctx, wt.Page)
+		if errCur != nil || cur == nil {
+			continue
+		}
+
+		isNew := (cur.Count > baseline.Count && len(cur.LastMd) > 0) ||
+			(cur.Count > 0 && len(cur.LastMd) > 0 && cur.LastMd != baseline.LastMd)
+		if !isNew || cur.LastMd == cleanPrompt {
+			continue
+		}
+
+		if cur.LastMd == lastNewMd {
+			stableTicks++
+			if stableTicks >= 3 {
+				break
+			}
+		} else {
+			lastNewMd = cur.LastMd
+			stableTicks = 0
+		}
+	}
+
+	if lastNewMd == "" {
+		return "", 0, 0, errors.New("Đã gửi tin nhắn tới muse.ai nhưng chưa nhận được phản hồi")
+	}
+
+	wt.LastUsed = time.Now()
+	m.mu.Lock()
+	m.lastUsed = time.Now()
+	m.mu.Unlock()
+
+	latencyMs := int(time.Since(startTs).Milliseconds())
+	estTokens := int64((len(cleanPrompt)+len(lastNewMd))/4) + 1
+	return lastNewMd, estTokens, latencyMs, nil
+}
+
+func (m *CDPBrowserManager) idleReaperLoop() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-m.stopReaper:
+			return
+		case <-ticker.C:
+			m.sessionsMu.RLock()
+			activeLoginCount := 0
+			for _, s := range m.sessions {
+				s.mu.RLock()
+				if s.Status == "waiting" {
+					activeLoginCount++
+				}
+				s.mu.RUnlock()
+			}
+			m.sessionsMu.RUnlock()
+			if activeLoginCount > 0 {
+				continue
+			}
+
+			m.mu.Lock()
+			if m.cmd != nil && time.Since(m.lastUsed) > 180*time.Second {
+				LogInfo("Reaping idle headless browser to free memory")
+				m.shutdownLocked()
+			}
+			m.mu.Unlock()
+		}
+	}
+}
+
+func (m *CDPBrowserManager) shutdownLocked() {
+	for k, wt := range m.warmTabs {
+		if wt.Page != nil {
+			wt.Page.Close()
+		}
+		delete(m.warmTabs, k)
+	}
+	if m.browserWS != nil {
+		m.browserWS.Close()
+		m.browserWS = nil
+	}
+	if m.cmd != nil && m.cmd.Process != nil {
+		_ = m.cmd.Process.Kill()
+		_ = m.cmd.Wait()
+	}
+	m.cmd = nil
+	if m.debugPort > 0 {
+		_ = os.RemoveAll(filepath.Join(m.dataDir, fmt.Sprintf("cdp_profile_%d", m.debugPort)))
+		m.debugPort = 0
+	}
+}
+
+func (m *CDPBrowserManager) Shutdown() {
+	m.reaperOnce.Do(func() {
+		close(m.stopReaper)
+	})
+	m.sessionsMu.Lock()
+	for id, s := range m.sessions {
+		if s.cancelFn != nil {
+			s.cancelFn()
+		}
+		delete(m.sessions, id)
+	}
+	m.sessionsMu.Unlock()
+
+	m.mu.Lock()
+	m.shutdownLocked()
+	m.mu.Unlock()
+}
+
+// HTTP Handlers cho Cửa Sổ Đăng Nhập Trực Tiếp Trên Web (0 Tiện ích, 0 F12)
+func (a *ServerApp) handleRemoteLoginStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		WriteJSONError(w, http.StatusMethodNotAllowed, "ERR_METHOD_NOT_ALLOWED")
+		return
+	}
+	var req struct {
+		Label    string `json:"label"`
+		ProxyURL string `json:"proxy_url"`
+	}
+	_ = a.readJSONBody(r, &req)
+	if a.pool.cdpManager == nil {
+		WriteJSONError(w, http.StatusServiceUnavailable, "ERR_CDP_NOT_INITIALIZED")
+		return
+	}
+	sess, err := a.pool.cdpManager.StartRemoteLoginSession(r.Context(), req.Label, req.ProxyURL, "")
+	if err != nil {
+		LogError("RemoteLoginStart error: %v", err)
+		WriteJSONError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	WriteJSONResponse(w, http.StatusOK, map[string]interface{}{
+		"session_id": sess.ID,
+		"status":     "waiting",
+		"width":      cdpViewportWidth,
+		"height":     cdpViewportHeight,
+	})
+}
+
+func (a *ServerApp) handleRemoteLoginState(w http.ResponseWriter, r *http.Request) {
+	sessID := strings.TrimSpace(r.URL.Query().Get("session_id"))
+	if sessID == "" || a.pool.cdpManager == nil {
+		WriteJSONError(w, http.StatusBadRequest, "ERR_INVALID_SESSION")
+		return
+	}
+	snap, err := a.pool.cdpManager.GetRemoteLoginSnapshot(sessID)
+	if err != nil {
+		WriteJSONError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	WriteJSONResponse(w, http.StatusOK, snap)
+}
+
+func (a *ServerApp) handleRemoteLoginInput(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		WriteJSONError(w, http.StatusMethodNotAllowed, "ERR_METHOD_NOT_ALLOWED")
+		return
+	}
+	var req RemoteLoginInputReq
+	if err := a.readJSONBody(r, &req); err != nil || strings.TrimSpace(req.SessionID) == "" {
+		WriteJSONError(w, http.StatusBadRequest, "ERR_INVALID_INPUT")
+		return
+	}
+	snap, err := a.pool.cdpManager.SendRemoteLoginInput(r.Context(), req)
+	if err != nil {
+		WriteJSONError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	WriteJSONResponse(w, http.StatusOK, snap)
+}
+
+func (a *ServerApp) handleRemoteLoginCancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		WriteJSONError(w, http.StatusMethodNotAllowed, "ERR_METHOD_NOT_ALLOWED")
+		return
+	}
+	var req struct {
+		SessionID string `json:"session_id"`
+	}
+	_ = a.readJSONBody(r, &req)
+	if a.pool.cdpManager != nil && req.SessionID != "" {
+		a.pool.cdpManager.CancelRemoteLoginSession(req.SessionID)
+	}
+	WriteJSONResponse(w, http.StatusOK, map[string]bool{"cancelled": true})
+}

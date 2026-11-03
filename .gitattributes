@@ -1,4 +1,5 @@
 .gitattributes
+*.sh text eol=lf
 *.bat linguist-detectable=false
 *.exe binary
 data/ export-ignore

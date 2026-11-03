@@ -1705,128 +1705,378 @@
   async function refreshCloudExtensionBanner() {
     const banner = document.getElementById("cloudExtBanner");
     if (!banner) return false;
-    if (isLocalHost()) {
-      banner.classList.add("hidden-el");
-      return false;
-    }
     banner.classList.remove("hidden-el");
-    const titleEl = document.getElementById("cloudExtTitle");
-    const descEl = document.getElementById("cloudExtDesc");
-    const btnDl = document.getElementById("btnDownloadExtZip");
-    const btnExisting = document.getElementById("btnCaptureExistingMuse");
-
-    const ping = await sendExtensionMessage({ action: "ping_with_cookie" });
-    if (ping && ping.ok) {
-      state.hasMartExtension = true;
-      if (!ping.supportsChatRelay) {
-        if (titleEl) {
-          titleEl.textContent = "🟡 Cần cập nhật Tiện ích Mart AI lên bản v1.2 để Chat trực tiếp trên Render!";
-        }
-        if (descEl) {
-          descEl.textContent =
-            "Bấm '⬇️ Tải bản v1.2 (.zip)' → giải nén đè lên thư mục tiện ích cũ → mở chrome://extensions bấm nút Tải lại (🔄).";
-        }
-        if (btnDl) {
-          btnDl.textContent = "⬇️ Tải bản v1.2 (.zip)";
-          btnDl.classList.remove("hidden-el");
-        }
-      } else {
-        if (titleEl) {
-          titleEl.textContent = "🟢 Tiện ích Mart AI (v1.2) đã kết nối — Sẵn sàng Tự Bắt 0 Chạm & Chat thật trên Cloud!";
-        }
-        if (descEl) {
-          descEl.textContent = ping.hasExistingSession
-            ? "Đã phát hiện phiên muse.ai đang đăng nhập trên trình duyệt này! Bấm '⚡ Bắt ngay tab Muse đang mở' hoặc bấm '🚀 Đăng nhập Muse.ai & Tự Bắt' để thêm tài khoản mới."
-            : "Chỉ cần bấm '🚀 Đăng nhập Muse.ai & Tự Bắt' — tiện ích sẽ mở trang đăng nhập chính chủ và tự động đưa tài khoản vào Pool ngay khi đăng nhập xong.";
-        }
-        if (btnDl) btnDl.classList.add("hidden-el");
-      }
-      if (btnExisting) {
-        btnExisting.classList.toggle("hidden-el", !ping.hasExistingSession);
-      }
-      if (
-        ping.cookie &&
-        ping.cookie.indexOf("hatch_sess=") >= 0 &&
-        state.summary &&
-        (state.summary.total_nodes || 0) === 0
-      ) {
-        autoIngestCookieFromExtension(ping.cookie);
-      }
-      return true;
-    }
-
-    state.hasMartExtension = false;
-    if (btnDl) {
-      btnDl.textContent = "⬇️ Tải Tiện Ích v1.2 (.zip)";
-      btnDl.classList.remove("hidden-el");
-    }
-    if (btnExisting) btnExisting.classList.add("hidden-el");
     return false;
   }
 
-  function showCloudExtensionRequiredModal(isOutdated) {
-    var existing = document.getElementById("martCloudExtModal");
-    if (existing && existing.parentNode) existing.remove();
+  async function openRemoteBrowserLoginModal(btnEl, proxyUrlOverride) {
+    const existingModal = document.getElementById("martRemoteLoginModal");
+    if (existingModal && existingModal.parentNode) {
+      existingModal.remove();
+    }
 
-    var overlay = document.createElement("div");
-    overlay.id = "martCloudExtModal";
+    const labelEl = document.getElementById("accLabelInput");
+    const proxyEl = document.getElementById("accProxyInput") || document.getElementById("quickProxyInput");
+    const labelVal = labelEl ? labelEl.value.trim() : "";
+    const proxyVal =
+      typeof proxyUrlOverride === "string"
+        ? proxyUrlOverride
+        : proxyEl
+        ? proxyEl.value.trim()
+        : "";
+
+    const origBtnText = btnEl ? btnEl.textContent : "";
+    if (btnEl) {
+      btnEl.disabled = true;
+      btnEl.textContent = "⏳ Đang mở cửa sổ đăng nhập...";
+    }
+
+    const overlay = document.createElement("div");
+    overlay.id = "martRemoteLoginModal";
     overlay.style.cssText =
-      "position:fixed;inset:0;z-index:9999;background:rgba(15,23,42,0.5);display:flex;align-items:center;justify-content:center;padding:16px;";
+      "position:fixed;inset:0;z-index:10000;background:rgba(15,23,42,0.68);display:flex;align-items:center;justify-content:center;padding:12px;";
 
-    var box = document.createElement("div");
+    const box = document.createElement("div");
     box.style.cssText =
-      "background:#ffffff;border-radius:16px;max-width:520px;width:100%;padding:22px 24px;box-shadow:0 20px 50px rgba(0,0,0,0.22);font-family:inherit;color:#171717;";
-
-    var titleText = isOutdated
-      ? "🔄 Cập nhật Tiện ích Chrome Mart AI lên v1.2"
-      : "🧩 Cài Tiện ích Chrome 1 Lần Để Tự Bắt Muse.ai (Không cần F12)";
-    var stepText = isOutdated
-      ? "Bạn đang dùng bản cũ. Hãy tải bản <b>v1.2</b> bên dưới → giải nén đè lên thư mục cũ → mở <code>chrome://extensions</code> bấm nút <b>Tải lại (🔄)</b>."
-      : '<div style="background:#fff7ed;border:1px solid #fdba74;border-radius:10px;padding:9px 12px;margin-bottom:12px;color:#9a3412;font-size:12.5px;">' +
-        "⚠️ <b>Lưu ý:</b> Sau khi tải file <code>.zip</code>, hãy <b>Giải nén (Extract)</b> thư mục <code>mart_ai_extension</code> ra ngoài <b>Desktop</b> — <b>không</b> bấm đúp mở <code>popup.html</code> trong WinRAR!" +
-        "</div>" +
-        "<b>Bước 1:</b> Bấm <b>⬇️ Tải Tiện Ích v1.2 (.zip)</b> bên dưới và giải nén ra Desktop.<br>" +
-        "<b>Bước 2:</b> Bấm <b>📋 Copy chrome://extensions</b> → mở Tab mới dán vào thanh địa chỉ Chrome → nhấn Enter → bật <b>Chế độ nhà phát triển</b> (góc trên bên phải).<br>" +
-        "<b>Bước 3:</b> Bấm <b>Tải tiện ích đã giải nén</b> (góc trên bên trái) → chọn thư mục <code>mart_ai_extension</code> ngoài Desktop.<br>" +
-        '<span style="color:#15803d;font-weight:600;display:block;margin-top:8px;">✨ Ngay khi chọn xong, tab Muse.ai bạn đang mở sẽ TỰ ĐỘNG nhảy vào Pool không cần bấm thêm nút nào!</span>';
+      "background:#ffffff;border-radius:16px;max-width:1040px;width:100%;max-height:96vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 25px 60px rgba(0,0,0,0.35);font-family:inherit;color:#171717;";
 
     box.innerHTML =
-      '<div style="font-size:16px;font-weight:700;margin-bottom:10px;color:#14532d;">' +
-      titleText +
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 16px;background:#f8fafc;border-bottom:1px solid #e2e8f0;flex-wrap:wrap;">' +
+      '  <div style="display:flex;align-items:center;gap:8px;min-width:220px;">' +
+      '    <span style="width:10px;height:10px;border-radius:50%;background:#16a34a;display:inline-block;"></span>' +
+      '    <strong style="font-size:13.5px;color:#0f172a;">Đăng nhập Muse.ai Trực tiếp (Tự bắt tự động 100%)</strong>' +
+      "  </div>" +
+      '  <input id="remoteLoginUrlBar" type="text" readonly value="Đang khởi tạo phiên trình duyệt..." ' +
+      '    style="flex:1;min-width:200px;height:30px;padding:0 10px;border-radius:8px;border:1px solid #cbd5e1;background:#ffffff;font-size:12px;color:#475569;font-family:monospace;" />' +
+      '  <div style="display:flex;gap:6px;align-items:center;">' +
+      '    <button type="button" id="btnRemoteRestartLogin" class="muse-outline-btn" style="min-height:30px;padding:0 10px;font-size:12px;">🔄 Mở lại đầu trang</button>' +
+      '    <button type="button" id="btnRemoteReload" class="muse-outline-btn" style="min-height:30px;padding:0 10px;font-size:12px;">↻ Tải lại</button>' +
+      '    <button type="button" id="btnRemoteClose" class="muse-outline-btn" style="min-height:30px;padding:0 12px;font-size:12px;border-color:#fca5a5;color:#dc2626;">✕ Đóng</button>' +
+      "  </div>" +
       "</div>" +
-      '<div style="font-size:13.5px;line-height:1.58;color:#334155;margin-bottom:18px;">' +
-      stepText +
+      '<div style="display:flex;align-items:center;gap:8px;padding:9px 16px;background:#f0fdf4;border-bottom:1px solid #dcfce7;flex-wrap:wrap;">' +
+      '  <span style="font-size:12px;color:#166534;font-weight:600;">⚡ Nhập nhanh Email / OTP:</span>' +
+      '  <input id="remoteLoginQuickText" type="text" placeholder="Click vào ô trên màn hình dưới rồi nhấn Ctrl+V — hoặc dán Email / mã OTP 6 số vào đây..." ' +
+      '    style="flex:1;min-width:240px;height:32px;padding:0 10px;border-radius:8px;border:1px solid #86efac;background:#ffffff;font-size:12.5px;color:#171717;" />' +
+      '  <button type="button" id="btnRemoteSendQuickText" class="muse-solid-btn" style="min-height:32px;padding:0 12px;font-size:12px;">⌨️ Điền chữ</button>' +
+      '  <button type="button" id="btnRemoteSendEnter" class="muse-outline-btn" style="min-height:32px;padding:0 11px;font-size:12px;background:#ffffff;">↵ Enter</button>' +
+      '  <button type="button" id="btnRemoteClearField" class="muse-outline-btn" style="min-height:32px;padding:0 10px;font-size:12px;background:#ffffff;">🧹 Xóa ô</button>' +
       "</div>" +
-      '<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">' +
-      '<a href="/api/accounts/extension.zip" class="muse-solid-btn" style="text-decoration:none;display:inline-flex;align-items:center;padding:8px 13px;font-size:13px;">⬇️ 1. Tải Tiện Ích (.zip)</a>' +
-      '<button type="button" id="btnCopyChromeExtLink" class="muse-outline-btn" style="padding:8px 13px;font-size:13px;border-color:#15803d;color:#15803d;font-weight:600;">📋 2. Copy chrome://extensions</button>' +
-      '<button type="button" id="btnCloseCloudExtModal" class="muse-outline-btn" style="padding:8px 13px;font-size:13px;">Đóng</button>' +
+      '<div id="remoteLoginViewportWrap" style="position:relative;background:#0f172a;width:100%;aspect-ratio:1100/680;max-height:calc(96vh - 115px);display:flex;align-items:center;justify-content:center;overflow:hidden;user-select:none;">' +
+      '  <div id="remoteLoginStatusOverlay" style="color:#e2e8f0;font-size:13.5px;text-align:center;padding:20px;line-height:1.6;">' +
+      "    ⏳ Đang mở trang đăng nhập chính thức <b>muse.ai / Meta</b>...<br>" +
+      '    <span style="font-size:12px;color:#94a3b8;">Khi đăng nhập xong, cửa sổ này sẽ tự đóng và đưa thẳng tài khoản vào Pool!</span>' +
+      "  </div>" +
+      '  <img id="remoteLoginScreenImg" alt="Muse.ai Live Login" draggable="false" ' +
+      '    style="display:none;width:100%;height:100%;object-fit:contain;cursor:pointer;" />' +
       "</div>";
 
     overlay.appendChild(box);
     document.body.appendChild(overlay);
 
-    var copyExtBtn = document.getElementById("btnCopyChromeExtLink");
-    if (copyExtBtn) {
-      copyExtBtn.onclick = function () {
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText("chrome://extensions").then(function () {
-            copyExtBtn.textContent = "✅ Đã copy! Mở Tab mới nhấn Ctrl+V";
+    const urlBar = document.getElementById("remoteLoginUrlBar");
+    const statusOverlay = document.getElementById("remoteLoginStatusOverlay");
+    const screenImg = document.getElementById("remoteLoginScreenImg");
+    const viewportWrap = document.getElementById("remoteLoginViewportWrap");
+    const quickInput = document.getElementById("remoteLoginQuickText");
+
+    let sessionId = "";
+    let closed = false;
+    let pollTimer = null;
+    let pollBusy = false;
+    let inputChain = Promise.resolve();
+    let virtualWidth = 1100;
+    let virtualHeight = 680;
+
+    function cleanupModal(shouldCancelBackend) {
+      if (closed) return;
+      closed = true;
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+      window.removeEventListener("keydown", onWindowKeyDown, true);
+      window.removeEventListener("paste", onWindowPaste, true);
+      if (shouldCancelBackend && sessionId) {
+        apiRequest("/api/accounts/remote-login/cancel", {
+          method: "POST",
+          body: { session_id: sessionId },
+        }).catch(function () {});
+      }
+      if (overlay.parentNode) {
+        overlay.remove();
+      }
+      if (btnEl) {
+        btnEl.disabled = false;
+        btnEl.textContent = origBtnText;
+      }
+    }
+
+    async function handleCompletedNode(nodeObj) {
+      cleanupModal(false);
+      const savedLabel = (nodeObj && nodeObj.label) || "tài khoản Muse";
+      showToast("✅ Đã tự động bắt & kích hoạt " + savedLabel + " thành công!");
+      await refreshRouterState(true);
+      renderActiveThreadMessages();
+    }
+
+    function applySnapshot(snap) {
+      if (!snap || closed) return;
+      if (snap.width) virtualWidth = snap.width;
+      if (snap.height) virtualHeight = snap.height;
+      if (snap.url && urlBar) {
+        urlBar.value = snap.url;
+      }
+      if (snap.frame && screenImg) {
+        screenImg.src = snap.frame;
+        screenImg.style.display = "block";
+        if (statusOverlay) statusOverlay.style.display = "none";
+      }
+      if (snap.status === "completed") {
+        handleCompletedNode(snap.node);
+        return;
+      }
+      if (snap.status === "error" || snap.status === "cancelled") {
+        const msg = snap.error || "Phiên đăng nhập đã kết thúc.";
+        showToast("Đăng nhập chưa hoàn tất: " + msg);
+        cleanupModal(false);
+      }
+    }
+
+    function enqueueRemoteInput(payload) {
+      if (!sessionId || closed) return;
+      inputChain = inputChain
+        .then(function () {
+          if (!sessionId || closed) return null;
+          const bodyObj = Object.assign({ session_id: sessionId }, payload);
+          return apiRequest("/api/accounts/remote-login/input", {
+            method: "POST",
+            body: bodyObj,
           });
-        }
+        })
+        .then(function (snap) {
+          if (snap) applySnapshot(snap);
+        })
+        .catch(function () {});
+    }
+
+    function computeImageCoords(clientX, clientY) {
+      if (!screenImg) return { x: 550, y: 340 };
+      const rect = screenImg.getBoundingClientRect();
+      if (!rect.width || !rect.height) return { x: 550, y: 340 };
+      const containerRatio = rect.width / rect.height;
+      const targetRatio = virtualWidth / virtualHeight;
+      let renderW = rect.width;
+      let renderH = rect.height;
+      let offsetX = 0;
+      let offsetY = 0;
+      if (containerRatio > targetRatio) {
+        renderW = rect.height * targetRatio;
+        offsetX = (rect.width - renderW) / 2;
+      } else {
+        renderH = rect.width / targetRatio;
+        offsetY = (rect.height - renderH) / 2;
+      }
+      const relX = Math.max(0, Math.min(renderW, clientX - rect.left - offsetX));
+      const relY = Math.max(0, Math.min(renderH, clientY - rect.top - offsetY));
+      return {
+        x: Math.round((relX / renderW) * virtualWidth),
+        y: Math.round((relY / renderH) * virtualHeight),
       };
     }
 
-    var closeBtn = document.getElementById("btnCloseCloudExtModal");
-    if (closeBtn) {
-      closeBtn.onclick = function () {
-        refreshCloudExtensionBanner();
-        overlay.remove();
+    function showClickRipple(clientX, clientY) {
+      if (!viewportWrap) return;
+      const wRect = viewportWrap.getBoundingClientRect();
+      const dot = document.createElement("span");
+      dot.style.cssText =
+        "position:absolute;width:18px;height:18px;border-radius:50%;border:2px solid #38bdf8;background:rgba(56,189,248,0.28);pointer-events:none;transform:translate(-50%,-50%);transition:opacity 0.35s ease;";
+      dot.style.left = clientX - wRect.left + "px";
+      dot.style.top = clientY - wRect.top + "px";
+      viewportWrap.appendChild(dot);
+      setTimeout(function () {
+        dot.style.opacity = "0";
+      }, 40);
+      setTimeout(function () {
+        if (dot.parentNode) dot.remove();
+      }, 400);
+    }
+
+    if (screenImg) {
+      screenImg.addEventListener("click", function (ev) {
+        if (quickInput && document.activeElement === quickInput) {
+          quickInput.blur();
+        }
+        const pt = computeImageCoords(ev.clientX, ev.clientY);
+        showClickRipple(ev.clientX, ev.clientY);
+        enqueueRemoteInput({ type: "click", x: pt.x, y: pt.y });
+      });
+
+      let lastWheelTs = 0;
+      screenImg.addEventListener(
+        "wheel",
+        function (ev) {
+          ev.preventDefault();
+          const now = Date.now();
+          if (now - lastWheelTs < 110) return;
+          lastWheelTs = now;
+          const pt = computeImageCoords(ev.clientX, ev.clientY);
+          enqueueRemoteInput({
+            type: "scroll",
+            x: pt.x,
+            y: pt.y,
+            delta_x: ev.deltaX || 0,
+            delta_y: ev.deltaY || 0,
+          });
+        },
+        { passive: false }
+      );
+    }
+
+    function isQuickInputFocused() {
+      return !!(quickInput && document.activeElement === quickInput);
+    }
+
+    function onWindowPaste(ev) {
+      if (closed || isQuickInputFocused()) return;
+      const pasted = ev.clipboardData ? ev.clipboardData.getData("text/plain") : "";
+      if (pasted) {
+        ev.preventDefault();
+        enqueueRemoteInput({ type: "text", text: pasted });
+      }
+    }
+
+    function onWindowKeyDown(ev) {
+      if (closed || isQuickInputFocused()) return;
+      if ((ev.ctrlKey || ev.metaKey) && (ev.key === "v" || ev.key === "V")) {
+        return; // Để sự kiện paste xử lý nội dung clipboard
+      }
+      if ((ev.ctrlKey || ev.metaKey) && (ev.key === "a" || ev.key === "A" || ev.key === "Backspace")) {
+        ev.preventDefault();
+        enqueueRemoteInput({ type: "clear" });
+        return;
+      }
+      const specialKeys = [
+        "Enter",
+        "Backspace",
+        "Tab",
+        "Escape",
+        "Delete",
+        "ArrowLeft",
+        "ArrowRight",
+        "ArrowUp",
+        "ArrowDown",
+      ];
+      if (specialKeys.indexOf(ev.key) >= 0) {
+        ev.preventDefault();
+        enqueueRemoteInput({ type: "key", key: ev.key });
+        return;
+      }
+      if (ev.key && ev.key.length === 1 && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+        ev.preventDefault();
+        enqueueRemoteInput({ type: "text", text: ev.key });
+      }
+    }
+
+    window.addEventListener("paste", onWindowPaste, true);
+    window.addEventListener("keydown", onWindowKeyDown, true);
+
+    const btnClose = document.getElementById("btnRemoteClose");
+    if (btnClose) {
+      btnClose.onclick = function () {
+        cleanupModal(true);
       };
     }
-    overlay.addEventListener("click", function (ev) {
-      if (ev.target === overlay) overlay.remove();
-    });
+    const btnReload = document.getElementById("btnRemoteReload");
+    if (btnReload) {
+      btnReload.onclick = function () {
+        enqueueRemoteInput({ type: "reload" });
+      };
+    }
+    const btnRestartLogin = document.getElementById("btnRemoteRestartLogin");
+    if (btnRestartLogin) {
+      btnRestartLogin.onclick = function () {
+        enqueueRemoteInput({ type: "restart_login" });
+      };
+    }
+    const btnSendQuick = document.getElementById("btnRemoteSendQuickText");
+    function flushQuickText(alsoPressEnter) {
+      if (!quickInput) return;
+      const val = quickInput.value;
+      if (val) {
+        enqueueRemoteInput({ type: "text", text: val });
+        quickInput.value = "";
+      }
+      if (alsoPressEnter) {
+        enqueueRemoteInput({ type: "key", key: "Enter" });
+      }
+      quickInput.blur();
+    }
+    if (btnSendQuick) {
+      btnSendQuick.onclick = function () {
+        flushQuickText(false);
+      };
+    }
+    if (quickInput) {
+      quickInput.addEventListener("keydown", function (ev) {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          flushQuickText(true);
+        }
+      });
+    }
+    const btnSendEnter = document.getElementById("btnRemoteSendEnter");
+    if (btnSendEnter) {
+      btnSendEnter.onclick = function () {
+        enqueueRemoteInput({ type: "key", key: "Enter" });
+      };
+    }
+    const btnClear = document.getElementById("btnRemoteClearField");
+    if (btnClear) {
+      btnClear.onclick = function () {
+        enqueueRemoteInput({ type: "clear" });
+      };
+    }
+
+    try {
+      const startRes = await apiRequest("/api/accounts/remote-login/start", {
+        method: "POST",
+        body: {
+          label: labelVal,
+          proxy_url: proxyVal,
+        },
+      });
+      if (closed) {
+        if (startRes && startRes.session_id) {
+          apiRequest("/api/accounts/remote-login/cancel", {
+            method: "POST",
+            body: { session_id: startRes.session_id },
+          }).catch(function () {});
+        }
+        return;
+      }
+      sessionId = startRes.session_id || "";
+      if (startRes.width) virtualWidth = startRes.width;
+      if (startRes.height) virtualHeight = startRes.height;
+
+      pollTimer = setInterval(async function () {
+        if (closed || !sessionId || pollBusy) return;
+        pollBusy = true;
+        try {
+          const snap = await apiRequest(
+            "/api/accounts/remote-login/state?session_id=" + encodeURIComponent(sessionId)
+          );
+          applySnapshot(snap);
+        } catch (pollErr) {
+          // Bỏ qua lỗi mạng thoáng qua khi đang stream
+        } finally {
+          pollBusy = false;
+        }
+      }, 600);
+    } catch (startErr) {
+      showToast("Không thể mở cửa sổ đăng nhập trực tiếp: " + startErr.message);
+      cleanupModal(false);
+    }
   }
 
   async function executeBrowserRelayIfNeeded(res, onProgress) {
@@ -1841,7 +2091,7 @@
           turn_id: res.turn_id || "",
           node_id: res.node_id || "",
           model: res.model || "",
-          error: "EXT_REQUIRED",
+          error: "SERVER_BROWSER_UNAVAILABLE",
         },
       }).catch(function () {
         return null;
@@ -1852,12 +2102,8 @@
         renderSideNodesList();
         renderAccountsTable();
       }
-      const outdated = !!(ping && ping.ok && !ping.supportsChatRelay);
-      showCloudExtensionRequiredModal(outdated);
       throw new Error(
-        outdated
-          ? "Hãy cập nhật Tiện ích Chrome Mart AI lên bản v1.1 rồi bấm gửi lại!"
-          : "Hãy cài Tiện ích Chrome Mart AI (v1.1) để chat trực tiếp trên Cloud!"
+        "Trình duyệt ngầm trên máy chủ đang khởi tạo — vui lòng đợi vài giây rồi gửi lại tin nhắn."
       );
     }
 
@@ -1908,65 +2154,9 @@
     });
   }
 
-  async function runExtensionCaptureFlow(btnEl, onlyExisting) {
-    const origText = btnEl ? btnEl.textContent : "";
-    if (btnEl) {
-      btnEl.disabled = true;
-      btnEl.textContent = onlyExisting
-        ? "⏳ Đang tự động bắt phiên Muse..."
-        : "⏳ Đang đợi bạn đăng nhập Muse.ai...";
-    }
-    try {
-      const curNodes = (state.summary && state.summary.nodes) || [];
-      const hasAccounts = Array.isArray(curNodes) && curNodes.length > 0;
-      const resp = await sendExtensionMessage(
-        onlyExisting
-          ? { action: "capture_existing" }
-          : {
-              action: "login_and_capture",
-              loginUrl: "https://muse.ai/api/oidc/start?return_to=%2F",
-              clearExistingSession: hasAccounts,
-              requireNewSess: hasAccounts,
-            }
-      );
-      if (!resp || !resp.ok || !resp.cookie) {
-        showToast("Tự động bắt chưa hoàn tất: " + ((resp && resp.error) || "Không nhận được cookie."));
-        return;
-      }
-      const labelEl = document.getElementById("accLabelInput");
-      const proxyEl = document.getElementById("accProxyInput") || document.getElementById("quickProxyInput");
-      await submitCookieCredential(
-        labelEl ? labelEl.value.trim() : "",
-        "cookie",
-        "https://muse.ai",
-        resp.cookie,
-        btnEl,
-        proxyEl ? proxyEl.value.trim() : ""
-      );
-      await refreshCloudExtensionBanner();
-    } finally {
-      if (btnEl) {
-        btnEl.disabled = false;
-        btnEl.textContent = origText;
-      }
-    }
-  }
-
   async function triggerInteractiveBrowserLogin(btnEl, sessionIdOverride, proxyUrlOverride) {
     if (!isLocalHost()) {
-      const extReady = await refreshCloudExtensionBanner();
-      if (extReady) {
-        const ping = await sendExtensionMessage({ action: "ping_with_cookie" });
-        const curNodes = (state.summary && state.summary.nodes) || [];
-        const hasAccounts = Array.isArray(curNodes) && curNodes.length > 0;
-        if (ping && ping.hasExistingSession && !hasAccounts) {
-          await runExtensionCaptureFlow(btnEl, true);
-        } else {
-          await runExtensionCaptureFlow(btnEl, false);
-        }
-        return;
-      }
-      showCloudExtensionRequiredModal(false);
+      await openRemoteBrowserLoginModal(btnEl, proxyUrlOverride);
       return;
     }
     const origText = btnEl ? btnEl.textContent : "";
@@ -1974,7 +2164,6 @@
       btnEl.disabled = true;
       btnEl.textContent = "⏳ Đang đợi đăng nhập trên cửa sổ Muse.ai...";
     }
-    showToast("Đã mở cửa sổ tới Link Đăng Nhập OAuth của Muse.ai — Hãy đăng nhập tài khoản của bạn!");
     try {
       const labelEl = document.getElementById("accLabelInput");
       const proxyEl = document.getElementById("accProxyInput") || document.getElementById("quickProxyInput");
@@ -1997,9 +2186,18 @@
       await refreshRouterState();
       renderActiveThreadMessages();
     } catch (err) {
+      if (btnEl) {
+        btnEl.disabled = false;
+        btnEl.textContent = origText;
+      }
+      // Nếu trên máy cục bộ chưa bật Python Bridge thì tự động mở Cửa sổ Đăng nhập Trực tiếp của Go CDP
+      if (err && /AI Bridge|18089|connection refused|connectex/i.test(err.message || "")) {
+        await openRemoteBrowserLoginModal(btnEl, proxyUrlOverride);
+        return;
+      }
       showToast("Đăng nhập trình duyệt chưa hoàn tất: " + err.message);
     } finally {
-      if (btnEl) {
+      if (btnEl && !document.getElementById("martRemoteLoginModal")) {
         btnEl.disabled = false;
         btnEl.textContent = origText;
       }
@@ -2241,19 +2439,7 @@
     const btnExtAutoLoginNew = document.getElementById("btnExtAutoLoginNew");
     if (btnExtAutoLoginNew) {
       btnExtAutoLoginNew.addEventListener("click", async function () {
-        const extReady = await refreshCloudExtensionBanner();
-        if (extReady) {
-          await runExtensionCaptureFlow(btnExtAutoLoginNew, false);
-        } else {
-          await triggerInteractiveBrowserLogin(btnExtAutoLoginNew);
-        }
-      });
-    }
-
-    const btnCaptureExistingMuse = document.getElementById("btnCaptureExistingMuse");
-    if (btnCaptureExistingMuse) {
-      btnCaptureExistingMuse.addEventListener("click", async function () {
-        await runExtensionCaptureFlow(btnCaptureExistingMuse, true);
+        await openRemoteBrowserLoginModal(btnExtAutoLoginNew);
       });
     }
 

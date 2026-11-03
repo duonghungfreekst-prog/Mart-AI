@@ -127,6 +127,7 @@ type MuseRouterPool struct {
 	aiBridgeURL   string
 	aiBridgeToken string
 	httpClient    *http.Client
+	cdpManager    *CDPBrowserManager
 	shutdownCh    chan struct{}
 }
 
@@ -170,6 +171,7 @@ func NewMuseRouterPool(
 		shutdownCh: make(chan struct{}),
 	}
 
+	pool.cdpManager = NewCDPBrowserManager(dataDir, pool)
 	for i := 0; i < MaxWorkerGoroutines; i++ {
 		go pool.workerLoop()
 	}
@@ -283,6 +285,9 @@ func (p *MuseRouterPool) AutoSyncIdleNodes() {
 
 func (p *MuseRouterPool) Shutdown() {
 	close(p.shutdownCh)
+	if p.cdpManager != nil {
+		p.cdpManager.Shutdown()
+	}
 	if p.libsqlStore != nil {
 		_ = p.libsqlStore.Close()
 	}
@@ -1489,7 +1494,7 @@ func (p *MuseRouterPool) RouteAndExecuteChat(
 			cancel()
 			errMsg := fmt.Sprintf("Không kết nối được dịch vụ AI Bridge trên %s: %v", candidate.Label, errDo)
 			upClean := strings.TrimRight(strings.ToLower(strings.TrimSpace(candidate.UpstreamURL)), "/")
-			if candidate.AuthType == "api_key" || (upClean != "" && !strings.HasSuffix(upClean, "muse.ai")) {
+			if candidate.AuthType == "api_key" || (!candidate.HasHatchSess && upClean != "" && !strings.HasSuffix(upClean, "muse.ai")) {
 				directCtx, directCancel := context.WithTimeout(parentCtx, 45*time.Second)
 				replyDirect, tokDirect, errDirect := p.executeOpenAICompatibleDirect(directCtx, candidate, model, messagesPayload)
 				directCancel()
@@ -1499,6 +1504,19 @@ func (p *MuseRouterPool) RouteAndExecuteChat(
 				}
 				errMsg = errDirect.Error()
 			} else if candidate.HasHatchSess {
+				if p.cdpManager != nil && p.cdpManager.HasBrowserAvailable() {
+					replyCDP, tokCDP, latCDP, errCDP := p.cdpManager.ExecuteMuseChat(parentCtx, candidate, userPrompt)
+					if errCDP == nil {
+						return p.CompleteBrowserRelayTurn(resolvedThreadID, turnID, candidate.ID, model, replyCDP, tokCDP, latCDP, "")
+					}
+					LogWarn("CDP server-side chat error on %s: %v", candidate.Label, errCDP)
+					p.unmarkNodeRunningKeepReady(candidate.ID)
+					lastErr = errCDP
+					if !p.autoFailover {
+						break
+					}
+					continue
+				}
 				return p.prepareBrowserRelayResponse(candidate, resolvedThreadID, turnID, model, userPrompt)
 			}
 			p.releaseNode(candidate.ID, 0, 0, false, errMsg)

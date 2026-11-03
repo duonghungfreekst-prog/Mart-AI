@@ -3,6 +3,7 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -190,8 +191,12 @@ func TestCloudBrowserRelayFlowAndNodeHealth(t *testing.T) {
 		t.Fatalf("NewServerApp failed: %v", err)
 	}
 	defer app.pool.Shutdown()
-	// Trỏ AI Bridge tới cổng đóng để mô phỏng môi trường Render Cloud không có Python Playwright
+	// Trỏ AI Bridge tới cổng đóng và tắt cdpManager để kiểm thử riêng nhánh dự phòng browser_relay
 	app.pool.aiBridgeURL = "http://127.0.0.1:1"
+	if app.pool.cdpManager != nil {
+		app.pool.cdpManager.Shutdown()
+		app.pool.cdpManager = nil
+	}
 
 	encCred, err := app.pool.rustBridge.EncryptSecret("hatch_sess=TEST_SESS_VALUE; datr=abc")
 	if err != nil {
@@ -288,5 +293,108 @@ func TestCloudBrowserRelayFlowAndNodeHealth(t *testing.T) {
 	sumFinal := app.pool.GetSummary()
 	if sumFinal.ReadyNodes != 1 || sumFinal.TotalRequests != 1 || sumFinal.TotalTokensUsed != 28 {
 		t.Fatalf("Muse #1 must stay ready with updated telemetry after completion, got %+v", sumFinal)
+	}
+}
+
+func TestCDPBrowserEngineLocalEndToEnd(t *testing.T) {
+	if bin, _ := findChromeBinary(); bin == "" {
+		t.Skip("Skipping CDP live test: no Chrome/Edge binary found on host")
+	}
+
+	fakeMuse := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if r.URL.Path == "/login" {
+			_, _ = w.Write([]byte(`<!doctype html><html><body style="margin:0;padding:40px;font-family:sans-serif;">
+				<input id="emailBox" type="text" style="width:300px;height:40px;" />
+				<script>document.getElementById('emailBox').focus();</script>
+			</body></html>`))
+			return
+		}
+		_, _ = w.Write([]byte(`<!doctype html><html><body>
+			<div id="messages"><div class="prose"><p>Xin chào ban đầu</p></div></div>
+			<textarea id="composer" aria-label="Message"></textarea>
+			<script>
+				var comp = document.getElementById('composer');
+				comp.addEventListener('keydown', function(ev) {
+					if (ev.key === 'Enter') {
+						ev.preventDefault();
+						var val = comp.value;
+						comp.value = '';
+						var d = document.createElement('div');
+						d.className = 'prose';
+						d.innerHTML = '<p>Phản hồi CDP cho: <strong>' + val + '</strong></p>';
+						document.getElementById('messages').appendChild(d);
+					}
+				});
+			</script>
+		</body></html>`))
+	}))
+	defer fakeMuse.Close()
+
+	tempDir := filepath.Join(".", "test_cdp_live_engine")
+	t.Cleanup(func() { _ = os.RemoveAll(tempDir) })
+
+	app, err := NewServerApp(tempDir)
+	if err != nil {
+		t.Fatalf("NewServerApp failed: %v", err)
+	}
+	defer app.pool.Shutdown()
+	app.pool.aiBridgeURL = "http://127.0.0.1:1"
+
+	// 1) Kiểm thử Cửa sổ Đăng nhập Trực tiếp (chụp JPEG + gửi phím chữ)
+	sess, err := app.pool.cdpManager.StartRemoteLoginSession(context.Background(), "Muse Test", "", fakeMuse.URL+"/login")
+	if err != nil {
+		t.Fatalf("StartRemoteLoginSession failed: %v", err)
+	}
+	snap, err := app.pool.cdpManager.SendRemoteLoginInput(context.Background(), RemoteLoginInputReq{
+		SessionID: sess.ID,
+		Type:      "text",
+		Text:      "test@example.com",
+	})
+	if err != nil {
+		t.Fatalf("SendRemoteLoginInput failed: %v", err)
+	}
+	frameStr, _ := snap["frame"].(string)
+	if !strings.HasPrefix(frameStr, "data:image/jpeg;base64,") {
+		t.Fatalf("expected live JPEG frame from CDP, got prefix: %.32q", frameStr)
+	}
+	app.pool.cdpManager.CancelRemoteLoginSession(sess.ID)
+
+	// 2) Kiểm thử Chat thật phía Server qua CDP (không cần Python Bridge, không cần Extension)
+	encCred, err := app.pool.rustBridge.EncryptSecret("hatch_sess=CDP_TEST_SESS")
+	if err != nil {
+		t.Fatalf("EncryptSecret failed: %v", err)
+	}
+	fp := app.pool.rustBridge.ComputeFingerprint("hatch_sess=CDP_TEST_SESS")
+	app.pool.mu.Lock()
+	app.pool.nodes = append(app.pool.nodes, &MuseAccountNode{
+		ID:                  "node_cdp_chat_1",
+		Label:               "Muse #1",
+		PlanTier:            "Muse.ai",
+		AuthType:            "cookie",
+		UpstreamURL:         fakeMuse.URL,
+		EncryptedCredential: encCred,
+		Fingerprint:         fp,
+		HasHatchSess:        true,
+		Status:              "ready",
+	})
+	normalizeAccountIndices(app.pool.nodes)
+	app.pool.mu.Unlock()
+
+	handler := app.Routes()
+	sendReq := httptest.NewRequest(http.MethodPost, "/api/chat/send", strings.NewReader(`{"prompt":"Chào Mart AI"}`))
+	sendReq.Header.Set("Content-Type", "application/json")
+	sendRec := httptest.NewRecorder()
+	handler.ServeHTTP(sendRec, sendReq)
+	if sendRec.Code != http.StatusOK {
+		t.Fatalf("POST /api/chat/send via server CDP failed (%d): %s", sendRec.Code, sendRec.Body.String())
+	}
+	var chatRes map[string]interface{}
+	if err := json.Unmarshal(sendRec.Body.Bytes(), &chatRes); err != nil {
+		t.Fatalf("unmarshal chatRes: %v", err)
+	}
+	replyStr, _ := chatRes["reply"].(string)
+	if !strings.Contains(replyStr, "Phản hồi CDP cho: **Chào Mart AI**") {
+		t.Fatalf("unexpected CDP chat reply: %q (full=%+v)", replyStr, chatRes)
 	}
 }
