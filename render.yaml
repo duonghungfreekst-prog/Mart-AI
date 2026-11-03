@@ -4,7 +4,7 @@ services:
     runtime: go
     plan: free
     buildCommand: bash build.sh
-    startCommand: ./muse_router_srv
+    startCommand: ./app
     envVars:
       - key: CGO_ENABLED
         value: "0"
