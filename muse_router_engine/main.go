@@ -58,6 +58,7 @@ func NewServerApp(dataDir string) (*ServerApp, error) {
 	if err != nil {
 		return nil, err
 	}
+	jwtMgr.SyncWithSQLStore(pool.GetLibSQLStore(), masterKey)
 
 	app := &ServerApp{
 		pool:       pool,

@@ -464,7 +464,7 @@ func (p *MuseRouterPool) loadVault() error {
 		if err == nil {
 			normalizeAccountIndices(loaded)
 			p.nodes = loaded
-			LogInfo("Loaded %d Muse accounts directly from embedded libSQL (%s)", len(p.nodes), p.libsqlStore.dbURL)
+			LogInfo("Loaded %d Muse accounts directly from SQL40 (%s)", len(p.nodes), maskDatabaseURL(p.libsqlStore.dbURL))
 			_ = p.syncBackupJSONLocked()
 			return nil
 		}

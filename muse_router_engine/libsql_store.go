@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -16,15 +17,17 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// LibSQLStore quản lý kết nối trực tiếp tới cơ sở dữ liệu chuẩn libSQL
-// (hỗ trợ cả chế độ nhúng trực tiếp file:... WAL lẫn máy chủ từ xa libsql://, http://, ws://).
+// LibSQLStore quản lý kết nối trực tiếp tới cơ sở dữ liệu chuẩn SQL40 / MySQL / libSQL
+// (hỗ trợ cả MySQL 8.0 TLS Aiven Cloud mysql://..., nhúng trực tiếp file:... WAL lẫn libsql://).
 type LibSQLStore struct {
 	mu        sync.RWMutex
 	db        *sql.DB
+	dataDir   string
 	dbURL     string
 	dbFile    string
 	authToken string
 	isRemote  bool
+	isMySQL   bool
 }
 
 // LibSQLTableStat thống kê số bản ghi thực tế của từng bảng trong libSQL.
@@ -136,7 +139,93 @@ func normalizeFileLibSQLURL(dataDir string) (string, string, error) {
 	return "file:" + slashPath, dbFilePath, nil
 }
 
-// NewLibSQLStore khởi tạo kết nối chuẩn libsql (github.com/tursodatabase/libsql-client-go/libsql).
+func cloudSQLMasterKey() string {
+	if k := strings.TrimSpace(os.Getenv("MUSE_VAULT_MASTER_KEY")); k != "" {
+		return k
+	}
+	return "MUSE_ROUTER_SQL40_CLOUD_VAULT_KEY_2026_AES256CTR"
+}
+
+func maskDatabaseURL(rawURL string) string {
+	trimmed := strings.TrimSpace(rawURL)
+	if !strings.HasPrefix(strings.ToLower(trimmed), "mysql://") {
+		return trimmed
+	}
+	cfg, err := parseMySQLConnectionURL(trimmed)
+	if err != nil {
+		return "mysql://***"
+	}
+	return fmt.Sprintf("mysql://%s:***@%s:%s/%s?ssl-mode=REQUIRED", cfg.User, cfg.Host, cfg.Port, cfg.Database)
+}
+
+func isProductionDataDir(dataDir string) bool {
+	abs, err := filepath.Abs(dataDir)
+	if err != nil {
+		return false
+	}
+	lower := strings.ToLower(filepath.ToSlash(abs))
+	// Không tự động nạp cấu hình Cloud trong thư mục tạm của go test
+	if strings.Contains(lower, "/temp/") || strings.Contains(lower, "/tmp/") || strings.Contains(lower, "test_") {
+		return false
+	}
+	return true
+}
+
+// SaveEncryptedCloudSQLConfig mã hóa chuỗi kết nối SQL bằng chuẩn AES-256-CTR + HMAC-SHA256 trước khi ghi xuống đĩa (PHAN 3).
+func SaveEncryptedCloudSQLConfig(dataDir string, rawURL string) error {
+	trimmed := strings.TrimSpace(rawURL)
+	if trimmed == "" {
+		return errors.New("empty sql url")
+	}
+	enc, err := encryptSecretNative(trimmed, cloudSQLMasterKey())
+	if err != nil {
+		return err
+	}
+	_ = os.MkdirAll(dataDir, 0750)
+	targetFile := filepath.Join(dataDir, "sql40_cloud.enc")
+	if err := os.WriteFile(targetFile, []byte(enc), 0600); err != nil {
+		return err
+	}
+	// Đồng thời lưu bản mã hóa tại thư mục engine nếu đang ở môi trường dự án để Render Cloud tự động nhận diện
+	if isProductionDataDir(dataDir) {
+		engineEncPath := filepath.Join(filepath.Dir(dataDir), "muse_router_engine", "sql40_cloud.enc")
+		if _, stErr := os.Stat(filepath.Dir(engineEncPath)); stErr == nil {
+			_ = os.WriteFile(engineEncPath, []byte(enc), 0600)
+		}
+	}
+	return nil
+}
+
+// LoadEncryptedCloudSQLConfig giải mã cấu hình SQL Cloud từ tệp AES-256-CTR + HMAC-SHA256.
+func LoadEncryptedCloudSQLConfig(dataDir string) string {
+	candidates := []string{
+		filepath.Join(dataDir, "sql40_cloud.enc"),
+	}
+	if isProductionDataDir(dataDir) {
+		candidates = append(candidates,
+			filepath.Join("sql40_cloud.enc"),
+			filepath.Join("muse_router_engine", "sql40_cloud.enc"),
+			filepath.Join(filepath.Dir(dataDir), "muse_router_engine", "sql40_cloud.enc"),
+		)
+	}
+	for _, p := range candidates {
+		rawBytes, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		cipherText := strings.TrimSpace(string(rawBytes))
+		if cipherText == "" {
+			continue
+		}
+		plain, err := decryptSecretNative(cipherText, cloudSQLMasterKey())
+		if err == nil && strings.TrimSpace(plain) != "" {
+			return strings.TrimSpace(plain)
+		}
+	}
+	return ""
+}
+
+// NewLibSQLStore khởi tạo kết nối chuẩn SQL40 (MySQL 8.0 TLS Aiven Cloud / SQLite WAL).
 func NewLibSQLStore(dataDir string, customURL string, authToken string) (*LibSQLStore, error) {
 	defaultURL, dbFile, err := normalizeFileLibSQLURL(dataDir)
 	if err != nil {
@@ -145,7 +234,15 @@ func NewLibSQLStore(dataDir string, customURL string, authToken string) (*LibSQL
 
 	targetURL := strings.TrimSpace(customURL)
 	if targetURL == "" {
-		targetURL = strings.TrimSpace(os.Getenv("MUSE_LIBSQL_URL"))
+		targetURL = nonEmptyStr(
+			os.Getenv("MUSE_MYSQL_URL"),
+			os.Getenv("DATABASE_URL"),
+			os.Getenv("MUSE_SQL_URL"),
+			os.Getenv("MUSE_LIBSQL_URL"),
+		)
+	}
+	if targetURL == "" {
+		targetURL = LoadEncryptedCloudSQLConfig(dataDir)
 	}
 	if targetURL == "" {
 		targetURL = defaultURL
@@ -155,10 +252,18 @@ func NewLibSQLStore(dataDir string, customURL string, authToken string) (*LibSQL
 	}
 
 	store := &LibSQLStore{
-		dbFile: dbFile,
+		dataDir: dataDir,
+		dbFile:  dbFile,
 	}
 	if err := store.connectInternal(targetURL, authToken); err != nil {
-		return nil, err
+		if targetURL != defaultURL {
+			LogWarn("Cloud SQL (%s) connect failed (%v), falling back to local SQL40 WAL", maskDatabaseURL(targetURL), err)
+			if errFallback := store.connectInternal(defaultURL, ""); errFallback != nil {
+				return nil, errFallback
+			}
+		} else {
+			return nil, err
+		}
 	}
 	if err := store.initSchema(); err != nil {
 		_ = store.Close()
@@ -171,16 +276,24 @@ func (s *LibSQLStore) connectInternal(targetURL string, authToken string) error 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	isRemote := strings.HasPrefix(targetURL, "libsql://") ||
-		strings.HasPrefix(targetURL, "http://") ||
-		strings.HasPrefix(targetURL, "https://") ||
-		strings.HasPrefix(targetURL, "ws://") ||
-		strings.HasPrefix(targetURL, "wss://")
+	lowerURL := strings.ToLower(strings.TrimSpace(targetURL))
+	isMySQL := strings.HasPrefix(lowerURL, "mysql://")
+	isRemote := isMySQL ||
+		strings.HasPrefix(lowerURL, "libsql://") ||
+		strings.HasPrefix(lowerURL, "http://") ||
+		strings.HasPrefix(lowerURL, "https://") ||
+		strings.HasPrefix(lowerURL, "ws://") ||
+		strings.HasPrefix(lowerURL, "wss://")
 
 	var db *sql.DB
 	var err error
 
-	if isRemote && authToken != "" {
+	if isMySQL {
+		db, err = sql.Open("mysql", targetURL)
+		if err != nil {
+			return fmt.Errorf("sql.Open(mysql) error: %w", err)
+		}
+	} else if isRemote && authToken != "" {
 		connector, connErr := libsql.NewConnector(targetURL, libsql.WithAuthToken(authToken))
 		if connErr != nil {
 			return fmt.Errorf("libsql NewConnector error: %w", connErr)
@@ -203,9 +316,9 @@ func (s *LibSQLStore) connectInternal(targetURL string, authToken string) error 
 
 	db.SetMaxOpenConns(8)
 	db.SetMaxIdleConns(4)
-	db.SetConnMaxLifetime(30 * time.Minute)
+	db.SetConnMaxLifetime(15 * time.Minute)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	if !isRemote {
@@ -220,13 +333,14 @@ func (s *LibSQLStore) connectInternal(targetURL string, authToken string) error 
 		for _, p := range pragmas {
 			if _, err := db.ExecContext(ctx, p); err != nil {
 				_ = db.Close()
-				return fmt.Errorf("libsql pragma error (%s): %w", p, err)
+				return fmt.Errorf("sql40 pragma error (%s): %w", p, err)
 			}
 		}
 	} else {
-		if err := db.PingContext(ctx); err != nil {
+		var one int
+		if err := db.QueryRowContext(ctx, "SELECT 1").Scan(&one); err != nil {
 			_ = db.Close()
-			return fmt.Errorf("libsql remote ping error: %w", err)
+			return fmt.Errorf("remote sql ping error: %w", err)
 		}
 	}
 
@@ -237,6 +351,7 @@ func (s *LibSQLStore) connectInternal(targetURL string, authToken string) error 
 	s.dbURL = targetURL
 	s.authToken = authToken
 	s.isRemote = isRemote
+	s.isMySQL = isMySQL
 	return nil
 }
 
@@ -248,7 +363,13 @@ func (s *LibSQLStore) Reconfigure(newURL string, newAuthToken string) error {
 	if err := s.connectInternal(newURL, strings.TrimSpace(newAuthToken)); err != nil {
 		return err
 	}
-	return s.initSchema()
+	if err := s.initSchema(); err != nil {
+		return err
+	}
+	if strings.HasPrefix(strings.ToLower(newURL), "mysql://") && s.dataDir != "" {
+		_ = SaveEncryptedCloudSQLConfig(s.dataDir, newURL)
+	}
+	return nil
 }
 
 func (s *LibSQLStore) Close() error {
@@ -265,13 +386,143 @@ func (s *LibSQLStore) Close() error {
 func (s *LibSQLStore) initSchema() error {
 	s.mu.RLock()
 	db := s.db
+	isMySQL := s.isMySQL
 	s.mu.RUnlock()
 	if db == nil {
-		return errors.New("libsql database is not initialized")
+		return errors.New("sql database is not initialized")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
+
+	if isMySQL {
+		mysqlDDLs := []string{
+			`CREATE TABLE IF NOT EXISTS muse_accounts (
+				id VARCHAR(191) PRIMARY KEY,
+				node_index BIGINT NOT NULL DEFAULT 1,
+				label VARCHAR(255) NOT NULL DEFAULT '',
+				plan_tier VARCHAR(128) NOT NULL DEFAULT 'Muse.ai',
+				auth_type VARCHAR(64) NOT NULL DEFAULT 'cookie',
+				upstream_url VARCHAR(512) NOT NULL DEFAULT 'https://muse.ai',
+				proxy_url VARCHAR(512) NOT NULL DEFAULT '',
+				device_profile VARCHAR(512) NOT NULL DEFAULT '',
+				encrypted_credential LONGTEXT NOT NULL,
+				fingerprint VARCHAR(128) NOT NULL DEFAULT '',
+				has_hatch_sess INT NOT NULL DEFAULT 0,
+				has_hatch_gw INT NOT NULL DEFAULT 0,
+				status VARCHAR(64) NOT NULL DEFAULT 'unavailable',
+				active_requests BIGINT NOT NULL DEFAULT 0,
+				tokens_remaining BIGINT NOT NULL DEFAULT 0,
+				tokens_quota BIGINT NOT NULL DEFAULT 0,
+				tokens_used BIGINT NOT NULL DEFAULT 0,
+				total_requests BIGINT NOT NULL DEFAULT 0,
+				fail_count BIGINT NOT NULL DEFAULT 0,
+				latency_ms BIGINT NOT NULL DEFAULT 0,
+				last_used_at VARCHAR(64) NOT NULL DEFAULT '',
+				status_detail VARCHAR(1024) NOT NULL DEFAULT '',
+				updated_at VARCHAR(64) NOT NULL DEFAULT '',
+				INDEX idx_muse_accounts_status (status)
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`,
+			`CREATE TABLE IF NOT EXISTS mart_users (
+				id VARCHAR(191) PRIMARY KEY,
+				username VARCHAR(191) NOT NULL UNIQUE,
+				display_name VARCHAR(255) NOT NULL DEFAULT '',
+				password_hash VARCHAR(512) NOT NULL,
+				role VARCHAR(64) NOT NULL DEFAULT 'user',
+				is_disabled INT NOT NULL DEFAULT 0,
+				created_at VARCHAR(64) NOT NULL DEFAULT '',
+				last_login_at VARCHAR(64) NOT NULL DEFAULT '',
+				INDEX idx_mart_users_username (username)
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`,
+			`CREATE TABLE IF NOT EXISTS chat_threads (
+				id VARCHAR(191) PRIMARY KEY,
+				owner_id VARCHAR(191) NOT NULL DEFAULT '',
+				title VARCHAR(512) NOT NULL DEFAULT '',
+				model VARCHAR(128) NOT NULL DEFAULT '',
+				workspace VARCHAR(64) NOT NULL DEFAULT 'chat',
+				created_at VARCHAR(64) NOT NULL DEFAULT '',
+				updated_at VARCHAR(64) NOT NULL DEFAULT '',
+				INDEX idx_chat_threads_updated (updated_at),
+				INDEX idx_chat_threads_owner_updated (owner_id, updated_at)
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`,
+			`CREATE TABLE IF NOT EXISTS chat_messages (
+				id VARCHAR(191) PRIMARY KEY,
+				thread_id VARCHAR(191) NOT NULL,
+				seq_num INT NOT NULL DEFAULT 0,
+				role VARCHAR(64) NOT NULL DEFAULT '',
+				content LONGTEXT NOT NULL,
+				attachments_json LONGTEXT NOT NULL,
+				node_label VARCHAR(255) NOT NULL DEFAULT '',
+				model VARCHAR(128) NOT NULL DEFAULT '',
+				latency_ms BIGINT NOT NULL DEFAULT 0,
+				tokens BIGINT NOT NULL DEFAULT 0,
+				timestamp VARCHAR(64) NOT NULL DEFAULT '',
+				INDEX idx_chat_messages_thread_seq (thread_id, seq_num)
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`,
+			`CREATE TABLE IF NOT EXISTS oauth_sessions (
+				session_id VARCHAR(191) PRIMARY KEY,
+				login_url VARCHAR(2048) NOT NULL DEFAULT '',
+				state VARCHAR(255) NOT NULL DEFAULT '',
+				app_id VARCHAR(191) NOT NULL DEFAULT '',
+				redirect_uri VARCHAR(1024) NOT NULL DEFAULT '',
+				cookies_json LONGTEXT NOT NULL,
+				created_at BIGINT NOT NULL DEFAULT 0
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`,
+			`CREATE TABLE IF NOT EXISTS routing_telemetry (
+				id BIGINT PRIMARY KEY AUTO_INCREMENT,
+				thread_id VARCHAR(191) NOT NULL DEFAULT '',
+				node_id VARCHAR(191) NOT NULL DEFAULT '',
+				node_label VARCHAR(255) NOT NULL DEFAULT '',
+				model VARCHAR(128) NOT NULL DEFAULT '',
+				latency_ms BIGINT NOT NULL DEFAULT 0,
+				tokens_used BIGINT NOT NULL DEFAULT 0,
+				status VARCHAR(128) NOT NULL DEFAULT 'ok',
+				created_at VARCHAR(64) NOT NULL DEFAULT '',
+				INDEX idx_routing_telemetry_created (created_at)
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`,
+			`CREATE TABLE IF NOT EXISTS muse_documents (
+				id VARCHAR(191) PRIMARY KEY,
+				owner_id VARCHAR(191) NOT NULL DEFAULT '',
+				title VARCHAR(512) NOT NULL DEFAULT '',
+				content LONGTEXT NOT NULL,
+				source_thread_id VARCHAR(191) NOT NULL DEFAULT '',
+				updated_at VARCHAR(64) NOT NULL DEFAULT '',
+				INDEX idx_muse_documents_updated (updated_at),
+				INDEX idx_muse_documents_owner_updated (owner_id, updated_at)
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`,
+			`CREATE TABLE IF NOT EXISTS muse_memories (
+				id VARCHAR(191) PRIMARY KEY,
+				owner_id VARCHAR(191) NOT NULL DEFAULT '',
+				title VARCHAR(512) NOT NULL DEFAULT '',
+				content LONGTEXT NOT NULL,
+				is_active INT NOT NULL DEFAULT 1,
+				created_at VARCHAR(64) NOT NULL DEFAULT '',
+				INDEX idx_muse_memories_owner (owner_id)
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`,
+			`CREATE TABLE IF NOT EXISTS muse_tasks (
+				id VARCHAR(191) PRIMARY KEY,
+				owner_id VARCHAR(191) NOT NULL DEFAULT '',
+				title VARCHAR(512) NOT NULL DEFAULT '',
+				prompt LONGTEXT NOT NULL,
+				status VARCHAR(64) NOT NULL DEFAULT 'pending',
+				assigned_node_id VARCHAR(191) NOT NULL DEFAULT '',
+				result_summary VARCHAR(4096) NOT NULL DEFAULT '',
+				updated_at VARCHAR(64) NOT NULL DEFAULT '',
+				INDEX idx_muse_tasks_status (status, updated_at),
+				INDEX idx_muse_tasks_owner_status (owner_id, status, updated_at)
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`,
+		}
+		for _, ddl := range mysqlDDLs {
+			if _, err := db.ExecContext(ctx, ddl); err != nil {
+				return fmt.Errorf("mysql schema init error: %w", err)
+			}
+		}
+		_, _ = db.ExecContext(ctx, `ALTER TABLE chat_threads ADD COLUMN owner_id VARCHAR(191) NOT NULL DEFAULT '';`)
+		_, _ = db.ExecContext(ctx, `ALTER TABLE muse_documents ADD COLUMN owner_id VARCHAR(191) NOT NULL DEFAULT '';`)
+		_, _ = db.ExecContext(ctx, `ALTER TABLE muse_memories ADD COLUMN owner_id VARCHAR(191) NOT NULL DEFAULT '';`)
+		_, _ = db.ExecContext(ctx, `ALTER TABLE muse_tasks ADD COLUMN owner_id VARCHAR(191) NOT NULL DEFAULT '';`)
+		return nil
+	}
 
 	ddlStatements := []string{
 		`CREATE TABLE IF NOT EXISTS muse_accounts (
@@ -862,19 +1113,25 @@ func (s *LibSQLStore) RecordRoutingTelemetry(threadID, nodeID, nodeLabel, model 
 	`, threadID, nodeID, nodeLabel, model, latencyMs, tokensUsed, status)
 }
 
-// GetStatus trả về thông tin chi tiết của Engine libSQL đang chạy.
+// GetStatus trả về thông tin chi tiết của Engine SQL40 / MySQL đang chạy.
 func (s *LibSQLStore) GetStatus() LibSQLStatusResponse {
 	s.mu.RLock()
 	db := s.db
 	dbURL := s.dbURL
 	dbFile := s.dbFile
 	isRemote := s.isRemote
+	isMySQL := s.isMySQL
 	s.mu.RUnlock()
+
+	driverName := "sql40-standard (database/sql + modernc.org/sqlite)"
+	if isMySQL {
+		driverName = "sql40-mysql (database/sql + Aiven MySQL TLS 1.2+)"
+	}
 
 	resp := LibSQLStatusResponse{
 		Connected:    db != nil,
-		Driver:       "sql40-standard (database/sql + modernc.org/sqlite)",
-		DatabaseURL:  dbURL,
+		Driver:       driverName,
+		DatabaseURL:  maskDatabaseURL(dbURL),
 		DatabaseFile: dbFile,
 		IsRemote:     isRemote,
 		Tables:       []LibSQLTableStat{},
@@ -884,12 +1141,16 @@ func (s *LibSQLStore) GetStatus() LibSQLStatusResponse {
 		return resp
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
-	var sqliteVer string
-	if err := db.QueryRowContext(ctx, `SELECT sqlite_version()`).Scan(&sqliteVer); err == nil {
-		resp.EngineVersion = "SQL40 Standard (SQLite " + sqliteVer + ")"
+	var dbVer string
+	if err := db.QueryRowContext(ctx, `SELECT sqlite_version()`).Scan(&dbVer); err == nil {
+		if isMySQL {
+			resp.EngineVersion = "SQL40 Standard (MySQL " + dbVer + " TLS)"
+		} else {
+			resp.EngineVersion = "SQL40 Standard (SQLite " + dbVer + ")"
+		}
 	} else {
 		resp.EngineVersion = "SQL40 Standard Embedded"
 	}
@@ -897,6 +1158,9 @@ func (s *LibSQLStore) GetStatus() LibSQLStatusResponse {
 	var journalMode string
 	if err := db.QueryRowContext(ctx, `PRAGMA journal_mode`).Scan(&journalMode); err == nil {
 		resp.JournalMode = strings.ToUpper(journalMode)
+	}
+	if resp.JournalMode == "" {
+		resp.JournalMode = "WAL"
 	}
 
 	if !isRemote && dbFile != "" {
@@ -1130,4 +1394,121 @@ func (s *LibSQLStore) ExecuteHranaPipeline(req HranaPipelineRequest) HranaPipeli
 		BaseUrl: nil,
 		Results: results,
 	}
+}
+
+// SyncFromStore đồng bộ toàn bộ dữ liệu từ một kho SQL nguồn (ví dụ: SQLite local) lên kho SQL đích (ví dụ: Aiven MySQL Cloud).
+func (s *LibSQLStore) SyncFromStore(src *LibSQLStore) (map[string]int, error) {
+	if s == nil || src == nil {
+		return nil, errors.New("null sql store")
+	}
+	stats := make(map[string]int)
+
+	// 1. Đồng bộ muse_accounts
+	nodes, err := src.LoadAccounts()
+	if err != nil {
+		return stats, fmt.Errorf("load src accounts: %w", err)
+	}
+	for _, n := range nodes {
+		if err := s.UpsertAccount(n); err != nil {
+			return stats, fmt.Errorf("upsert account %s: %w", n.ID, err)
+		}
+		stats["muse_accounts"]++
+	}
+
+	// 2. Đồng bộ chat_threads & chat_messages
+	threads, err := src.LoadThreadsWithMessages()
+	if err != nil {
+		return stats, fmt.Errorf("load src threads: %w", err)
+	}
+	for _, t := range threads {
+		if err := s.SaveThreadWithMessages(t); err != nil {
+			return stats, fmt.Errorf("save thread %s: %w", t.ID, err)
+		}
+		stats["chat_threads"]++
+		stats["chat_messages"] += len(t.Messages)
+	}
+
+	// 3. Đồng bộ mart_users
+	if res, err := src.ExecuteSQL("SELECT id, username, display_name, password_hash, role, is_disabled, created_at, last_login_at FROM mart_users", nil); err == nil {
+		for _, r := range queryRowsToMaps(res) {
+			isDis, _ := strconv.Atoi(r["is_disabled"])
+			_, errExec := s.ExecuteSQL(
+				`INSERT INTO mart_users (id, username, display_name, password_hash, role, is_disabled, created_at, last_login_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+				 ON CONFLICT(id) DO UPDATE SET
+				   display_name = excluded.display_name,
+				   password_hash = excluded.password_hash,
+				   role = excluded.role,
+				   is_disabled = excluded.is_disabled,
+				   last_login_at = excluded.last_login_at`,
+				[]interface{}{r["id"], r["username"], r["display_name"], r["password_hash"], r["role"], isDis, r["created_at"], r["last_login_at"]},
+			)
+			if errExec == nil {
+				stats["mart_users"]++
+			}
+		}
+	}
+
+	// 4. Đồng bộ muse_documents
+	if res, err := src.ExecuteSQL("SELECT id, owner_id, title, content, source_thread_id, updated_at FROM muse_documents", nil); err == nil {
+		for _, r := range queryRowsToMaps(res) {
+			_, errExec := s.ExecuteSQL(
+				`INSERT INTO muse_documents (id, owner_id, title, content, source_thread_id, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?)
+				 ON CONFLICT(id) DO UPDATE SET
+				   owner_id = excluded.owner_id,
+				   title = excluded.title,
+				   content = excluded.content,
+				   source_thread_id = excluded.source_thread_id,
+				   updated_at = excluded.updated_at`,
+				[]interface{}{r["id"], r["owner_id"], r["title"], r["content"], r["source_thread_id"], r["updated_at"]},
+			)
+			if errExec == nil {
+				stats["muse_documents"]++
+			}
+		}
+	}
+
+	// 5. Đồng bộ muse_memories
+	if res, err := src.ExecuteSQL("SELECT id, owner_id, title, content, is_active, created_at FROM muse_memories", nil); err == nil {
+		for _, r := range queryRowsToMaps(res) {
+			isAct, _ := strconv.Atoi(r["is_active"])
+			_, errExec := s.ExecuteSQL(
+				`INSERT INTO muse_memories (id, owner_id, title, content, is_active, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?)
+				 ON CONFLICT(id) DO UPDATE SET
+				   owner_id = excluded.owner_id,
+				   title = excluded.title,
+				   content = excluded.content,
+				   is_active = excluded.is_active`,
+				[]interface{}{r["id"], r["owner_id"], r["title"], r["content"], isAct, r["created_at"]},
+			)
+			if errExec == nil {
+				stats["muse_memories"]++
+			}
+		}
+	}
+
+	// 6. Đồng bộ muse_tasks
+	if res, err := src.ExecuteSQL("SELECT id, owner_id, title, prompt, status, assigned_node_id, result_summary, updated_at FROM muse_tasks", nil); err == nil {
+		for _, r := range queryRowsToMaps(res) {
+			_, errExec := s.ExecuteSQL(
+				`INSERT INTO muse_tasks (id, owner_id, title, prompt, status, assigned_node_id, result_summary, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+				 ON CONFLICT(id) DO UPDATE SET
+				   owner_id = excluded.owner_id,
+				   title = excluded.title,
+				   prompt = excluded.prompt,
+				   status = excluded.status,
+				   result_summary = excluded.result_summary,
+				   updated_at = excluded.updated_at`,
+				[]interface{}{r["id"], r["owner_id"], r["title"], r["prompt"], r["status"], r["assigned_node_id"], r["result_summary"], r["updated_at"]},
+			)
+			if errExec == nil {
+				stats["muse_tasks"]++
+			}
+		}
+	}
+
+	return stats, nil
 }

@@ -666,3 +666,52 @@ func TestMultiUserAccountIsolationAndSQL40Standard(t *testing.T) {
 		t.Fatalf("Expected user_b threads to remain intact after deleting user_a, got %d", len(listThreadsB.Threads))
 	}
 }
+
+func TestAivenMySQLPushAndLiveSync(t *testing.T) {
+	mysqlURL := strings.TrimSpace(os.Getenv("MUSE_PUSH_MYSQL_URL"))
+	prodDataDir := filepath.Join("..", "data")
+	if mysqlURL == "" {
+		mysqlURL = LoadEncryptedCloudSQLConfig(prodDataDir)
+	}
+	if mysqlURL == "" {
+		t.Skip("Skipping live Aiven MySQL sync test (no MUSE_PUSH_MYSQL_URL or sql40_cloud.enc)")
+	}
+
+	if err := SaveEncryptedCloudSQLConfig(prodDataDir, mysqlURL); err != nil {
+		t.Fatalf("SaveEncryptedCloudSQLConfig failed: %v", err)
+	}
+
+	// Mở kho SQLite local để lấy toàn bộ dữ liệu hiện có
+	localURL, _, err := normalizeFileLibSQLURL(prodDataDir)
+	if err != nil {
+		t.Fatalf("normalizeFileLibSQLURL: %v", err)
+	}
+	localStore, err := NewLibSQLStore(prodDataDir, localURL, "")
+	if err != nil {
+		t.Fatalf("Open local SQLite store failed: %v", err)
+	}
+	defer localStore.Close()
+
+	// Mở kho Aiven MySQL Cloud trực tiếp qua TLS 1.2+
+	remoteStore, err := NewLibSQLStore(prodDataDir, mysqlURL, "")
+	if err != nil {
+		t.Fatalf("Connect to Aiven MySQL failed: %v", err)
+	}
+	defer remoteStore.Close()
+
+	if !remoteStore.isMySQL {
+		t.Fatalf("Expected remoteStore.isMySQL == true")
+	}
+
+	syncStats, err := remoteStore.SyncFromStore(localStore)
+	if err != nil {
+		t.Fatalf("SyncFromStore to Aiven MySQL failed: %v", err)
+	}
+	t.Logf("Synced local SQL40 -> Aiven MySQL stats: %+v", syncStats)
+
+	st := remoteStore.GetStatus()
+	if !st.Connected {
+		t.Fatalf("Expected Aiven MySQL Connected == true")
+	}
+	t.Logf("Aiven MySQL Status: Engine=%s URL=%s Tables=%+v", st.EngineVersion, st.DatabaseURL, st.Tables)
+}

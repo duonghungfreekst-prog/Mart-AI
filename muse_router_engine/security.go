@@ -194,6 +194,52 @@ func NewRS256JWTManagerWithKeyFile(cache *TTLCache, keyPath string, masterKey st
 	return mgr, nil
 }
 
+// SyncWithSQLStore đồng bộ khóa ký JWT RS256 (đã mã hóa AES-256-CTR+HMAC-SHA256) lên cơ sở dữ liệu SQL40 / Aiven MySQL
+// để các phiên đăng nhập trên Render Cloud không bị mất hiệu lực khi container khởi động lại.
+func (m *RS256JWTManager) SyncWithSQLStore(store *LibSQLStore, masterKey string) {
+	if m == nil || store == nil || masterKey == "" {
+		return
+	}
+	const jwtKeyRowID = "__system_jwt_rs256_key__"
+	res, err := store.ExecuteSQL(
+		"SELECT cookies_json FROM oauth_sessions WHERE session_id = ? LIMIT 1",
+		[]interface{}{jwtKeyRowID},
+	)
+	if err == nil && res != nil && len(res.Rows) > 0 && len(res.Rows[0]) > 0 {
+		encStr := strings.TrimSpace(fmt.Sprintf("%v", res.Rows[0][0]))
+		if pemStr, errDec := decryptSecretNative(encStr, masterKey); errDec == nil {
+			if blk, _ := pem.Decode([]byte(pemStr)); blk != nil {
+				if parsed, errParse := x509.ParsePKCS1PrivateKey(blk.Bytes); errParse == nil {
+					m.privateKey = parsed
+					m.publicKey = &parsed.PublicKey
+					m.cache.Set("jwt_rs256_public_key", &parsed.PublicKey, 1*time.Hour)
+					return
+				}
+			}
+		}
+	}
+
+	if m.privateKey == nil {
+		return
+	}
+	pemBytes := pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(m.privateKey),
+	})
+	enc, errEnc := encryptSecretNative(string(pemBytes), masterKey)
+	if errEnc != nil {
+		return
+	}
+	_, _ = store.ExecuteSQL(
+		`INSERT INTO oauth_sessions (session_id, login_url, state, app_id, redirect_uri, cookies_json, created_at)
+		 VALUES (?, 'system://jwt_rs256', 'active', 'mart_ai', '', ?, ?)
+		 ON CONFLICT(session_id) DO UPDATE SET
+		   cookies_json = excluded.cookies_json,
+		   created_at = excluded.created_at`,
+		[]interface{}{jwtKeyRowID, enc, time.Now().Unix()},
+	)
+}
+
 func base64URLEncode(data []byte) string {
 	return base64.RawURLEncoding.EncodeToString(data)
 }

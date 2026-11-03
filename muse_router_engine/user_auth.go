@@ -937,8 +937,7 @@ func (a *ServerApp) handleWorkspaceDocs(w http.ResponseWriter, r *http.Request) 
 			 ON CONFLICT(id) DO UPDATE SET
 			   title = excluded.title,
 			   content = excluded.content,
-			   updated_at = excluded.updated_at
-			 WHERE muse_documents.owner_id = excluded.owner_id`,
+			   updated_at = excluded.updated_at`,
 			[]interface{}{docID, ownerScope, title, content, strings.TrimSpace(req.SourceThreadID), nowStr},
 		); err != nil {
 			WriteJSONError(w, http.StatusInternalServerError, "ERR_SAVE_DOC_FAILED")
@@ -1028,8 +1027,7 @@ func (a *ServerApp) handleWorkspaceMemories(w http.ResponseWriter, r *http.Reque
 			 VALUES(?, ?, ?, ?, 1, ?)
 			 ON CONFLICT(id) DO UPDATE SET
 			   title = excluded.title,
-			   content = excluded.content
-			 WHERE muse_memories.owner_id = excluded.owner_id`,
+			   content = excluded.content`,
 			[]interface{}{memID, ownerScope, title, content, nowStr},
 		); err != nil {
 			WriteJSONError(w, http.StatusInternalServerError, "ERR_SAVE_MEMORY_FAILED")
@@ -1151,8 +1149,7 @@ func (a *ServerApp) handleWorkspaceTasks(w http.ResponseWriter, r *http.Request)
 			 ON CONFLICT(id) DO UPDATE SET
 			   title = excluded.title,
 			   prompt = excluded.prompt,
-			   updated_at = excluded.updated_at
-			 WHERE muse_tasks.owner_id = excluded.owner_id`,
+			   updated_at = excluded.updated_at`,
 			[]interface{}{taskID, ownerScope, title, strings.TrimSpace(req.Prompt), nowStr},
 		); err != nil {
 			WriteJSONError(w, http.StatusInternalServerError, "ERR_SAVE_TASK_FAILED")
