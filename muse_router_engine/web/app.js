@@ -505,6 +505,15 @@
       if (offlineBanner) offlineBanner.classList.add("hidden-el");
       state.summary = data;
 
+      const stratSel = document.getElementById("adminRoutingStrategySelect");
+      if (stratSel && data.routing_strategy) {
+        stratSel.value = data.routing_strategy;
+      }
+      const failoverChk = document.getElementById("adminAutoFailoverCheck");
+      if (failoverChk && typeof data.auto_failover === "boolean") {
+        failoverChk.checked = data.auto_failover;
+      }
+
       const total = data.total_nodes || 0;
       const railNodeCount = document.getElementById("railNodeCount");
       if (railNodeCount) {
@@ -1409,10 +1418,10 @@
     if (mode !== "accounts" && typeof activeInlineChromeCleanup === "function") {
       activeInlineChromeCleanup(true);
     }
-    // Ẩn/hiện thanh rail bên trái khi vào Trang Cài Đặt Riêng (accounts)
+    // Luôn hiển thị thanh công cụ dọc bên trái để Admin chuyển nhanh giữa Giao diện Chat đầy đủ & Cài đặt Web
     var leftRail = document.querySelector(".muse-left-rail");
     if (leftRail) {
-      leftRail.classList.toggle("hidden-el", mode === "accounts");
+      leftRail.classList.remove("hidden-el");
     }
 
     // Đồng bộ URL sạch sẽ
@@ -2583,6 +2592,42 @@
       });
     }
 
+    const btnFloatingAdminSettings = document.getElementById("btnFloatingAdminSettings");
+    if (btnFloatingAdminSettings) {
+      btnFloatingAdminSettings.addEventListener("click", function () {
+        switchMainView("accounts");
+      });
+    }
+
+    const adminRouterConfigForm = document.getElementById("adminRouterConfigForm");
+    if (adminRouterConfigForm) {
+      adminRouterConfigForm.addEventListener("submit", async function (ev) {
+        ev.preventDefault();
+        const stratSel = document.getElementById("adminRoutingStrategySelect");
+        const failoverChk = document.getElementById("adminAutoFailoverCheck");
+        const saveBtn = document.getElementById("btnSaveRouterConfig");
+        if (saveBtn) saveBtn.disabled = true;
+        try {
+          const updatedSummary = await apiRequest("/api/router/config", {
+            method: "POST",
+            body: {
+              routing_strategy: stratSel ? stratSel.value : "least_active",
+              auto_failover: failoverChk ? Boolean(failoverChk.checked) : true,
+            },
+          });
+          if (updatedSummary && typeof updatedSummary === "object") {
+            state.summary = updatedSummary;
+          }
+          showToast("✅ Đã lưu cài đặt điều phối Pool Token & Hệ thống Web!");
+          await refreshRouterState(true);
+        } catch (err) {
+          showToast("❌ Lỗi lưu cài đặt điều phối: " + err.message);
+        } finally {
+          if (saveBtn) saveBtn.disabled = false;
+        }
+      });
+    }
+
     [
       "btnSideBrowserLogin",
       "btnBrowserInteractiveLogin",
@@ -3344,15 +3389,27 @@
   function updateUserAccountBadges() {
     var railBtn = document.getElementById("railBtnUserAccount");
     var railInitial = document.getElementById("railUserAvatarInitial");
+    var railAdminBtn = document.getElementById("railBtnAdminSettings");
     var floatBtn = document.getElementById("btnFloatingUserAccount");
+    var floatAdminBtn = document.getElementById("btnFloatingAdminSettings");
     var floatInit = document.getElementById("floatingUserInitial");
     var floatName = document.getElementById("floatingUserName");
     var u = state.currentUser;
 
     if (!u) {
       if (railBtn) railBtn.classList.add("hidden-el");
+      if (railAdminBtn) railAdminBtn.classList.add("hidden-el");
       if (floatBtn) floatBtn.classList.add("hidden-el");
+      if (floatAdminBtn) floatAdminBtn.classList.add("hidden-el");
       return;
+    }
+
+    var isAdmin = u.role === "admin";
+    if (railAdminBtn) {
+      railAdminBtn.classList.toggle("hidden-el", !isAdmin);
+    }
+    if (floatAdminBtn) {
+      floatAdminBtn.classList.toggle("hidden-el", !isAdmin);
     }
 
     var displayName = u.display_name || u.username || "Tài khoản";
@@ -3363,7 +3420,12 @@
       railBtn.classList.remove("hidden-el");
       railBtn.style.background = pal.bg;
       railBtn.style.color = pal.fg;
-      railBtn.title = displayName + " (@" + (u.username || "") + ") — Form riêng độc lập";
+      railBtn.title =
+        displayName +
+        " (@" +
+        (u.username || "") +
+        ")" +
+        (isAdmin ? " — Quản trị viên (Toàn quyền Web & Chat)" : " — Form riêng độc lập");
     }
     if (railInitial) railInitial.textContent = initial;
 
@@ -3438,10 +3500,10 @@
       if (heading) heading.textContent = "Quản trị viên Mart AI (/admin)";
       if (subtitle) {
         subtitle.textContent = state.adminPasswordRequired
-          ? "Nhập mật khẩu Quản trị viên (MART_ADMIN_PASSWORD) để quản lý Pool Token & danh sách tài khoản người dùng."
-          : "Máy chủ Local chưa đặt MART_ADMIN_PASSWORD — nhấn nút bên dưới để mở thẳng trang Quản trị.";
+          ? "Nhập mật khẩu tài khoản Admin (mặc định Admin@123456 hoặc MART_ADMIN_PASSWORD) để mở Cài đặt Web & Quản trị Pool Token."
+          : "Nhập mật khẩu tài khoản Admin (mặc định Admin@123456) hoặc nhấn nút bên dưới để mở thẳng trang Cài đặt Web & Quản trị.";
       }
-      if (switchAdminBtn) switchAdminBtn.textContent = "← Quay lại Đăng nhập người dùng";
+      if (switchAdminBtn) switchAdminBtn.textContent = "← Quay lại Đăng nhập tài khoản";
       var admInp = document.getElementById("adminUnlockPasswordInput");
       if (admInp) {
         admInp.required = Boolean(state.adminPasswordRequired);
@@ -3561,7 +3623,7 @@
       openAdminBtn.classList.toggle("hidden-el", u.role !== "admin");
     }
     if (togglePwBtn) {
-      togglePwBtn.classList.toggle("hidden-el", u.role === "admin");
+      togglePwBtn.classList.remove("hidden-el");
     }
     if (pwForm) pwForm.classList.add("hidden-el");
     if (dispInp) dispInp.value = dName;
@@ -3817,6 +3879,8 @@
         var uName = (document.getElementById("adminNewUsername").value || "").trim();
         var dName = (document.getElementById("adminNewDisplayName").value || "").trim();
         var pw = document.getElementById("adminNewPassword").value || "";
+        var roleSel = document.getElementById("adminNewUserRole");
+        var uRole = (roleSel && roleSel.value) || "user";
         var subBtn = document.getElementById("btnAdminSubmitNewUser");
         if (!uName || !pw) {
           showToast("⚠️ Vui lòng nhập tên đăng nhập và mật khẩu.");
@@ -3826,14 +3890,15 @@
         try {
           await apiRequest("/api/users/register", {
             method: "POST",
-            body: { username: uName, display_name: dName, password: pw },
+            body: { username: uName, display_name: dName, password: pw, role: uRole },
             skipAuthPrompt: true,
           });
           document.getElementById("adminNewUsername").value = "";
           document.getElementById("adminNewDisplayName").value = "";
           document.getElementById("adminNewPassword").value = "";
+          if (roleSel) roleSel.value = "user";
           createForm.classList.add("hidden-el");
-          showToast("✅ Đã tạo tài khoản @" + uName + " với không gian riêng biệt!");
+          showToast("✅ Đã tạo tài khoản @" + uName + " (" + (uRole === "admin" ? "Quản trị viên" : "Form riêng biệt") + ")!");
           loadAdminUsersList();
         } catch (err) {
           showToast("❌ " + err.message);
@@ -3868,6 +3933,11 @@
         var pal = computeAvatarColors(u.username || u.id);
         var dName = u.display_name || u.username || "User";
         var initial = String(dName).trim().charAt(0).toUpperCase() || "U";
+        var isRootAdmin = u.id === "admin" || u.username === "admin";
+        var isRoleAdmin = u.role === "admin";
+        var roleBadge = isRoleAdmin
+          ? '<span style="padding:2px 8px;border-radius:999px;background:#fff7ed;color:#c2410c;font-size:11.5px;font-weight:700;border:1px solid #fed7aa;">🛡️ Quản trị viên (Admin)</span>'
+          : '<span style="padding:2px 8px;border-radius:999px;background:#eff6ff;color:#1d4ed8;font-size:11.5px;font-weight:600;border:1px solid #bfdbfe;">👤 Người dùng (Form riêng)</span>';
         var statusBadge = u.is_disabled
           ? '<span style="padding:2px 8px;border-radius:999px;background:#fef2f2;color:#dc2626;font-size:11.5px;font-weight:600;border:1px solid #fecaca;">Đã khóa</span>'
           : '<span style="padding:2px 8px;border-radius:999px;background:#f0fdf4;color:#15803d;font-size:11.5px;font-weight:600;border:1px solid #bbf7d0;">Đang hoạt động</span>';
@@ -3883,24 +3953,29 @@
               '<div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;">' +
                 '<strong style="font-size:14px;color:#171717;">' + escapeHtml(dName) + '</strong>' +
                 '<code style="font-size:12px;color:#525252;">@' + escapeHtml(u.username || "") + '</code>' +
+                roleBadge +
                 statusBadge +
               '</div>' +
               '<div style="font-size:12px;color:#737373;margin-top:3px;">' +
-                '💬 ' + (u.thread_count || 0) + ' đoạn chat · 📄 ' + (u.doc_count || 0) + ' tài liệu · ☑️ ' + (u.task_count || 0) + ' nhiệm vụ' +
+                '💬 ' + (u.thread_count || 0) + ' đoạn chat · 📄 ' + (u.doc_count || 0) + ' tài liệu · 💡 ' + (u.memory_count || 0) + ' bộ nhớ · ☑️ ' + (u.task_count || 0) + ' nhiệm vụ' +
                 (u.last_login_at ? ' · Đăng nhập cuối: ' + escapeHtml(u.last_login_at) : '') +
               '</div>' +
             '</div>' +
           '</div>' +
           '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">' +
-            '<button type="button" class="admin-action-pill-btn" data-adm-toggle="' + escapeHtml(u.id) + '" data-disabled="' + (u.is_disabled ? "1" : "0") + '">' +
-              (u.is_disabled ? '🔓 Mở khóa' : '🔒 Khóa') +
-            '</button>' +
+            (!isRootAdmin
+              ? '<button type="button" class="admin-action-pill-btn" data-adm-toggle="' + escapeHtml(u.id) + '" data-disabled="' + (u.is_disabled ? "1" : "0") + '">' +
+                  (u.is_disabled ? '🔓 Mở khóa' : '🔒 Khóa') +
+                '</button>'
+              : '') +
             '<button type="button" class="admin-action-pill-btn" data-adm-pw="' + escapeHtml(u.id) + '" data-uname="' + escapeHtml(u.username || "") + '">' +
               '🔑 Đặt lại MK' +
             '</button>' +
-            '<button type="button" class="admin-action-pill-btn" style="color:#dc2626;border-color:#fecaca;" data-adm-del="' + escapeHtml(u.id) + '" data-uname="' + escapeHtml(u.username || "") + '">' +
-              '🗑️ Xóa' +
-            '</button>' +
+            (!isRootAdmin
+              ? '<button type="button" class="admin-action-pill-btn" style="color:#dc2626;border-color:#fecaca;" data-adm-del="' + escapeHtml(u.id) + '" data-uname="' + escapeHtml(u.username || "") + '">' +
+                  '🗑️ Xóa' +
+                '</button>'
+              : '') +
           '</div>';
         listEl.appendChild(row);
       });

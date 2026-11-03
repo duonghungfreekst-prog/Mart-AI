@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css?v=5.4">
+  <link rel="stylesheet" href="/styles.css?v=5.5">
 </head>
 <body>
   <!-- Cảnh báo mất kết nối Backend (chỉ hiện khi dịch vụ chưa bật) -->
@@ -88,6 +88,14 @@
       </nav>
 
       <div class="rail-bottom-group">
+        <!-- Cài đặt & Quản trị Web (hiển thị cho Admin / mở nhanh Cài đặt) -->
+        <button type="button" class="rail-icon-btn hidden-el" data-view="accounts" id="railBtnAdminSettings" title="Cài đặt &amp; Quản trị Web (/admin)">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </button>
+
         <!-- Tài khoản cá nhân & Không gian riêng -->
         <button type="button" class="rail-user-avatar-btn hidden-el" id="railBtnUserAccount" title="Tài khoản &amp; Form riêng của bạn" aria-label="Tài khoản của bạn">
           <span id="railUserAvatarInitial">U</span>
@@ -149,8 +157,15 @@
             </div>
           </div>
 
-          <!-- Nút nổi Góc Phải: Tài khoản riêng + 📝 Mới -->
+          <!-- Nút nổi Góc Phải: Cài đặt Web (Admin) + Tài khoản riêng + 📝 Mới -->
           <div class="floating-top-right">
+            <button type="button" class="floating-pill-btn hidden-el" id="btnFloatingAdminSettings" title="Mở Cài đặt &amp; Quản trị Web (/admin)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ea580c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+              </svg>
+              <span>Cài đặt Web</span>
+            </button>
             <button type="button" class="floating-pill-btn hidden-el" id="btnFloatingUserAccount" title="Quản lý tài khoản &amp; chuyển không gian riêng">
               <span class="user-pill-avatar" id="floatingUserInitial">U</span>
               <span class="floating-account-name-text" id="floatingUserName">Tài khoản</span>
@@ -651,6 +666,21 @@
                 <span>Thêm tài khoản vào Ví</span>
               </button>
 
+              <button type="button" class="admin-nav-pill" onclick="document.getElementById('adminRouterConfigSection').scrollIntoView({behavior:'smooth'})">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="4" y1="21" x2="4" y2="14"/>
+                  <line x1="4" y1="10" x2="4" y2="3"/>
+                  <line x1="12" y1="21" x2="12" y2="12"/>
+                  <line x1="12" y1="8" x2="12" y2="3"/>
+                  <line x1="20" y1="21" x2="20" y2="16"/>
+                  <line x1="20" y1="12" x2="20" y2="3"/>
+                  <line x1="1" y1="14" x2="7" y2="14"/>
+                  <line x1="9" y1="8" x2="15" y2="8"/>
+                  <line x1="17" y1="16" x2="23" y2="16"/>
+                </svg>
+                <span>Điều phối &amp; Cài đặt Web</span>
+              </button>
+
               <button type="button" class="admin-nav-pill" onclick="document.getElementById('adminUsersSection').scrollIntoView({behavior:'smooth'})">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
@@ -659,6 +689,15 @@
                   <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
                 </svg>
                 <span>Tài khoản người dùng</span>
+              </button>
+
+              <button type="button" class="admin-nav-pill" onclick="document.getElementById('libsqlStudioCard').scrollIntoView({behavior:'smooth'})">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                  <ellipse cx="12" cy="5" rx="9" ry="3"/>
+                  <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
+                  <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+                </svg>
+                <span>Cơ sở dữ liệu SQL40 / MySQL</span>
               </button>
 
               <div class="admin-nav-pill" style="cursor:default;color:#15803d;">
@@ -684,13 +723,23 @@
           <!-- Vùng Nội Dung Chính Bên Phải: CHUNG & MỨC SỬ DỤNG -->
           <div class="admin-settings-content">
             <div class="admin-content-header" id="adminUsageSection">
-              <h2 class="admin-content-title">Chung</h2>
-              <button type="button" class="admin-close-circle-btn" onclick="document.getElementById('btnBackToChatView').click()" title="Đóng cài đặt">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-                  <line x1="18" y1="6" x2="6" y2="18"/>
-                  <line x1="6" y1="6" x2="18" y2="18"/>
-                </svg>
-              </button>
+              <div>
+                <h2 class="admin-content-title">Cài đặt Web &amp; Quản trị Hệ thống</h2>
+                <div style="font-size:12.5px;color:#737373;margin-top:2px;">
+                  Quản lý Pool Token Muse.ai, Chiến lược Điều phối, Đa Tài khoản Người dùng &amp; Cơ sở dữ liệu Aiven MySQL / SQL40
+                </div>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;">
+                <button type="button" class="muse-solid-btn" onclick="document.getElementById('btnBackToChatView').click()" style="min-height:34px;font-size:12.5px;">
+                  💬 Mở Giao diện Chat
+                </button>
+                <button type="button" class="admin-close-circle-btn" onclick="document.getElementById('btnBackToChatView').click()" title="Đóng cài đặt">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                    <line x1="18" y1="6" x2="6" y2="18"/>
+                    <line x1="6" y1="6" x2="18" y2="18"/>
+                  </svg>
+                </button>
+              </div>
             </div>
 
             <!-- Khung hiển thị Link Đăng Nhập OAuth khi bấm Tự động lấy Link -->
@@ -744,6 +793,38 @@
             </div>
 
             <div id="accountsTableBody" class="admin-accounts-stack"></div>
+
+            <!-- KHỐI CÀI ĐẶT ĐIỀU PHỐI & HỆ THỐNG WEB -->
+            <div style="margin-top:26px;" id="adminRouterConfigSection">
+              <div class="admin-section-label" style="margin-bottom:10px;">⚙️ Điều phối Pool Token &amp; Cài đặt Hệ thống Web</div>
+              <form id="adminRouterConfigForm" class="admin-gray-block" style="border:1px solid #e2e8f0;background:#f8fafc;">
+                <div class="grid-2-cols" style="margin-bottom:12px;">
+                  <div class="input-block">
+                    <label for="adminRoutingStrategySelect">Chiến lược điều phối tài khoản Muse.ai trong Pool</label>
+                    <select id="adminRoutingStrategySelect" class="clean-input" style="background:#ffffff;">
+                      <option value="least_active">Ưu tiên tài khoản rảnh nhất (Least Active — Khuyên dùng)</option>
+                      <option value="weighted_token">Ưu tiên tài khoản còn nhiều Token nhất (Weighted Token)</option>
+                      <option value="round_robin">Xoay vòng tuần tự giữa các tài khoản (Round Robin)</option>
+                    </select>
+                  </div>
+                  <div class="input-block">
+                    <label>Cơ chế tự động chuyển đổi dự phòng (Auto-Failover)</label>
+                    <label style="display:flex;align-items:center;gap:8px;min-height:38px;padding:0 12px;border-radius:8px;border:1px solid #dcdcdc;background:#ffffff;cursor:pointer;font-weight:500;font-size:13px;color:#171717;">
+                      <input type="checkbox" id="adminAutoFailoverCheck" checked style="width:16px;height:16px;accent-color:#ea580c;">
+                      <span>Tự động chuyển sang tài khoản khác khi hết hạn mức / nghẽn mạng</span>
+                    </label>
+                  </div>
+                </div>
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+                  <span style="font-size:12px;color:#64748b;">
+                    💡 Áp dụng tức thì cho toàn bộ luồng Chat, Nhiệm vụ hàng loạt (Batch Tasks) và API.
+                  </span>
+                  <button type="submit" class="muse-solid-btn" id="btnSaveRouterConfig" style="min-height:36px;">
+                    💾 Lưu cài đặt điều phối Web
+                  </button>
+                </div>
+              </form>
+            </div>
 
             <!-- KHỐI THÊM TÀI KHOẢN MỚI (ĐẶT GỌN GÀNG BÊN DƯỚI THEO PHONG CÁCH CÀI ĐẶT) -->
             <div style="margin-top:26px;">
@@ -877,7 +958,7 @@
               <!-- Form tạo nhanh tài khoản người dùng ngay trong Admin -->
               <form id="adminCreateUserForm" class="admin-gray-block hidden-el" style="margin-bottom:14px;border:1px solid #fed7aa;background:#fff7ed;">
                 <div style="font-size:13.5px;font-weight:600;color:#9a3412;margin-bottom:10px;">
-                  ➕ Tạo tài khoản người dùng mới (Form làm việc độc lập)
+                  ➕ Tạo tài khoản mới (Form làm việc độc lập hoặc Quản trị viên)
                 </div>
                 <div class="grid-2-cols" style="margin-bottom:10px;">
                   <div class="input-block">
@@ -890,9 +971,16 @@
                   </div>
                 </div>
                 <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
-                  <div class="input-block" style="flex:1;min-width:200px;">
+                  <div class="input-block" style="flex:1;min-width:190px;">
                     <label for="adminNewPassword">Mật khẩu (tối thiểu 6 ký tự)</label>
                     <input type="password" id="adminNewPassword" class="clean-input" style="background:#fff;" placeholder="Nhập mật khẩu cho tài khoản này">
+                  </div>
+                  <div class="input-block" style="min-width:210px;">
+                    <label for="adminNewUserRole">Quyền hạn tài khoản</label>
+                    <select id="adminNewUserRole" class="clean-input" style="background:#fff;">
+                      <option value="user">👤 Người dùng (Form độc lập riêng)</option>
+                      <option value="admin">🛡️ Quản trị viên (Toàn quyền Web &amp; Chat)</option>
+                    </select>
                   </div>
                   <button type="submit" class="muse-solid-btn" id="btnAdminSubmitNewUser" style="min-height:38px;">
                     ✓ Tạo tài khoản
@@ -911,22 +999,25 @@
               </div>
             </div>
 
-          <!-- BẢNG ĐIỀU KHIỂN & TRUY VẤN TRỰC TIẾP CƠ SỞ DỮ LIỆU CHUẨN SQL40 (ĐÃ ẨN TRÊN UI, CHẠY NGẦM) -->
-          <div class="clean-card hidden-el" id="libsqlStudioCard">
+          <!-- BẢNG ĐIỀU KHIỂN & TRUY VẤN TRỰC TIẾP CƠ SỞ DỮ LIỆU CHUẨN SQL40 & AIVEN MYSQL -->
+          <div class="clean-card" id="libsqlStudioCard" style="margin-top:28px;">
             <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
               <div>
                 <h2 style="font-size:0.98rem;font-weight:700;color:#171717;">
-                  🗄️ Cơ Sở Dữ Liệu Chuẩn SQL40 Trực Tiếp (Embedded WAL &amp; Standard SQL Engine)
+                  🗄️ Cơ Sở Dữ Liệu Chuẩn SQL40 &amp; Aiven MySQL Cloud (TLS 1.2+)
                 </h2>
                 <p style="font-size:0.82rem;color:#737373;margin-top:2px;" id="libsqlStatusSubtext">
-                  Toàn bộ tài khoản, đoạn chat, tin nhắn, phiên OAuth và nhật ký điều phối của hệ thống Web được lưu &amp; truy vấn trực tiếp qua chuẩn <code>SQL40</code>.
+                  Toàn bộ tài khoản, đoạn chat, tin nhắn, tài liệu, bộ nhớ, nhiệm vụ, phiên OAuth và nhật ký điều phối được đồng bộ trực tiếp trên chuẩn <code>SQL40 / Aiven MySQL</code>.
                 </p>
               </div>
               <div style="display:flex;gap:6px;flex-wrap:wrap;" id="libsqlTablePills">
+                <button type="button" class="muse-outline-btn btn-libsql-preset" style="min-height:30px;font-size:12px;" data-sql="SELECT id, username, display_name, role, is_disabled, created_at, last_login_at FROM mart_users ORDER BY created_at DESC;">
+                  👥 Bảng mart_users
+                </button>
                 <button type="button" class="muse-outline-btn btn-libsql-preset" style="min-height:30px;font-size:12px;" data-sql="SELECT id, node_index, label, status, device_profile, proxy_url, fingerprint, total_requests, latency_ms, last_used_at, status_detail FROM muse_accounts ORDER BY node_index ASC;">
                   📋 Bảng muse_accounts
                 </button>
-                <button type="button" class="muse-outline-btn btn-libsql-preset" style="min-height:30px;font-size:12px;" data-sql="SELECT id, title, model, workspace, created_at, updated_at FROM chat_threads ORDER BY updated_at DESC LIMIT 30;">
+                <button type="button" class="muse-outline-btn btn-libsql-preset" style="min-height:30px;font-size:12px;" data-sql="SELECT id, owner_id, title, model, workspace, created_at, updated_at FROM chat_threads ORDER BY updated_at DESC LIMIT 30;">
                   💬 Bảng chat_threads
                 </button>
                 <button type="button" class="muse-outline-btn btn-libsql-preset" style="min-height:30px;font-size:12px;" data-sql="SELECT id, thread_id, seq_num, role, substr(content, 1, 80) AS content_preview, node_label, latency_ms, timestamp FROM chat_messages ORDER BY thread_id DESC, seq_num ASC LIMIT 50;">
@@ -1432,6 +1523,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=5.4"></script>
+  <script src="/app.js?v=5.5"></script>
 </body>
 </html>

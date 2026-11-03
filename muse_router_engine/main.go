@@ -66,6 +66,7 @@ func NewServerApp(dataDir string) (*ServerApp, error) {
 		cache:      cache,
 		rustBridge: rustBridge,
 	}
+	app.EnsureDefaultAdminAccount()
 
 	return app, nil
 }

@@ -703,10 +703,32 @@ func TestAivenMySQLPushAndLiveSync(t *testing.T) {
 		t.Fatalf("Expected remoteStore.isMySQL == true")
 	}
 
+	// Đảm bảo tài khoản Quản trị viên (admin) có mặt trong cả SQL40 Local lẫn Aiven MySQL
+	ensureAdminInStore := func(st *LibSQLStore) {
+		qRes, err := st.ExecuteSQL("SELECT id FROM mart_users WHERE id = 'admin' OR username = 'admin' LIMIT 1", nil)
+		if err == nil && len(qRes.Rows) > 0 {
+			return
+		}
+		pwHash, err := HashPasswordPBKDF2(DefaultAdminPassword)
+		if err != nil {
+			t.Fatalf("HashPasswordPBKDF2 admin failed: %v", err)
+		}
+		nowStr := time.Now().Format("2006-01-02 15:04:05")
+		if _, err := st.ExecuteSQL(
+			`INSERT INTO mart_users(id, username, display_name, password_hash, role, is_disabled, created_at, last_login_at)
+			 VALUES('admin', 'admin', 'Quản trị viên (Admin)', ?, 'admin', 0, ?, ?)`,
+			[]interface{}{pwHash, nowStr, nowStr},
+		); err != nil {
+			t.Fatalf("Insert default admin into store failed: %v", err)
+		}
+	}
+	ensureAdminInStore(localStore)
+
 	syncStats, err := remoteStore.SyncFromStore(localStore)
 	if err != nil {
 		t.Fatalf("SyncFromStore to Aiven MySQL failed: %v", err)
 	}
+	ensureAdminInStore(remoteStore)
 	t.Logf("Synced local SQL40 -> Aiven MySQL stats: %+v", syncStats)
 
 	st := remoteStore.GetStatus()
@@ -714,4 +736,72 @@ func TestAivenMySQLPushAndLiveSync(t *testing.T) {
 		t.Fatalf("Expected Aiven MySQL Connected == true")
 	}
 	t.Logf("Aiven MySQL Status: Engine=%s URL=%s Tables=%+v", st.EngineVersion, st.DatabaseURL, st.Tables)
+}
+
+func TestAdminAccountLoginSettingsAndChatFlow(t *testing.T) {
+	tmpDir := t.TempDir()
+	app, err := NewServerApp(tmpDir)
+	if err != nil {
+		t.Fatalf("NewServerApp failed: %v", err)
+	}
+	defer app.pool.GetLibSQLStore().Close()
+
+	handler := app.Routes()
+
+	// 1. Đăng nhập tài khoản Admin mặc định qua /api/users/login
+	loginBody := `{"username":"admin","password":"` + DefaultAdminPassword + `"}`
+	reqLogin := httptest.NewRequest(http.MethodPost, "/api/users/login", strings.NewReader(loginBody))
+	reqLogin.Header.Set("Content-Type", "application/json")
+	reqLogin.Header.Set("X-Mart-Client", "web")
+	recLogin := httptest.NewRecorder()
+	handler.ServeHTTP(recLogin, reqLogin)
+	if recLogin.Code != http.StatusOK {
+		t.Fatalf("Admin login failed: status=%d body=%s", recLogin.Code, recLogin.Body.String())
+	}
+	var loginResp struct {
+		Token string `json:"token"`
+		User  struct {
+			ID          string `json:"id"`
+			Username    string `json:"username"`
+			DisplayName string `json:"display_name"`
+			Role        string `json:"role"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(recLogin.Body.Bytes(), &loginResp); err != nil {
+		t.Fatalf("Unmarshal admin login response: %v", err)
+	}
+	if loginResp.Token == "" || loginResp.User.Role != "admin" || loginResp.User.Username != "admin" {
+		t.Fatalf("Unexpected admin login payload: %+v", loginResp)
+	}
+
+	// 2. Kiểm tra quyền truy cập Cài đặt Web (/api/admin/users & /api/router/config)
+	reqUsers := httptest.NewRequest(http.MethodGet, "/api/admin/users", nil)
+	reqUsers.Header.Set("Authorization", "Bearer "+loginResp.Token)
+	reqUsers.Header.Set("X-Mart-Client", "web")
+	recUsers := httptest.NewRecorder()
+	handler.ServeHTTP(recUsers, reqUsers)
+	if recUsers.Code != http.StatusOK {
+		t.Fatalf("GET /api/admin/users failed: status=%d body=%s", recUsers.Code, recUsers.Body.String())
+	}
+
+	reqCfg := httptest.NewRequest(http.MethodPost, "/api/router/config", strings.NewReader(`{"routing_strategy":"weighted_token","auto_failover":true}`))
+	reqCfg.Header.Set("Content-Type", "application/json")
+	reqCfg.Header.Set("Authorization", "Bearer "+loginResp.Token)
+	reqCfg.Header.Set("X-Mart-Client", "web")
+	recCfg := httptest.NewRecorder()
+	handler.ServeHTTP(recCfg, reqCfg)
+	if recCfg.Code != http.StatusOK {
+		t.Fatalf("POST /api/router/config failed: status=%d body=%s", recCfg.Code, recCfg.Body.String())
+	}
+
+	// 3. Kiểm tra Giao diện Chat & Workspace của Admin (/api/threads & /api/workspace/docs)
+	reqThread := httptest.NewRequest(http.MethodPost, "/api/threads", strings.NewReader(`{"title":"Đoạn chat Admin","model":""}`))
+	reqThread.Header.Set("Content-Type", "application/json")
+	reqThread.Header.Set("Authorization", "Bearer "+loginResp.Token)
+	reqThread.Header.Set("X-Mart-Client", "web")
+	recThread := httptest.NewRecorder()
+	handler.ServeHTTP(recThread, reqThread)
+	if recThread.Code != http.StatusOK {
+		t.Fatalf("POST /api/threads for Admin failed: status=%d body=%s", recThread.Code, recThread.Body.String())
+	}
 }
