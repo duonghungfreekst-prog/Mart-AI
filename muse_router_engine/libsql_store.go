@@ -477,6 +477,14 @@ func (s *LibSQLStore) initSchema() error {
 			last_used_at VARCHAR(64) NOT NULL DEFAULT '',
 			status_detail VARCHAR(1024) NOT NULL DEFAULT '',
 			updated_at VARCHAR(64) NOT NULL DEFAULT '',
+			free_plan_label VARCHAR(255) NOT NULL DEFAULT '',
+			free_plan_value VARCHAR(255) NOT NULL DEFAULT '',
+			free_plan_subtitle VARCHAR(512) NOT NULL DEFAULT '',
+			free_plan_percent INT NOT NULL DEFAULT 0,
+			topup_label VARCHAR(255) NOT NULL DEFAULT '',
+			topup_value VARCHAR(255) NOT NULL DEFAULT '',
+			topup_subtitle VARCHAR(512) NOT NULL DEFAULT '',
+			topup_percent INT NOT NULL DEFAULT 0,
 			INDEX idx_muse_accounts_status (status)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`,
 		`CREATE TABLE IF NOT EXISTS mart_users (
@@ -577,6 +585,14 @@ func (s *LibSQLStore) initSchema() error {
 	_, _ = db.ExecContext(ctx, `ALTER TABLE muse_documents ADD COLUMN owner_id VARCHAR(191) NOT NULL DEFAULT '';`)
 	_, _ = db.ExecContext(ctx, `ALTER TABLE muse_memories ADD COLUMN owner_id VARCHAR(191) NOT NULL DEFAULT '';`)
 	_, _ = db.ExecContext(ctx, `ALTER TABLE muse_tasks ADD COLUMN owner_id VARCHAR(191) NOT NULL DEFAULT '';`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE muse_accounts ADD COLUMN free_plan_label VARCHAR(255) NOT NULL DEFAULT '';`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE muse_accounts ADD COLUMN free_plan_value VARCHAR(255) NOT NULL DEFAULT '';`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE muse_accounts ADD COLUMN free_plan_subtitle VARCHAR(512) NOT NULL DEFAULT '';`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE muse_accounts ADD COLUMN free_plan_percent INT NOT NULL DEFAULT 0;`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE muse_accounts ADD COLUMN topup_label VARCHAR(255) NOT NULL DEFAULT '';`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE muse_accounts ADD COLUMN topup_value VARCHAR(255) NOT NULL DEFAULT '';`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE muse_accounts ADD COLUMN topup_subtitle VARCHAR(512) NOT NULL DEFAULT '';`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE muse_accounts ADD COLUMN topup_percent INT NOT NULL DEFAULT 0;`)
 	schemaVerifiedURLs.Store(dbURL, true)
 	s.invalidateStatusCache()
 	return nil
@@ -649,7 +665,11 @@ func (s *LibSQLStore) LoadAccounts() ([]*MuseAccountNode, error) {
 		       COALESCE(proxy_url, ''), COALESCE(device_profile, ''),
 		       encrypted_credential, fingerprint, has_hatch_sess, has_hatch_gw,
 		       status, tokens_remaining, tokens_quota, tokens_used,
-		       total_requests, fail_count, latency_ms, last_used_at, status_detail
+		       total_requests, fail_count, latency_ms, last_used_at, status_detail,
+		       COALESCE(free_plan_label, ''), COALESCE(free_plan_value, ''),
+		       COALESCE(free_plan_subtitle, ''), COALESCE(free_plan_percent, 0),
+		       COALESCE(topup_label, ''), COALESCE(topup_value, ''),
+		       COALESCE(topup_subtitle, ''), COALESCE(topup_percent, 0)
 		FROM muse_accounts
 		ORDER BY node_index ASC, id ASC
 	`)
@@ -684,6 +704,14 @@ func (s *LibSQLStore) LoadAccounts() ([]*MuseAccountNode, error) {
 			&n.LatencyMs,
 			&n.LastUsedAt,
 			&n.StatusDetail,
+			&n.FreePlanLabel,
+			&n.FreePlanValue,
+			&n.FreePlanSubtitle,
+			&n.FreePlanPercent,
+			&n.TopupLabel,
+			&n.TopupValue,
+			&n.TopupSubtitle,
+			&n.TopupPercent,
 		); err != nil {
 			return nil, err
 		}
@@ -737,31 +765,41 @@ func (s *LibSQLStore) UpsertAccount(n *MuseAccountNode) error {
 			proxy_url, device_profile,
 			encrypted_credential, fingerprint, has_hatch_sess, has_hatch_gw,
 			status, active_requests, tokens_remaining, tokens_quota, tokens_used,
-			total_requests, fail_count, latency_ms, last_used_at, status_detail, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-		ON CONFLICT(id) DO UPDATE SET
-			node_index = excluded.node_index,
-			label = excluded.label,
-			plan_tier = excluded.plan_tier,
-			auth_type = excluded.auth_type,
-			upstream_url = excluded.upstream_url,
-			proxy_url = excluded.proxy_url,
-			device_profile = excluded.device_profile,
-			encrypted_credential = excluded.encrypted_credential,
-			fingerprint = excluded.fingerprint,
-			has_hatch_sess = excluded.has_hatch_sess,
-			has_hatch_gw = excluded.has_hatch_gw,
-			status = excluded.status,
-			active_requests = excluded.active_requests,
-			tokens_remaining = excluded.tokens_remaining,
-			tokens_quota = excluded.tokens_quota,
-			tokens_used = excluded.tokens_used,
-			total_requests = excluded.total_requests,
-			fail_count = excluded.fail_count,
-			latency_ms = excluded.latency_ms,
-			last_used_at = excluded.last_used_at,
-			status_detail = excluded.status_detail,
-			updated_at = datetime('now')
+			total_requests, fail_count, latency_ms, last_used_at, status_detail, updated_at,
+			free_plan_label, free_plan_value, free_plan_subtitle, free_plan_percent,
+			topup_label, topup_value, topup_subtitle, topup_percent
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE
+			node_index = VALUES(node_index),
+			label = VALUES(label),
+			plan_tier = VALUES(plan_tier),
+			auth_type = VALUES(auth_type),
+			upstream_url = VALUES(upstream_url),
+			proxy_url = VALUES(proxy_url),
+			device_profile = VALUES(device_profile),
+			encrypted_credential = VALUES(encrypted_credential),
+			fingerprint = VALUES(fingerprint),
+			has_hatch_sess = VALUES(has_hatch_sess),
+			has_hatch_gw = VALUES(has_hatch_gw),
+			status = VALUES(status),
+			active_requests = VALUES(active_requests),
+			tokens_remaining = VALUES(tokens_remaining),
+			tokens_quota = VALUES(tokens_quota),
+			tokens_used = VALUES(tokens_used),
+			total_requests = VALUES(total_requests),
+			fail_count = VALUES(fail_count),
+			latency_ms = VALUES(latency_ms),
+			last_used_at = VALUES(last_used_at),
+			status_detail = VALUES(status_detail),
+			free_plan_label = VALUES(free_plan_label),
+			free_plan_value = VALUES(free_plan_value),
+			free_plan_subtitle = VALUES(free_plan_subtitle),
+			free_plan_percent = VALUES(free_plan_percent),
+			topup_label = VALUES(topup_label),
+			topup_value = VALUES(topup_value),
+			topup_subtitle = VALUES(topup_subtitle),
+			topup_percent = VALUES(topup_percent),
+			updated_at = NOW()
 	`,
 		n.ID,
 		n.NodeIndex,
@@ -785,6 +823,14 @@ func (s *LibSQLStore) UpsertAccount(n *MuseAccountNode) error {
 		n.LatencyMs,
 		n.LastUsedAt,
 		n.StatusDetail,
+		n.FreePlanLabel,
+		n.FreePlanValue,
+		n.FreePlanSubtitle,
+		n.FreePlanPercent,
+		n.TopupLabel,
+		n.TopupValue,
+		n.TopupSubtitle,
+		n.TopupPercent,
 	)
 	if err == nil {
 		s.invalidateStatusCache()

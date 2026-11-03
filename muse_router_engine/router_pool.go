@@ -1237,6 +1237,18 @@ func (p *MuseRouterPool) releaseNode(nodeID string, tokensUsed int64, latencyMs 
 					if n.TokensRemaining > tokensUsed {
 						n.TokensRemaining -= tokensUsed
 					}
+					// Cập nhật TopupValue tức thì dựa trên TokensUsed thực tế
+					if n.TokensQuota > 0 {
+						pctUsed := float64(n.TokensUsed) / float64(n.TokensQuota) * 100
+						remaining := n.TokensQuota - n.TokensUsed
+						if remaining < 0 {
+							remaining = 0
+						}
+						n.TopupValue = fmt.Sprintf("Đã dùng %.4f%% (còn %s token)", pctUsed, FormatTokenCount(remaining))
+						n.TopupPercent = int(pctUsed)
+					} else if n.TokensUsed > 0 {
+						n.TopupValue = fmt.Sprintf("Đã dùng %s tok", FormatTokenCount(n.TokensUsed))
+					}
 				}
 				n.LatencyMs = latencyMs
 				n.StatusDetail = fmt.Sprintf("Đã đồng bộ (%dms)", latencyMs)
@@ -1662,7 +1674,7 @@ func (p *MuseRouterPool) discoverMuseSubActionID(ctx context.Context, upstream, 
 		if _, recentlyChecked := p.cache.Get("muse_sub_action_probed"); recentlyChecked {
 			return ""
 		}
-		p.cache.Set("muse_sub_action_probed", true, 15*time.Minute)
+		p.cache.Set("muse_sub_action_probed", true, 3*time.Minute)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, upstream+"/", nil)
 	if err != nil {
@@ -1688,7 +1700,7 @@ func (p *MuseRouterPool) discoverMuseSubActionID(ctx context.Context, upstream, 
 		}
 		seen[ch] = true
 		checked++
-		if checked > 12 {
+		if checked > 25 {
 			break
 		}
 		cReq, errReq := http.NewRequestWithContext(ctx, http.MethodGet, upstream+ch, nil)
