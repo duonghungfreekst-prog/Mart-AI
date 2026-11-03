@@ -2,11 +2,14 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -361,4 +364,51 @@ func TestTasksBatchEndpoint(t *testing.T) {
 	}
 
 	t.Log("TestTasksBatchEndpoint: tất cả edge cases PASS")
+}
+
+func TestGzipAndStaticCaching(t *testing.T) {
+	t.Setenv("MART_ADMIN_PASSWORD", "")
+	tmpDir := t.TempDir()
+	app, err := NewServerApp(filepath.Join(tmpDir, "data"))
+	if err != nil {
+		t.Fatalf("NewServerApp: %v", err)
+	}
+	defer app.pool.Shutdown()
+	handler := app.Routes()
+
+	reqJS := httptest.NewRequest(http.MethodGet, "/app.js?v=5.2", nil)
+	reqJS.Header.Set("Accept-Encoding", "gzip")
+	recJS := httptest.NewRecorder()
+	handler.ServeHTTP(recJS, reqJS)
+	if recJS.Code != http.StatusOK {
+		t.Fatalf("GET /app.js?v=5.2 status=%d", recJS.Code)
+	}
+	if recJS.Header().Get("Content-Encoding") != "gzip" {
+		t.Fatalf("Expected Content-Encoding=gzip, got %q", recJS.Header().Get("Content-Encoding"))
+	}
+	if recJS.Header().Get("Cache-Control") != "public, max-age=86400" {
+		t.Fatalf("Expected public cache for versioned JS, got %q", recJS.Header().Get("Cache-Control"))
+	}
+	compressedBytes := recJS.Body.Len()
+	gr, err := gzip.NewReader(recJS.Body)
+	if err != nil {
+		t.Fatalf("gzip.NewReader error: %v", err)
+	}
+	rawJS, err := io.ReadAll(gr)
+	_ = gr.Close()
+	if err != nil {
+		t.Fatalf("gunzip ReadAll error: %v", err)
+	}
+	if len(rawJS) < 120000 || compressedBytes > len(rawJS)/2 {
+		t.Fatalf("Unexpected sizes: raw=%d compressed=%d", len(rawJS), compressedBytes)
+	}
+	t.Logf("app.js compressed: %d bytes -> %d bytes (%.1f%% reduction)", len(rawJS), compressedBytes, 100.0*(1.0-float64(compressedBytes)/float64(len(rawJS))))
+
+	reqAdmin := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	reqAdmin.Header.Set("Accept-Encoding", "gzip")
+	recAdmin := httptest.NewRecorder()
+	handler.ServeHTTP(recAdmin, reqAdmin)
+	if !strings.Contains(recAdmin.Header().Get("Cache-Control"), "no-store") {
+		t.Fatalf("Expected no-store on /admin HTML, got %q", recAdmin.Header().Get("Cache-Control"))
+	}
 }

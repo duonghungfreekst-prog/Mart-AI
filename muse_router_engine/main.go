@@ -1,6 +1,8 @@
 package main
 
 import (
+	"compress/gzip"
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -13,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -318,17 +321,7 @@ func (a *ServerApp) Routes() http.Handler {
 			return
 		}
 		if req.NodeID == "all" || req.NodeID == "" {
-			nodes := a.pool.GetSummary().Nodes
-			probed := 0
-			readyCnt := 0
-			for _, n := range nodes {
-				if res, err := a.pool.WakeAndProbeNode(r.Context(), n.ID); err == nil {
-					probed++
-					if st, _ := res["status"].(string); st == "ready" {
-						readyCnt++
-					}
-				}
-			}
+			probed, readyCnt := probeAllNodesConcurrently(r.Context(), a.pool)
 			WriteJSONResponse(w, http.StatusOK, map[string]interface{}{
 				"probed":  probed,
 				"ready":   readyCnt,
@@ -349,19 +342,14 @@ func (a *ServerApp) Routes() http.Handler {
 			WriteJSONError(w, http.StatusMethodNotAllowed, "ERR_METHOD_NOT_ALLOWED")
 			return
 		}
-		nodes := a.pool.GetSummary().Nodes
-		probed := 0
-		for _, n := range nodes {
-			if _, err := a.pool.WakeAndProbeNode(r.Context(), n.ID); err == nil {
-				probed++
-			}
-		}
+		probed, _ := probeAllNodesConcurrently(r.Context(), a.pool)
 		WriteJSONResponse(w, http.StatusOK, map[string]interface{}{
 			"probed":  probed,
 			"summary": a.pool.GetSummary(),
 		})
 	})
 
+	mux.HandleFunc("/api/accounts/remote-login/prewarm", a.handleRemoteLoginPrewarm)
 	mux.HandleFunc("/api/accounts/remote-login/start", a.handleRemoteLoginStart)
 	mux.HandleFunc("/api/accounts/remote-login/state", a.handleRemoteLoginState)
 	mux.HandleFunc("/api/accounts/remote-login/input", a.handleRemoteLoginInput)
@@ -890,10 +878,15 @@ func (a *ServerApp) Routes() http.Handler {
 	}
 	fileServer := http.FileServer(http.FS(webRoot))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
-		w.Header().Set("Pragma", "no-cache")
+		p := r.URL.Path
+		if r.URL.Query().Get("v") != "" && (strings.HasSuffix(p, ".js") || strings.HasSuffix(p, ".css") || strings.HasSuffix(p, ".svg") || strings.HasSuffix(p, ".png") || strings.HasSuffix(p, ".ico")) {
+			w.Header().Set("Cache-Control", "public, max-age=86400")
+		} else {
+			w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+			w.Header().Set("Pragma", "no-cache")
+		}
 		// Hỗ trợ SPA route cho trang cài đặt riêng (/cai-dat, /admin) và thư viện (/library/artifacts)
-		if r.URL.Path == "/cai-dat" || r.URL.Path == "/admin" || r.URL.Path == "/library/artifacts" {
+		if p == "/cai-dat" || p == "/admin" || p == "/library/artifacts" {
 			r2 := new(http.Request)
 			*r2 = *r
 			u2 := *r.URL
@@ -905,10 +898,136 @@ func (a *ServerApp) Routes() http.Handler {
 		fileServer.ServeHTTP(w, r)
 	})
 
-	return SecurityHeadersMiddleware(AdminAuthMiddlewareWithJWT(mux, a.jwtMgr))
+	return SecurityHeadersMiddleware(GzipMiddleware(AdminAuthMiddlewareWithJWT(mux, a.jwtMgr)))
+}
+
+func probeAllNodesConcurrently(ctx context.Context, pool *MuseRouterPool) (int, int) {
+	nodes := pool.GetSummary().Nodes
+	if len(nodes) == 0 {
+		return 0, 0
+	}
+	var probed int64
+	var readyCnt int64
+	sem := make(chan struct{}, 4)
+	var wg sync.WaitGroup
+	for _, n := range nodes {
+		wg.Add(1)
+		go func(nodeID string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			if res, err := pool.WakeAndProbeNode(ctx, nodeID); err == nil {
+				atomic.AddInt64(&probed, 1)
+				if st, _ := res["status"].(string); st == "ready" {
+					atomic.AddInt64(&readyCnt, 1)
+				}
+			}
+		}(n.ID)
+	}
+	wg.Wait()
+	return int(probed), int(readyCnt)
+}
+
+var gzipWriterPool = sync.Pool{
+	New: func() interface{} {
+		gw, _ := gzip.NewWriterLevel(io.Discard, gzip.BestSpeed)
+		return gw
+	},
+}
+
+type gzipResponseWriter struct {
+	http.ResponseWriter
+	gz          *gzip.Writer
+	wroteHeader bool
+	passthrough bool
+}
+
+func (g *gzipResponseWriter) WriteHeader(code int) {
+	if g.wroteHeader {
+		return
+	}
+	g.wroteHeader = true
+	if code < 200 || code == http.StatusNoContent || code == http.StatusNotModified {
+		g.passthrough = true
+		g.ResponseWriter.WriteHeader(code)
+		return
+	}
+	g.Header().Del("Content-Length")
+	g.Header().Set("Content-Encoding", "gzip")
+	g.Header().Add("Vary", "Accept-Encoding")
+	gz := gzipWriterPool.Get().(*gzip.Writer)
+	gz.Reset(g.ResponseWriter)
+	g.gz = gz
+	g.ResponseWriter.WriteHeader(code)
+}
+
+func (g *gzipResponseWriter) Write(b []byte) (int, error) {
+	if !g.wroteHeader {
+		if g.Header().Get("Content-Type") == "" {
+			g.Header().Set("Content-Type", http.DetectContentType(b))
+		}
+		g.WriteHeader(http.StatusOK)
+	}
+	if g.passthrough || g.gz == nil {
+		return g.ResponseWriter.Write(b)
+	}
+	return g.gz.Write(b)
+}
+
+func (g *gzipResponseWriter) Flush() {
+	if g.gz != nil {
+		_ = g.gz.Flush()
+	}
+	if f, ok := g.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (g *gzipResponseWriter) Close() {
+	if g.gz != nil {
+		_ = g.gz.Close()
+		g.gz.Reset(io.Discard)
+		gzipWriterPool.Put(g.gz)
+		g.gz = nil
+	}
+}
+
+func shouldSkipGzip(path string) bool {
+	if path == "/api/accounts/extension.zip" ||
+		path == "/api/accounts/remote-login/state" ||
+		path == "/api/accounts/remote-login/input" {
+		return true
+	}
+	lower := strings.ToLower(path)
+	for _, ext := range []string{".png", ".jpg", ".jpeg", ".webp", ".gif", ".woff2", ".zip"} {
+		if strings.HasSuffix(lower, ext) {
+			return true
+		}
+	}
+	return false
+}
+
+func GzipMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead ||
+			r.Method == http.MethodOptions ||
+			r.Header.Get("Upgrade") != "" ||
+			!strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") ||
+			shouldSkipGzip(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		r.Header.Del("Range")
+		gw := &gzipResponseWriter{ResponseWriter: w}
+		defer gw.Close()
+		next.ServeHTTP(gw, r)
+	})
 }
 
 func tryStartLocalPythonBridge(rootDir string) {
+	if os.Getenv("RENDER") != "" {
+		return
+	}
 	bridgeURL := os.Getenv("MUSE_AI_BRIDGE_URL")
 	if bridgeURL == "" {
 		bridgeURL = "http://127.0.0.1:18089"

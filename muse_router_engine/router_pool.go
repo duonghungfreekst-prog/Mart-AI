@@ -111,24 +111,46 @@ type RouterSummary struct {
 }
 
 type MuseRouterPool struct {
-	mu            sync.RWMutex
-	nodes         []*MuseAccountNode
-	threads       []*ChatThread
-	strategy      string
-	autoFailover  bool
-	roundRobinIdx uint64
-	queuedCount   int64
-	vaultPath     string
-	threadsPath   string
-	libsqlStore   *LibSQLStore
-	rustBridge    *RustCoreBridge
-	cache         *TTLCache
-	jobQueue      chan func()
-	aiBridgeURL   string
-	aiBridgeToken string
-	httpClient    *http.Client
-	cdpManager    *CDPBrowserManager
-	shutdownCh    chan struct{}
+	mu                sync.RWMutex
+	nodes             []*MuseAccountNode
+	threads           []*ChatThread
+	strategy          string
+	autoFailover      bool
+	roundRobinIdx     uint64
+	queuedCount       int64
+	cachedMemAllocMB  uint64
+	bridgeDownUntilMs int64
+	vaultPath         string
+	threadsPath       string
+	libsqlStore       *LibSQLStore
+	rustBridge        *RustCoreBridge
+	cache             *TTLCache
+	jobQueue          chan func()
+	aiBridgeURL       string
+	aiBridgeToken     string
+	httpClient        *http.Client
+	cdpManager        *CDPBrowserManager
+	shutdownCh        chan struct{}
+}
+
+func (p *MuseRouterPool) shouldTryPythonBridge() bool {
+	u := strings.TrimSpace(p.aiBridgeURL)
+	if u == "" || u == "http://127.0.0.1:1" {
+		return false
+	}
+	if (os.Getenv("RENDER") != "" || os.Getenv("PORT") != "") && os.Getenv("MUSE_AI_BRIDGE_URL") == "" {
+		return false
+	}
+	if u == "http://127.0.0.1:18089" && atomic.LoadInt64(&p.bridgeDownUntilMs) > time.Now().UnixMilli() {
+		return false
+	}
+	return true
+}
+
+func (p *MuseRouterPool) markPythonBridgeDown() {
+	if strings.TrimSpace(p.aiBridgeURL) == "http://127.0.0.1:18089" {
+		atomic.StoreInt64(&p.bridgeDownUntilMs, time.Now().Add(20*time.Second).UnixMilli())
+	}
 }
 
 func NewMuseRouterPool(
@@ -170,6 +192,10 @@ func NewMuseRouterPool(
 		},
 		shutdownCh: make(chan struct{}),
 	}
+
+	var initMem runtime.MemStats
+	runtime.ReadMemStats(&initMem)
+	atomic.StoreUint64(&pool.cachedMemAllocMB, initMem.Alloc/(1024*1024))
 
 	pool.cdpManager = NewCDPBrowserManager(dataDir, pool)
 	for i := 0; i < MaxWorkerGoroutines; i++ {
@@ -230,6 +256,7 @@ func (p *MuseRouterPool) memoryMonitorLoop() {
 			var m runtime.MemStats
 			runtime.ReadMemStats(&m)
 			allocMB := m.Alloc / (1024 * 1024)
+			atomic.StoreUint64(&p.cachedMemAllocMB, allocMB)
 			if allocMB > MemWarnThresholdMB {
 				LogWarn("Memory allocation exceeded %dMB threshold: current=%dMB", MemWarnThresholdMB, allocMB)
 			}
@@ -249,7 +276,7 @@ func (p *MuseRouterPool) autoSyncAccountsLoop() {
 		p.AutoSyncIdleNodes()
 	}
 
-	ticker := time.NewTicker(45 * time.Second)
+	ticker := time.NewTicker(180 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
@@ -509,12 +536,34 @@ func (p *MuseRouterPool) saveThreadsLocked() error {
 	return nil
 }
 
+func (p *MuseRouterPool) saveSingleThreadLocked(target *ChatThread) error {
+	if target == nil {
+		return nil
+	}
+	if p.libsqlStore != nil {
+		if err := p.libsqlStore.SaveThreadWithMessages(target); err != nil {
+			LogError("libSQL SaveThreadWithMessages error: %v", err)
+			return err
+		}
+	}
+	snap := make([]*ChatThread, 0, len(p.threads))
+	for _, t := range p.threads {
+		snap = append(snap, cloneChatThread(t))
+	}
+	tPath := p.threadsPath
+	_ = p.SubmitAsyncJob(func() {
+		if data, err := json.Marshal(snap); err == nil {
+			_ = os.WriteFile(tPath, data, 0600)
+		}
+	})
+	return nil
+}
+
 func (p *MuseRouterPool) GetSummary() RouterSummary {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
+	allocMB := atomic.LoadUint64(&p.cachedMemAllocMB)
 
 	safeNodes := make([]*MuseAccountNode, 0, len(p.nodes))
 	var totalTokens int64
@@ -610,7 +659,7 @@ func (p *MuseRouterPool) GetSummary() RouterSummary {
 		FormattedTokens:   FormatTokenCount(totalTokens),
 		RoutingStrategy:   p.strategy,
 		AutoFailover:      p.autoFailover,
-		MemAllocMB:        m.Alloc / (1024 * 1024),
+		MemAllocMB:        allocMB,
 		LibSQLDriver:      libDriver,
 		LibSQLURL:         libURL,
 		Nodes:             safeNodes,
@@ -1205,22 +1254,30 @@ func (p *MuseRouterPool) WakeAndProbeNode(parentCtx context.Context, nodeID stri
 	ctx, cancel := context.WithTimeout(parentCtx, 15*time.Second)
 	defer cancel()
 
-	reqPayload, _ := json.Marshal(map[string]interface{}{
-		"encrypted_credential": target.EncryptedCredential,
-		"auth_type":            target.AuthType,
-		"upstream_url":         target.UpstreamURL,
-		"node_id":              target.ID,
-		"proxy_url":            target.ProxyURL,
-	})
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.aiBridgeURL+"/internal/probe", bytes.NewReader(reqPayload))
-	if err != nil {
-		return nil, err
+	var resp *http.Response
+	var err error
+	if p.shouldTryPythonBridge() {
+		reqPayload, _ := json.Marshal(map[string]interface{}{
+			"encrypted_credential": target.EncryptedCredential,
+			"auth_type":            target.AuthType,
+			"upstream_url":         target.UpstreamURL,
+			"node_id":              target.ID,
+			"proxy_url":            target.ProxyURL,
+		})
+		req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, p.aiBridgeURL+"/internal/probe", bytes.NewReader(reqPayload))
+		if errReq != nil {
+			return nil, errReq
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Internal-Bridge-Token", p.aiBridgeToken)
+		resp, err = p.httpClient.Do(req)
+		if err != nil {
+			p.markPythonBridgeDown()
+		}
+	} else {
+		err = errors.New("AI_BRIDGE_BYPASSED")
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Internal-Bridge-Token", p.aiBridgeToken)
 
-	resp, err := p.httpClient.Do(req)
 	var result map[string]interface{}
 	if err != nil {
 		directRes, errDirect := p.wakeAndProbeNodeDirect(ctx, target)
@@ -1466,30 +1523,38 @@ func (p *MuseRouterPool) RouteAndExecuteChat(
 		startTs := time.Now()
 
 		ctx, cancel := context.WithTimeout(parentCtx, 60*time.Second)
-		bridgeBody, _ := json.Marshal(map[string]interface{}{
-			"encrypted_credential": candidate.EncryptedCredential,
-			"auth_type":            candidate.AuthType,
-			"upstream_url":         candidate.UpstreamURL,
-			"proxy_url":            candidate.ProxyURL,
-			"model":                model,
-			"messages":             messagesPayload,
-			"attachments":          attachments,
-			"node_label":           candidate.Label,
-			"session_id":           resolvedThreadID,
-			"turn_id":              turnID,
-		})
+		var resp *http.Response
+		var errDo error
+		if p.shouldTryPythonBridge() {
+			bridgeBody, _ := json.Marshal(map[string]interface{}{
+				"encrypted_credential": candidate.EncryptedCredential,
+				"auth_type":            candidate.AuthType,
+				"upstream_url":         candidate.UpstreamURL,
+				"proxy_url":            candidate.ProxyURL,
+				"model":                model,
+				"messages":             messagesPayload,
+				"attachments":          attachments,
+				"node_label":           candidate.Label,
+				"session_id":           resolvedThreadID,
+				"turn_id":              turnID,
+			})
 
-		req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, p.aiBridgeURL+"/internal/chat", bytes.NewReader(bridgeBody))
-		if errReq != nil {
-			cancel()
-			p.releaseNode(candidate.ID, 0, 0, false, errReq.Error())
-			lastErr = errReq
-			continue
+			req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, p.aiBridgeURL+"/internal/chat", bytes.NewReader(bridgeBody))
+			if errReq != nil {
+				cancel()
+				p.releaseNode(candidate.ID, 0, 0, false, errReq.Error())
+				lastErr = errReq
+				continue
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-Internal-Bridge-Token", p.aiBridgeToken)
+			resp, errDo = p.httpClient.Do(req)
+			if errDo != nil {
+				p.markPythonBridgeDown()
+			}
+		} else {
+			errDo = errors.New("AI_BRIDGE_BYPASSED")
 		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Internal-Bridge-Token", p.aiBridgeToken)
-
-		resp, errDo := p.httpClient.Do(req)
 		if errDo != nil {
 			cancel()
 			errMsg := fmt.Sprintf("Không kết nối được dịch vụ AI Bridge trên %s: %v", candidate.Label, errDo)
@@ -1615,6 +1680,9 @@ func (p *MuseRouterPool) RouteAndExecuteChat(
 func (p *MuseRouterPool) fetchBridgeBusyMaps(parentCtx context.Context) (map[string]bool, map[string]bool) {
 	busyFPs := make(map[string]bool)
 	busyLabels := make(map[string]bool)
+	if !p.shouldTryPythonBridge() {
+		return busyFPs, busyLabels
+	}
 	ctxTimeout, cancel := context.WithTimeout(parentCtx, 350*time.Millisecond)
 	defer cancel()
 
@@ -1624,6 +1692,7 @@ func (p *MuseRouterPool) fetchBridgeBusyMaps(parentCtx context.Context) (map[str
 	}
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
+		p.markPythonBridgeDown()
 		return busyFPs, busyLabels
 	}
 	defer resp.Body.Close()
@@ -1834,7 +1903,7 @@ func (p *MuseRouterPool) reserveQuestionTurn(
 		},
 	)
 
-	_ = p.saveThreadsLocked()
+	_ = p.saveSingleThreadLocked(target)
 	return target.ID, turnID, out
 }
 
@@ -1905,7 +1974,7 @@ func (p *MuseRouterPool) completeQuestionTurn(
 			})
 		}
 		t.UpdatedAt = time.Now().Format(time.RFC3339)
-		_ = p.saveThreadsLocked()
+		_ = p.saveSingleThreadLocked(t)
 		return cloneChatThread(t)
 	}
 	return nil
@@ -1927,7 +1996,7 @@ func (p *MuseRouterPool) cancelQuestionTurn(threadID string, turnID string) {
 			filtered = append(filtered, m)
 		}
 		t.Messages = filtered
-		_ = p.saveThreadsLocked()
+		_ = p.saveSingleThreadLocked(t)
 		return
 	}
 }
@@ -1967,7 +2036,7 @@ func (p *MuseRouterPool) CreateNewThread(title string, model string, workspace s
 		Messages:  []ChatMessage{},
 	}
 	p.threads = append([]*ChatThread{t}, p.threads...)
-	_ = p.saveThreadsLocked()
+	_ = p.saveSingleThreadLocked(t)
 	c := *t
 	return &c
 }
@@ -2075,13 +2144,23 @@ func (p *MuseRouterPool) applyBackgroundFollowups(rawFollowups interface{}) []*C
 }
 
 func (p *MuseRouterPool) GetLiveActivityStatus(ctx context.Context) map[string]interface{} {
-	ctxTimeout, cancel := context.WithTimeout(ctx, 1200*time.Millisecond)
+	if !p.shouldTryPythonBridge() {
+		return map[string]interface{}{
+			"active":       false,
+			"status_text":  "Đã kết nối",
+			"avatar_frame": "",
+			"partial_md":   "",
+		}
+	}
+	ctxTimeout, cancel := context.WithTimeout(ctx, 800*time.Millisecond)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctxTimeout, http.MethodGet, p.aiBridgeURL+"/internal/live-status", nil)
 	if err == nil {
 		resp, err2 := p.httpClient.Do(req)
-		if err2 == nil {
+		if err2 != nil {
+			p.markPythonBridgeDown()
+		} else {
 			defer resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				var out map[string]interface{}

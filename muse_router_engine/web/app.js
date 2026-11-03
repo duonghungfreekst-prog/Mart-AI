@@ -1347,6 +1347,9 @@
 
   function switchMainView(mode) {
     state.viewMode = mode;
+    if (mode !== "accounts" && typeof activeInlineChromeCleanup === "function") {
+      activeInlineChromeCleanup(true);
+    }
     // Ẩn/hiện thanh rail bên trái khi vào Trang Cài Đặt Riêng (accounts)
     var leftRail = document.querySelector(".muse-left-rail");
     if (leftRail) {
@@ -1393,7 +1396,10 @@
     if (mode === "library") {
       loadLibraryArtifacts();
     } else if (mode === "accounts") {
-      silentAutoSyncAccounts();
+      if (Date.now() - (state.lastSilentSyncTs || 0) > 180000) {
+        state.lastSilentSyncTs = Date.now();
+        silentAutoSyncAccounts();
+      }
       refreshLibSQLStatus();
       var studioCard = document.getElementById("libsqlStudioCard");
       var sqlInput = document.getElementById("libsqlSqlInput");
@@ -1401,14 +1407,12 @@
         executeAndRenderLibSQLQuery(sqlInput.value.trim());
       }
       if (
-        !state.autoOpenedInlineChromeOnce &&
+        !state.prewarmedChromeOnce &&
         state.summary &&
         (state.summary.ready_nodes || 0) === 0
       ) {
-        state.autoOpenedInlineChromeOnce = true;
-        setTimeout(function () {
-          openRemoteBrowserLoginModal(document.getElementById("btnExtAutoLoginNew"));
-        }, 150);
+        state.prewarmedChromeOnce = true;
+        apiRequest("/api/accounts/remote-login/prewarm", { method: "POST" }).catch(function () {});
       }
     } else if (mode === "search") {
       var si = document.getElementById("searchInput");
@@ -1785,8 +1789,11 @@
     let pollTimer = null;
     let pollBusy = false;
     let inputChain = Promise.resolve();
-    let virtualWidth = 1100;
-    let virtualHeight = 680;
+    let virtualWidth = 960;
+    let virtualHeight = 560;
+    let lastFrameSeq = 0;
+    let pendingTypedText = "";
+    let typeFlushTimer = null;
 
     function setExpandedMode(expand) {
       isExpanded = !!expand;
@@ -1805,7 +1812,7 @@
         chromeBody.removeAttribute("style");
         if (viewportWrap) {
           viewportWrap.style.flex = "";
-          viewportWrap.style.aspectRatio = "1100/680";
+          viewportWrap.style.aspectRatio = "960/560";
           viewportWrap.style.minHeight = "";
         }
         if (btnExpand) btnExpand.textContent = "⛶ Phóng rộng";
@@ -1816,6 +1823,11 @@
       if (closed) return;
       closed = true;
       activeInlineChromeCleanup = null;
+      if (typeFlushTimer) {
+        clearTimeout(typeFlushTimer);
+        typeFlushTimer = null;
+      }
+      pendingTypedText = "";
       if (pollTimer) {
         clearInterval(pollTimer);
         pollTimer = null;
@@ -1866,10 +1878,11 @@
       if (!snap || closed) return;
       if (snap.width) virtualWidth = snap.width;
       if (snap.height) virtualHeight = snap.height;
-      if (snap.url && urlBar) {
+      if (snap.frame_seq) lastFrameSeq = snap.frame_seq;
+      if (snap.url && urlBar && urlBar.value !== snap.url) {
         urlBar.value = snap.url;
       }
-      if (snap.frame && screenImg) {
+      if (!snap.unchanged && snap.frame && screenImg) {
         screenImg.src = snap.frame;
         screenImg.style.display = "block";
         if (statusOverlay) statusOverlay.style.display = "none";
@@ -1902,10 +1915,27 @@
         .catch(function () {});
     }
 
+    function flushPendingTypedText() {
+      if (typeFlushTimer) {
+        clearTimeout(typeFlushTimer);
+        typeFlushTimer = null;
+      }
+      if (!pendingTypedText) return;
+      const chunk = pendingTypedText;
+      pendingTypedText = "";
+      enqueueRemoteInput({ type: "text", text: chunk });
+    }
+
+    function queueTypedChar(ch) {
+      pendingTypedText += ch;
+      if (typeFlushTimer) clearTimeout(typeFlushTimer);
+      typeFlushTimer = setTimeout(flushPendingTypedText, 70);
+    }
+
     function computeImageCoords(clientX, clientY) {
-      if (!screenImg) return { x: 550, y: 340 };
+      if (!screenImg) return { x: 480, y: 280 };
       const rect = screenImg.getBoundingClientRect();
-      if (!rect.width || !rect.height) return { x: 550, y: 340 };
+      if (!rect.width || !rect.height) return { x: 480, y: 280 };
       const containerRatio = rect.width / rect.height;
       const targetRatio = virtualWidth / virtualHeight;
       let renderW = rect.width;
@@ -1957,6 +1987,7 @@
           quickInput.blur();
         }
         if (viewportWrap) viewportWrap.focus({ preventScroll: true });
+        flushPendingTypedText();
         const pt = computeImageCoords(ev.clientX, ev.clientY);
         showClickRipple(ev.clientX, ev.clientY);
         enqueueRemoteInput({ type: "click", x: pt.x, y: pt.y });
@@ -1967,8 +1998,9 @@
         if (!isExpanded && !isChromeFocused) return;
         ev.preventDefault();
         const now = Date.now();
-        if (now - lastWheelTs < 110) return;
+        if (now - lastWheelTs < 140) return;
         lastWheelTs = now;
+        flushPendingTypedText();
         const pt = computeImageCoords(ev.clientX, ev.clientY);
         enqueueRemoteInput({
           type: "scroll",
@@ -1994,6 +2026,7 @@
       if (pasted) {
         ev.preventDefault();
         ev.stopImmediatePropagation();
+        flushPendingTypedText();
         enqueueRemoteInput({ type: "text", text: pasted });
       }
     }
@@ -2006,6 +2039,7 @@
       if ((ev.ctrlKey || ev.metaKey) && (ev.key === "a" || ev.key === "A" || ev.key === "Backspace")) {
         ev.preventDefault();
         ev.stopImmediatePropagation();
+        flushPendingTypedText();
         enqueueRemoteInput({ type: "clear" });
         return;
       }
@@ -2029,13 +2063,14 @@
         }
         ev.preventDefault();
         ev.stopImmediatePropagation();
+        flushPendingTypedText();
         enqueueRemoteInput({ type: "key", key: ev.key });
         return;
       }
       if (ev.key && ev.key.length === 1 && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
         ev.preventDefault();
         ev.stopImmediatePropagation();
-        enqueueRemoteInput({ type: "text", text: ev.key });
+        queueTypedChar(ev.key);
       }
     }
 
@@ -2124,11 +2159,14 @@
       if (startRes.height) virtualHeight = startRes.height;
 
       pollTimer = setInterval(async function () {
-        if (closed || !sessionId || pollBusy) return;
+        if (closed || !sessionId || pollBusy || document.hidden) return;
         pollBusy = true;
         try {
           const snap = await apiRequest(
-            "/api/accounts/remote-login/state?session_id=" + encodeURIComponent(sessionId)
+            "/api/accounts/remote-login/state?session_id=" +
+              encodeURIComponent(sessionId) +
+              "&after_seq=" +
+              lastFrameSeq
           );
           applySnapshot(snap);
         } catch (_) {
@@ -2136,7 +2174,7 @@
         } finally {
           pollBusy = false;
         }
-      }, 550);
+      }, 650);
     } catch (startErr) {
       showToast("Không thể khởi động trang Chrome đăng nhập: " + startErr.message);
       cleanupInlineChrome(false);
@@ -2867,8 +2905,10 @@
         var currentCartPct = 14;
         setMuseCharacterActivity(true, promptText, "", false, currentCartPct);
 
+        var livePollInFlight = false;
         var livePollTimer = setInterval(async function () {
-          if (!state.isGenerating) return;
+          if ((state.pendingChatCount || 0) === 0 || stoppedByUser || livePollInFlight || document.hidden) return;
+          livePollInFlight = true;
           currentCartPct = Math.min(88, currentCartPct + 6);
           try {
             const live = await apiRequest("/api/chat/live-status");
@@ -2891,9 +2931,11 @@
             }
           } catch (_) {
             // Bỏ qua lỗi mạng tạm thời khi đang poll trạng thái
+          } finally {
+            livePollInFlight = false;
           }
           setMuseCharacterActivity(true, promptText, "", false, currentCartPct);
-        }, 420);
+        }, 1200);
 
         const stopBtn = document.getElementById("btnStopGenerating");
         var stoppedByUser = false;
@@ -2912,13 +2954,10 @@
         }
 
         try {
-          // Inject active memories vào prompt (nếu có bộ nhớ đang bật)
+          // Inject active memories vào prompt (dùng RAM cache để không trễ 1 round-trip mạng mỗi tin nhắn)
           var finalPrompt = promptText || "Hãy phân tích tệp đính kèm";
           try {
-            var memResult = await libsqlExec(
-              "SELECT content FROM muse_memories WHERE is_active=1 ORDER BY created_at ASC LIMIT 10"
-            );
-            var memRows = libsqlRows(memResult);
+            var memRows = await getActiveMemoriesCached();
             if (memRows.length > 0) {
               var memBlock = memRows.map(function(r){ return r.content; }).join("\n");
               finalPrompt = "[Hướng dẫn tùy chỉnh]\n" + memBlock + "\n\n[Yêu cầu]\n" + finalPrompt;
@@ -3141,8 +3180,29 @@
     }
   }
 
+  async function getActiveMemoriesCached() {
+    var now = Date.now();
+    if (Array.isArray(state.cachedActiveMemories) && now - (state.cachedActiveMemoriesTs || 0) < 120000) {
+      return state.cachedActiveMemories;
+    }
+    try {
+      var memResult = await libsqlExec(
+        "SELECT content FROM muse_memories WHERE is_active=1 ORDER BY created_at ASC LIMIT 10"
+      );
+      var rows = libsqlRows(memResult);
+      state.cachedActiveMemories = rows;
+      state.cachedActiveMemoriesTs = now;
+      return rows;
+    } catch (_) {
+      state.cachedActiveMemories = [];
+      state.cachedActiveMemoriesTs = now;
+      return [];
+    }
+  }
+
   async function pollBackgroundActivity() {
-    if (bgPollBusy) return;
+    if (bgPollBusy || document.hidden) return;
+    if ((state.pendingChatCount || 0) === 0 && !state.isGenerating && !state.bgActive) return;
     bgPollBusy = true;
     try {
       const live = await apiRequest("/api/chat/live-status");
@@ -3202,6 +3262,22 @@
   }
 
   async function initSession() {
+    setupEventListeners();
+    wireSearchPanel();
+    wireDocsPanel();
+    wireMemoriesPanel();
+    wireTasksPanel();
+    wireLibraryPanel();
+
+    // Chuyển ngay sang panel tương ứng từ mili-giây đầu tiên (không chờ mạng)
+    var initPath = window.location.pathname;
+    if (initPath === "/cai-dat" || initPath === "/admin" || window.location.hash === "#cai-dat") {
+      state.lastSilentSyncTs = Date.now();
+      switchMainView("accounts");
+    } else if (initPath === "/library/artifacts") {
+      switchMainView("library");
+    }
+
     try {
       const auth = await apiRequest("/api/auth/session");
       if (auth && auth.token) {
@@ -3211,36 +3287,38 @@
       console.warn("Session init:", err);
     }
 
-    setupEventListeners();
-    await refreshRouterState(true);
-    await loadThreads();
-    await refreshLibSQLStatus();
+    await Promise.all([
+      refreshRouterState(true),
+      loadThreads(),
+    ]);
+    if (state.viewMode === "accounts") {
+      refreshLibSQLStatus();
+      if (
+        !state.prewarmedChromeOnce &&
+        state.summary &&
+        (state.summary.ready_nodes || 0) === 0
+      ) {
+        state.prewarmedChromeOnce = true;
+        apiRequest("/api/accounts/remote-login/prewarm", { method: "POST" }).catch(function () {});
+      }
+    }
+    // Nạp trước bộ nhớ tùy chỉnh vào RAM (không chặn giao diện)
+    getActiveMemoriesCached().catch(function () {});
 
     setInterval(function () {
-      refreshRouterState();
-    }, 5000);
+      if (!document.hidden) {
+        refreshRouterState();
+      }
+    }, 15000);
 
-    // Theo dõi trạng thái làm việc nền của Muse gốc (đọc bộ nhớ, viết code...) kể cả sau khi đã có câu trả lời
-    setInterval(pollBackgroundActivity, 1500);
+    document.addEventListener("visibilitychange", function () {
+      if (!document.hidden) {
+        refreshRouterState();
+      }
+    });
 
-    // Wire Search panel
-    wireSearchPanel();
-    // Wire Docs panel
-    wireDocsPanel();
-    // Wire Memories panel
-    wireMemoriesPanel();
-    // Wire Tasks panel
-    wireTasksPanel();
-    // Wire Library panel
-    wireLibraryPanel();
-
-    // Kiểm tra URL khởi tạo: nếu truy cập trang cài đặt riêng (/cai-dat hoặc /admin)
-    var initPath = window.location.pathname;
-    if (initPath === "/cai-dat" || initPath === "/admin" || window.location.hash === "#cai-dat") {
-      switchMainView("accounts");
-    } else if (initPath === "/library/artifacts") {
-      switchMainView("library");
-    }
+    // Theo dõi tiến trình chỉ khi đang có câu hỏi chờ xử lý (không bắn request rỗng khi nhàn rỗi)
+    setInterval(pollBackgroundActivity, 1800);
 
     // Keyboard shortcuts: Ctrl+K → Search, Ctrl+N → Chat mới, Ctrl+Shift+S → Trang cài đặt riêng, Esc → Chat
     document.addEventListener("keydown", function(ev) {
@@ -3558,6 +3636,7 @@
           "INSERT INTO muse_memories(id,title,content,is_active,created_at) VALUES(?,?,?,1,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title, content=excluded.content",
           [id, title, content, nowISO()]
         );
+        state.cachedActiveMemoriesTs = 0;
         document.getElementById("memoryEditorCard").classList.add("hidden-el");
         showToast("✅ Đã lưu bộ nhớ vào libSQL.");
         loadMemoriesList();
@@ -3611,6 +3690,7 @@
           var val = chk.checked ? 1 : 0;
           try {
             await libsqlExec("UPDATE muse_memories SET is_active=? WHERE id=?", [val, id]);
+            state.cachedActiveMemoriesTs = 0;
             showToast(chk.checked ? "✅ Bộ nhớ đã bật." : "ℹ️ Bộ nhớ đã tắt.");
           } catch(e) { showToast("❌ " + e.message); }
         });
@@ -3632,6 +3712,7 @@
           var id = btn.getAttribute("data-id");
           try {
             await libsqlExec("DELETE FROM muse_memories WHERE id=?", [id]);
+            state.cachedActiveMemoriesTs = 0;
             showToast("✅ Đã xóa bộ nhớ.");
             loadMemoriesList();
           } catch(e) { showToast("❌ " + e.message); }

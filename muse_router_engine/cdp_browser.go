@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,8 +22,8 @@ import (
 )
 
 const (
-	cdpViewportWidth  = 1100
-	cdpViewportHeight = 680
+	cdpViewportWidth  = 960
+	cdpViewportHeight = 560
 	cdpDefaultUA      = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 
@@ -248,10 +249,12 @@ type RemoteLoginSession struct {
 	Status           string // "waiting", "completed", "error", "cancelled"
 	CurrentURL       string
 	FrameDataURL     string
+	FrameSeq         uint64
 	Node             *MuseAccountNode
 	ErrorMsg         string
 	CreatedAt        time.Time
 	LastActive       time.Time
+	LastInteract     time.Time
 	interceptCh      chan struct{}
 	cancelFn         context.CancelFunc
 }
@@ -392,6 +395,12 @@ func (m *CDPBrowserManager) ensureBrowserLocked(ctx context.Context) (*cdpClient
 		"--no-first-run",
 		"--no-default-browser-check",
 		"--disable-background-networking",
+		"--disable-extensions",
+		"--disable-component-update",
+		"--disable-domain-reliability",
+		"--disable-client-side-phishing-detection",
+		"--metrics-recording-only",
+		"--no-pings",
 		"--disable-sync",
 		"--disable-translate",
 		"--mute-audio",
@@ -621,6 +630,7 @@ func (m *CDPBrowserManager) StartRemoteLoginSession(parentCtx context.Context, l
 		CurrentURL:       startURL,
 		CreatedAt:        time.Now(),
 		LastActive:       time.Now(),
+		LastInteract:     time.Now(),
 		interceptCh:      interceptCh,
 		cancelFn:         loopCancel,
 	}
@@ -685,8 +695,9 @@ func capturePageFrameAndURL(ctx context.Context, page *cdpClient) (string, strin
 		Data string `json:"data"`
 	}
 	errShot := page.Call(ctx, "Page.captureScreenshot", map[string]interface{}{
-		"format":  "jpeg",
-		"quality": 70,
+		"format":           "jpeg",
+		"quality":          52,
+		"optimizeForSpeed": true,
 	}, &shot)
 	if errShot != nil || shot.Data == "" {
 		return "", urlEval.Result.Value
@@ -764,22 +775,29 @@ func (m *CDPBrowserManager) monitorRemoteLoginLoop(ctx context.Context, sess *Re
 		cancel()
 
 		sess.mu.Lock()
-		if frame != "" {
+		if frame != "" && frame != sess.FrameDataURL {
 			sess.FrameDataURL = frame
+			sess.FrameSeq++
 		}
 		if curURL != "" {
 			sess.CurrentURL = curURL
 		}
+		sinceInteract := time.Since(sess.LastInteract)
 		sess.mu.Unlock()
 		m.mu.Lock()
 		m.lastUsed = time.Now()
 		m.mu.Unlock()
 
+		waitDur := 650 * time.Millisecond
+		if sinceInteract > 5*time.Second {
+			waitDur = 1800 * time.Millisecond
+		}
+
 		select {
 		case <-ctx.Done():
 			return
 		case <-sess.interceptCh:
-		case <-time.After(520 * time.Millisecond):
+		case <-time.After(waitDur):
 		}
 	}
 
@@ -791,12 +809,17 @@ func (m *CDPBrowserManager) monitorRemoteLoginLoop(ctx context.Context, sess *Re
 	sess.mu.Unlock()
 }
 
-func (m *CDPBrowserManager) GetRemoteLoginSnapshot(sessionID string) (map[string]interface{}, error) {
+func (m *CDPBrowserManager) GetRemoteLoginSnapshot(sessionID string, afterSeq ...uint64) (map[string]interface{}, error) {
 	m.sessionsMu.RLock()
 	sess, ok := m.sessions[sessionID]
 	m.sessionsMu.RUnlock()
 	if !ok {
 		return nil, errors.New("ERR_SESSION_NOT_FOUND")
+	}
+
+	var clientSeq uint64
+	if len(afterSeq) > 0 {
+		clientSeq = afterSeq[0]
 	}
 
 	sess.mu.Lock()
@@ -805,9 +828,14 @@ func (m *CDPBrowserManager) GetRemoteLoginSnapshot(sessionID string) (map[string
 		"session_id": sess.ID,
 		"status":     sess.Status,
 		"url":        sess.CurrentURL,
-		"frame":      sess.FrameDataURL,
+		"frame_seq":  sess.FrameSeq,
 		"width":      cdpViewportWidth,
 		"height":     cdpViewportHeight,
+	}
+	if clientSeq > 0 && sess.FrameSeq == clientSeq && sess.Status == "waiting" {
+		out["unchanged"] = true
+	} else {
+		out["frame"] = sess.FrameDataURL
 	}
 	if sess.Node != nil {
 		out["node"] = sess.Node
@@ -873,7 +901,9 @@ func (m *CDPBrowserManager) SendRemoteLoginInput(parentCtx context.Context, req 
 	}
 
 	sess.mu.Lock()
-	sess.LastActive = time.Now()
+	now := time.Now()
+	sess.LastActive = now
+	sess.LastInteract = now
 	st := sess.Status
 	page := sess.Page
 	sess.mu.Unlock()
@@ -985,8 +1015,9 @@ func (m *CDPBrowserManager) SendRemoteLoginInput(parentCtx context.Context, req 
 	frame, curURL := capturePageFrameAndURL(ctx, page)
 	sess.renderMu.Unlock()
 	sess.mu.Lock()
-	if frame != "" {
+	if frame != "" && frame != sess.FrameDataURL {
 		sess.FrameDataURL = frame
+		sess.FrameSeq++
 	}
 	if curURL != "" {
 		sess.CurrentURL = curURL
@@ -1406,13 +1437,36 @@ func (a *ServerApp) handleRemoteLoginStart(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+func (m *CDPBrowserManager) PrewarmAsync() {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		m.mu.Lock()
+		_, _, _ = m.ensureBrowserLocked(ctx)
+		m.mu.Unlock()
+	}()
+}
+
+func (a *ServerApp) handleRemoteLoginPrewarm(w http.ResponseWriter, r *http.Request) {
+	if a.pool.cdpManager != nil && a.pool.cdpManager.HasBrowserAvailable() {
+		a.pool.cdpManager.PrewarmAsync()
+	}
+	WriteJSONResponse(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 func (a *ServerApp) handleRemoteLoginState(w http.ResponseWriter, r *http.Request) {
 	sessID := strings.TrimSpace(r.URL.Query().Get("session_id"))
 	if sessID == "" || a.pool.cdpManager == nil {
 		WriteJSONError(w, http.StatusBadRequest, "ERR_INVALID_SESSION")
 		return
 	}
-	snap, err := a.pool.cdpManager.GetRemoteLoginSnapshot(sessID)
+	var afterSeq uint64
+	if rawSeq := strings.TrimSpace(r.URL.Query().Get("after_seq")); rawSeq != "" {
+		if parsed, errP := strconv.ParseUint(rawSeq, 10, 64); errP == nil {
+			afterSeq = parsed
+		}
+	}
+	snap, err := a.pool.cdpManager.GetRemoteLoginSnapshot(sessID, afterSeq)
 	if err != nil {
 		WriteJSONError(w, http.StatusNotFound, err.Error())
 		return
