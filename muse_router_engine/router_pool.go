@@ -648,11 +648,11 @@ func (p *MuseRouterPool) GetSummary() RouterSummary {
 		qCnt = 0
 	}
 
-	libDriver := "libsql"
+	libDriver := "sql40-mysql"
 	libURL := ""
 	if p.libsqlStore != nil {
 		p.libsqlStore.mu.RLock()
-		libURL = p.libsqlStore.dbURL
+		libURL = maskDatabaseURL(p.libsqlStore.dbURL)
 		p.libsqlStore.mu.RUnlock()
 	}
 

@@ -681,18 +681,7 @@ func TestAivenMySQLPushAndLiveSync(t *testing.T) {
 		t.Fatalf("SaveEncryptedCloudSQLConfig failed: %v", err)
 	}
 
-	// Mở kho SQLite local để lấy toàn bộ dữ liệu hiện có
-	localURL, _, err := normalizeFileLibSQLURL(prodDataDir)
-	if err != nil {
-		t.Fatalf("normalizeFileLibSQLURL: %v", err)
-	}
-	localStore, err := NewLibSQLStore(prodDataDir, localURL, "")
-	if err != nil {
-		t.Fatalf("Open local SQLite store failed: %v", err)
-	}
-	defer localStore.Close()
-
-	// Mở kho Aiven MySQL Cloud trực tiếp qua TLS 1.2+
+	// Mở kho Aiven MySQL Cloud trực tiếp qua TLS 1.2+ (100% không dùng SQLite hay libSQL)
 	remoteStore, err := NewLibSQLStore(prodDataDir, mysqlURL, "")
 	if err != nil {
 		t.Fatalf("Connect to Aiven MySQL failed: %v", err)
@@ -703,7 +692,7 @@ func TestAivenMySQLPushAndLiveSync(t *testing.T) {
 		t.Fatalf("Expected remoteStore.isMySQL == true")
 	}
 
-	// Đảm bảo tài khoản Quản trị viên (admin) có mặt trong cả SQL40 Local lẫn Aiven MySQL
+	// Đảm bảo tài khoản Quản trị viên (admin) có mặt trong Aiven MySQL Cloud
 	ensureAdminInStore := func(st *LibSQLStore) {
 		qRes, err := st.ExecuteSQL("SELECT id FROM mart_users WHERE id = 'admin' OR username = 'admin' LIMIT 1", nil)
 		if err == nil && len(qRes.Rows) > 0 {
@@ -722,14 +711,7 @@ func TestAivenMySQLPushAndLiveSync(t *testing.T) {
 			t.Fatalf("Insert default admin into store failed: %v", err)
 		}
 	}
-	ensureAdminInStore(localStore)
-
-	syncStats, err := remoteStore.SyncFromStore(localStore)
-	if err != nil {
-		t.Fatalf("SyncFromStore to Aiven MySQL failed: %v", err)
-	}
 	ensureAdminInStore(remoteStore)
-	t.Logf("Synced local SQL40 -> Aiven MySQL stats: %+v", syncStats)
 
 	st := remoteStore.GetStatus()
 	if !st.Connected {

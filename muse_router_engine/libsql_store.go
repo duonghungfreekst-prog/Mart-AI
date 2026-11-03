@@ -12,16 +12,14 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/tursodatabase/libsql-client-go/libsql"
-	_ "modernc.org/sqlite"
 )
 
-// LibSQLStore quản lý kết nối trực tiếp tới cơ sở dữ liệu chuẩn SQL40 / MySQL / libSQL
-// (hỗ trợ cả MySQL 8.0 TLS Aiven Cloud mysql://..., nhúng trực tiếp file:... WAL lẫn libsql://).
+// LibSQLStore quản lý kết nối trực tiếp tới cơ sở dữ liệu chuẩn SQL40 / Aiven MySQL Cloud TLS 1.2+
+// (đã loại bỏ hoàn toàn phụ thuộc libSQL và SQLite, vận hành 100% trên MySQL 8.4 TLS).
 type LibSQLStore struct {
 	mu              sync.RWMutex
 	db              *sql.DB
+	sharedPool      bool
 	dataDir         string
 	dbURL           string
 	dbFile          string
@@ -139,17 +137,20 @@ type HranaPipelineResponse struct {
 	Results []HranaStreamResult `json:"results"`
 }
 
+var (
+	sharedMySQLPools     sync.Map // map[string]*sql.DB
+	testDBEnsureOnce     sync.Once
+	testDBAvailable      bool
+	cleanedTestDirs      sync.Map // map[string]bool
+	schemaVerifiedURLs   sync.Map // map[string]bool
+)
+
 func normalizeFileLibSQLURL(dataDir string) (string, string, error) {
 	if err := os.MkdirAll(dataDir, 0750); err != nil {
 		return "", "", err
 	}
-	absDir, err := filepath.Abs(dataDir)
-	if err != nil {
-		return "", "", err
-	}
-	dbFilePath := filepath.Join(absDir, "muse_router.libsql.db")
-	slashPath := filepath.ToSlash(dbFilePath)
-	return "file:" + slashPath, dbFilePath, nil
+	cloudURL := LoadEncryptedCloudSQLConfig(dataDir)
+	return cloudURL, "", nil
 }
 
 func cloudSQLMasterKey() string {
@@ -171,13 +172,20 @@ func maskDatabaseURL(rawURL string) string {
 	return fmt.Sprintf("mysql://%s:***@%s:%s/%s?ssl-mode=REQUIRED", cfg.User, cfg.Host, cfg.Port, cfg.Database)
 }
 
+func withMySQLDatabaseName(rawURL string, dbName string) string {
+	cfg, err := parseMySQLConnectionURL(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	return fmt.Sprintf("mysql://%s:%s@%s:%s/%s?ssl-mode=REQUIRED", cfg.User, cfg.Password, cfg.Host, cfg.Port, dbName)
+}
+
 func isProductionDataDir(dataDir string) bool {
 	abs, err := filepath.Abs(dataDir)
 	if err != nil {
 		return false
 	}
 	lower := strings.ToLower(filepath.ToSlash(abs))
-	// Không tự động nạp cấu hình Cloud trong thư mục tạm của go test
 	if strings.Contains(lower, "/temp/") || strings.Contains(lower, "/tmp/") || strings.Contains(lower, "test_") {
 		return false
 	}
@@ -199,7 +207,6 @@ func SaveEncryptedCloudSQLConfig(dataDir string, rawURL string) error {
 	if err := os.WriteFile(targetFile, []byte(enc), 0600); err != nil {
 		return err
 	}
-	// Đồng thời lưu bản mã hóa tại thư mục engine nếu đang ở môi trường dự án để Render Cloud tự động nhận diện
 	if isProductionDataDir(dataDir) {
 		engineEncPath := filepath.Join(filepath.Dir(dataDir), "muse_router_engine", "sql40_cloud.enc")
 		if _, stErr := os.Stat(filepath.Dir(engineEncPath)); stErr == nil {
@@ -213,13 +220,10 @@ func SaveEncryptedCloudSQLConfig(dataDir string, rawURL string) error {
 func LoadEncryptedCloudSQLConfig(dataDir string) string {
 	candidates := []string{
 		filepath.Join(dataDir, "sql40_cloud.enc"),
-	}
-	if isProductionDataDir(dataDir) {
-		candidates = append(candidates,
-			filepath.Join("sql40_cloud.enc"),
-			filepath.Join("muse_router_engine", "sql40_cloud.enc"),
-			filepath.Join(filepath.Dir(dataDir), "muse_router_engine", "sql40_cloud.enc"),
-		)
+		filepath.Join("sql40_cloud.enc"),
+		filepath.Join("muse_router_engine", "sql40_cloud.enc"),
+		filepath.Join("..", "data", "sql40_cloud.enc"),
+		filepath.Join(filepath.Dir(dataDir), "muse_router_engine", "sql40_cloud.enc"),
 	}
 	for _, p := range candidates {
 		rawBytes, err := os.ReadFile(p)
@@ -238,95 +242,16 @@ func LoadEncryptedCloudSQLConfig(dataDir string) string {
 	return ""
 }
 
-// NewLibSQLStore khởi tạo kết nối chuẩn SQL40 (MySQL 8.0 TLS Aiven Cloud / SQLite WAL).
-func NewLibSQLStore(dataDir string, customURL string, authToken string) (*LibSQLStore, error) {
-	defaultURL, dbFile, err := normalizeFileLibSQLURL(dataDir)
+func getOrOpenMySQLPool(targetURL string) (*sql.DB, error) {
+	if existing, ok := sharedMySQLPools.Load(targetURL); ok {
+		if db, valid := existing.(*sql.DB); valid && db != nil {
+			return db, nil
+		}
+	}
+	db, err := sql.Open("mysql", targetURL)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("sql.Open(mysql) error: %w", err)
 	}
-
-	targetURL := strings.TrimSpace(customURL)
-	if targetURL == "" {
-		targetURL = nonEmptyStr(
-			os.Getenv("MUSE_MYSQL_URL"),
-			os.Getenv("DATABASE_URL"),
-			os.Getenv("MUSE_SQL_URL"),
-			os.Getenv("MUSE_LIBSQL_URL"),
-		)
-	}
-	if targetURL == "" {
-		targetURL = LoadEncryptedCloudSQLConfig(dataDir)
-	}
-	if targetURL == "" {
-		targetURL = defaultURL
-	}
-	if authToken == "" {
-		authToken = strings.TrimSpace(os.Getenv("MUSE_LIBSQL_AUTH_TOKEN"))
-	}
-
-	store := &LibSQLStore{
-		dataDir: dataDir,
-		dbFile:  dbFile,
-	}
-	if err := store.connectInternal(targetURL, authToken); err != nil {
-		if targetURL != defaultURL {
-			LogWarn("Cloud SQL (%s) connect failed (%v), falling back to local SQL40 WAL", maskDatabaseURL(targetURL), err)
-			if errFallback := store.connectInternal(defaultURL, ""); errFallback != nil {
-				return nil, errFallback
-			}
-		} else {
-			return nil, err
-		}
-	}
-	if err := store.initSchema(); err != nil {
-		_ = store.Close()
-		return nil, err
-	}
-	return store, nil
-}
-
-func (s *LibSQLStore) connectInternal(targetURL string, authToken string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	lowerURL := strings.ToLower(strings.TrimSpace(targetURL))
-	isMySQL := strings.HasPrefix(lowerURL, "mysql://")
-	isRemote := isMySQL ||
-		strings.HasPrefix(lowerURL, "libsql://") ||
-		strings.HasPrefix(lowerURL, "http://") ||
-		strings.HasPrefix(lowerURL, "https://") ||
-		strings.HasPrefix(lowerURL, "ws://") ||
-		strings.HasPrefix(lowerURL, "wss://")
-
-	var db *sql.DB
-	var err error
-
-	if isMySQL {
-		db, err = sql.Open("mysql", targetURL)
-		if err != nil {
-			return fmt.Errorf("sql.Open(mysql) error: %w", err)
-		}
-	} else if isRemote && authToken != "" {
-		connector, connErr := libsql.NewConnector(targetURL, libsql.WithAuthToken(authToken))
-		if connErr != nil {
-			return fmt.Errorf("libsql NewConnector error: %w", connErr)
-		}
-		db = sql.OpenDB(connector)
-	} else if isRemote {
-		db, err = sql.Open("libsql", targetURL)
-		if err != nil {
-			return fmt.Errorf("sql.Open(libsql) error: %w", err)
-		}
-	} else {
-		// Mở trực tiếp bằng Standard SQL40 Engine (database/sql + modernc.org/sqlite thuần chuẩn SQL)
-		cleanPath := strings.TrimPrefix(targetURL, "file://")
-		cleanPath = strings.TrimPrefix(cleanPath, "file:")
-		db, err = sql.Open("sqlite", cleanPath)
-		if err != nil {
-			return fmt.Errorf("sql.Open(sqlite/sql40) error: %w", err)
-		}
-	}
-
 	db.SetMaxOpenConns(16)
 	db.SetMaxIdleConns(8)
 	db.SetConnMaxIdleTime(5 * time.Minute)
@@ -334,45 +259,144 @@ func (s *LibSQLStore) connectInternal(targetURL string, authToken string) error 
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+	var one int
+	if err := db.QueryRowContext(ctx, "SELECT 1").Scan(&one); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("mysql tls ping error: %w", err)
+	}
+	actual, loaded := sharedMySQLPools.LoadOrStore(targetURL, db)
+	if loaded {
+		_ = db.Close()
+		return actual.(*sql.DB), nil
+	}
+	return db, nil
+}
 
-	if !isRemote {
-		pragmas := []string{
-			"PRAGMA journal_mode=WAL;",
-			"PRAGMA synchronous=NORMAL;",
-			"PRAGMA foreign_keys=ON;",
-			"PRAGMA busy_timeout=5000;",
-			"PRAGMA temp_store=MEMORY;",
-			"PRAGMA cache_size=-32000;",
+func ensureIsolatedTestMySQLURL(baseURL string) string {
+	testDBEnsureOnce.Do(func() {
+		db, err := getOrOpenMySQLPool(baseURL)
+		if err != nil {
+			return
 		}
-		for _, p := range pragmas {
-			if _, err := db.ExecContext(ctx, p); err != nil {
-				_ = db.Close()
-				return fmt.Errorf("sql40 pragma error (%s): %w", p, err)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := db.ExecContext(ctx, "CREATE DATABASE IF NOT EXISTS muse_router_test CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"); err == nil {
+			testDBAvailable = true
+		}
+	})
+	if testDBAvailable {
+		return withMySQLDatabaseName(baseURL, "muse_router_test")
+	}
+	return baseURL
+}
+
+// NewLibSQLStore khởi tạo kết nối chuẩn SQL40 trên Aiven MySQL Cloud TLS 1.2+ (0% SQLite / 0% libSQL).
+func NewLibSQLStore(dataDir string, customURL string, authToken string) (*LibSQLStore, error) {
+	_ = os.MkdirAll(dataDir, 0750)
+
+	targetURL := strings.TrimSpace(customURL)
+	if !strings.HasPrefix(strings.ToLower(targetURL), "mysql://") {
+		targetURL = ""
+	}
+	if targetURL == "" {
+		for _, envVal := range []string{
+			os.Getenv("MUSE_MYSQL_URL"),
+			os.Getenv("DATABASE_URL"),
+			os.Getenv("MUSE_SQL_URL"),
+		} {
+			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(envVal)), "mysql://") {
+				targetURL = strings.TrimSpace(envVal)
+				break
 			}
 		}
-	} else {
-		var one int
-		if err := db.QueryRowContext(ctx, "SELECT 1").Scan(&one); err != nil {
-			_ = db.Close()
-			return fmt.Errorf("remote sql ping error: %w", err)
-		}
+	}
+	if targetURL == "" {
+		targetURL = LoadEncryptedCloudSQLConfig(dataDir)
+	}
+	if targetURL == "" {
+		return nil, errors.New("chưa cấu hình chuỗi kết nối Aiven MySQL Cloud (mysql://...)")
 	}
 
-	if s.db != nil {
-		_ = s.db.Close()
+	isTestDir := !isProductionDataDir(dataDir) && strings.TrimSpace(customURL) == ""
+	if isTestDir {
+		targetURL = ensureIsolatedTestMySQLURL(targetURL)
 	}
+
+	store := &LibSQLStore{
+		dataDir: dataDir,
+		dbFile:  "",
+	}
+	if err := store.connectInternal(targetURL, authToken); err != nil {
+		return nil, err
+	}
+	if err := store.initSchema(); err != nil {
+		_ = store.Close()
+		return nil, err
+	}
+	if isTestDir && testDBAvailable {
+		absDir, _ := filepath.Abs(dataDir)
+		if _, alreadyCleaned := cleanedTestDirs.LoadOrStore(absDir, true); !alreadyCleaned {
+			store.resetTestTables()
+		}
+	}
+	return store, nil
+}
+
+func (s *LibSQLStore) resetTestTables() {
+	s.mu.RLock()
+	db := s.db
+	s.mu.RUnlock()
+	if db == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for _, tbl := range []string{
+		"chat_messages",
+		"chat_threads",
+		"muse_documents",
+		"muse_memories",
+		"muse_tasks",
+		"oauth_sessions",
+		"routing_telemetry",
+		"muse_accounts",
+		"mart_users",
+	} {
+		_, _ = db.ExecContext(ctx, "DELETE FROM "+tbl)
+	}
+	s.invalidateStatusCache()
+}
+
+func (s *LibSQLStore) connectInternal(targetURL string, authToken string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	trimmed := strings.TrimSpace(targetURL)
+	if !strings.HasPrefix(strings.ToLower(trimmed), "mysql://") {
+		trimmed = LoadEncryptedCloudSQLConfig(s.dataDir)
+	}
+	if !strings.HasPrefix(strings.ToLower(trimmed), "mysql://") {
+		return fmt.Errorf("unsupported sql40 url scheme (expected mysql://)")
+	}
+
+	db, err := getOrOpenMySQLPool(trimmed)
+	if err != nil {
+		return err
+	}
+
 	s.db = db
-	s.dbURL = targetURL
+	s.sharedPool = true
+	s.dbURL = trimmed
 	s.authToken = authToken
-	s.isRemote = isRemote
-	s.isMySQL = isMySQL
+	s.isRemote = true
+	s.isMySQL = true
 	return nil
 }
 
 func (s *LibSQLStore) Reconfigure(newURL string, newAuthToken string) error {
 	newURL = strings.TrimSpace(newURL)
-	if newURL == "" {
-		newURL = "file:" + filepath.ToSlash(s.dbFile)
+	if !strings.HasPrefix(strings.ToLower(newURL), "mysql://") {
+		newURL = LoadEncryptedCloudSQLConfig(s.dataDir)
 	}
 	if err := s.connectInternal(newURL, strings.TrimSpace(newAuthToken)); err != nil {
 		return err
@@ -390,9 +414,12 @@ func (s *LibSQLStore) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.db != nil {
-		err := s.db.Close()
+		if !s.sharedPool {
+			err := s.db.Close()
+			s.db = nil
+			return err
+		}
 		s.db = nil
-		return err
 	}
 	return nil
 }
@@ -400,295 +427,158 @@ func (s *LibSQLStore) Close() error {
 func (s *LibSQLStore) initSchema() error {
 	s.mu.RLock()
 	db := s.db
-	isMySQL := s.isMySQL
+	dbURL := s.dbURL
 	s.mu.RUnlock()
 	if db == nil {
 		return errors.New("sql database is not initialized")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-
-	if isMySQL {
-		var existingTables, existingOwnerCols int
-		errFastCheck := db.QueryRowContext(ctx, `
-			SELECT
-				(SELECT COUNT(1) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name IN ('muse_accounts','mart_users','chat_threads','chat_messages','oauth_sessions','routing_telemetry','muse_documents','muse_memories','muse_tasks')),
-				(SELECT COUNT(1) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name IN ('chat_threads','muse_documents','muse_memories','muse_tasks') AND column_name = 'owner_id')
-		`).Scan(&existingTables, &existingOwnerCols)
-		if errFastCheck == nil && existingTables == 9 && existingOwnerCols == 4 {
-			s.invalidateStatusCache()
-			return nil
-		}
-
-		mysqlDDLs := []string{
-			`CREATE TABLE IF NOT EXISTS muse_accounts (
-				id VARCHAR(191) PRIMARY KEY,
-				node_index BIGINT NOT NULL DEFAULT 1,
-				label VARCHAR(255) NOT NULL DEFAULT '',
-				plan_tier VARCHAR(128) NOT NULL DEFAULT 'Muse.ai',
-				auth_type VARCHAR(64) NOT NULL DEFAULT 'cookie',
-				upstream_url VARCHAR(512) NOT NULL DEFAULT 'https://muse.ai',
-				proxy_url VARCHAR(512) NOT NULL DEFAULT '',
-				device_profile VARCHAR(512) NOT NULL DEFAULT '',
-				encrypted_credential LONGTEXT NOT NULL,
-				fingerprint VARCHAR(128) NOT NULL DEFAULT '',
-				has_hatch_sess INT NOT NULL DEFAULT 0,
-				has_hatch_gw INT NOT NULL DEFAULT 0,
-				status VARCHAR(64) NOT NULL DEFAULT 'unavailable',
-				active_requests BIGINT NOT NULL DEFAULT 0,
-				tokens_remaining BIGINT NOT NULL DEFAULT 0,
-				tokens_quota BIGINT NOT NULL DEFAULT 0,
-				tokens_used BIGINT NOT NULL DEFAULT 0,
-				total_requests BIGINT NOT NULL DEFAULT 0,
-				fail_count BIGINT NOT NULL DEFAULT 0,
-				latency_ms BIGINT NOT NULL DEFAULT 0,
-				last_used_at VARCHAR(64) NOT NULL DEFAULT '',
-				status_detail VARCHAR(1024) NOT NULL DEFAULT '',
-				updated_at VARCHAR(64) NOT NULL DEFAULT '',
-				INDEX idx_muse_accounts_status (status)
-			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`,
-			`CREATE TABLE IF NOT EXISTS mart_users (
-				id VARCHAR(191) PRIMARY KEY,
-				username VARCHAR(191) NOT NULL UNIQUE,
-				display_name VARCHAR(255) NOT NULL DEFAULT '',
-				password_hash VARCHAR(512) NOT NULL,
-				role VARCHAR(64) NOT NULL DEFAULT 'user',
-				is_disabled INT NOT NULL DEFAULT 0,
-				created_at VARCHAR(64) NOT NULL DEFAULT '',
-				last_login_at VARCHAR(64) NOT NULL DEFAULT '',
-				INDEX idx_mart_users_username (username)
-			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`,
-			`CREATE TABLE IF NOT EXISTS chat_threads (
-				id VARCHAR(191) PRIMARY KEY,
-				owner_id VARCHAR(191) NOT NULL DEFAULT '',
-				title VARCHAR(512) NOT NULL DEFAULT '',
-				model VARCHAR(128) NOT NULL DEFAULT '',
-				workspace VARCHAR(64) NOT NULL DEFAULT 'chat',
-				created_at VARCHAR(64) NOT NULL DEFAULT '',
-				updated_at VARCHAR(64) NOT NULL DEFAULT '',
-				INDEX idx_chat_threads_updated (updated_at),
-				INDEX idx_chat_threads_owner_updated (owner_id, updated_at)
-			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`,
-			`CREATE TABLE IF NOT EXISTS chat_messages (
-				id VARCHAR(191) PRIMARY KEY,
-				thread_id VARCHAR(191) NOT NULL,
-				seq_num INT NOT NULL DEFAULT 0,
-				role VARCHAR(64) NOT NULL DEFAULT '',
-				content LONGTEXT NOT NULL,
-				attachments_json LONGTEXT NOT NULL,
-				node_label VARCHAR(255) NOT NULL DEFAULT '',
-				model VARCHAR(128) NOT NULL DEFAULT '',
-				latency_ms BIGINT NOT NULL DEFAULT 0,
-				tokens BIGINT NOT NULL DEFAULT 0,
-				timestamp VARCHAR(64) NOT NULL DEFAULT '',
-				INDEX idx_chat_messages_thread_seq (thread_id, seq_num)
-			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`,
-			`CREATE TABLE IF NOT EXISTS oauth_sessions (
-				session_id VARCHAR(191) PRIMARY KEY,
-				login_url VARCHAR(2048) NOT NULL DEFAULT '',
-				state VARCHAR(255) NOT NULL DEFAULT '',
-				app_id VARCHAR(191) NOT NULL DEFAULT '',
-				redirect_uri VARCHAR(1024) NOT NULL DEFAULT '',
-				cookies_json LONGTEXT NOT NULL,
-				created_at BIGINT NOT NULL DEFAULT 0
-			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`,
-			`CREATE TABLE IF NOT EXISTS routing_telemetry (
-				id BIGINT PRIMARY KEY AUTO_INCREMENT,
-				thread_id VARCHAR(191) NOT NULL DEFAULT '',
-				node_id VARCHAR(191) NOT NULL DEFAULT '',
-				node_label VARCHAR(255) NOT NULL DEFAULT '',
-				model VARCHAR(128) NOT NULL DEFAULT '',
-				latency_ms BIGINT NOT NULL DEFAULT 0,
-				tokens_used BIGINT NOT NULL DEFAULT 0,
-				status VARCHAR(128) NOT NULL DEFAULT 'ok',
-				created_at VARCHAR(64) NOT NULL DEFAULT '',
-				INDEX idx_routing_telemetry_created (created_at)
-			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`,
-			`CREATE TABLE IF NOT EXISTS muse_documents (
-				id VARCHAR(191) PRIMARY KEY,
-				owner_id VARCHAR(191) NOT NULL DEFAULT '',
-				title VARCHAR(512) NOT NULL DEFAULT '',
-				content LONGTEXT NOT NULL,
-				source_thread_id VARCHAR(191) NOT NULL DEFAULT '',
-				updated_at VARCHAR(64) NOT NULL DEFAULT '',
-				INDEX idx_muse_documents_updated (updated_at),
-				INDEX idx_muse_documents_owner_updated (owner_id, updated_at)
-			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`,
-			`CREATE TABLE IF NOT EXISTS muse_memories (
-				id VARCHAR(191) PRIMARY KEY,
-				owner_id VARCHAR(191) NOT NULL DEFAULT '',
-				title VARCHAR(512) NOT NULL DEFAULT '',
-				content LONGTEXT NOT NULL,
-				is_active INT NOT NULL DEFAULT 1,
-				created_at VARCHAR(64) NOT NULL DEFAULT '',
-				INDEX idx_muse_memories_owner (owner_id)
-			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`,
-			`CREATE TABLE IF NOT EXISTS muse_tasks (
-				id VARCHAR(191) PRIMARY KEY,
-				owner_id VARCHAR(191) NOT NULL DEFAULT '',
-				title VARCHAR(512) NOT NULL DEFAULT '',
-				prompt LONGTEXT NOT NULL,
-				status VARCHAR(64) NOT NULL DEFAULT 'pending',
-				assigned_node_id VARCHAR(191) NOT NULL DEFAULT '',
-				result_summary VARCHAR(4096) NOT NULL DEFAULT '',
-				updated_at VARCHAR(64) NOT NULL DEFAULT '',
-				INDEX idx_muse_tasks_status (status, updated_at),
-				INDEX idx_muse_tasks_owner_status (owner_id, status, updated_at)
-			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`,
-		}
-		for _, ddl := range mysqlDDLs {
-			if _, err := db.ExecContext(ctx, ddl); err != nil {
-				return fmt.Errorf("mysql schema init error: %w", err)
-			}
-		}
-		_, _ = db.ExecContext(ctx, `ALTER TABLE chat_threads ADD COLUMN owner_id VARCHAR(191) NOT NULL DEFAULT '';`)
-		_, _ = db.ExecContext(ctx, `ALTER TABLE muse_documents ADD COLUMN owner_id VARCHAR(191) NOT NULL DEFAULT '';`)
-		_, _ = db.ExecContext(ctx, `ALTER TABLE muse_memories ADD COLUMN owner_id VARCHAR(191) NOT NULL DEFAULT '';`)
-		_, _ = db.ExecContext(ctx, `ALTER TABLE muse_tasks ADD COLUMN owner_id VARCHAR(191) NOT NULL DEFAULT '';`)
+	if _, ok := schemaVerifiedURLs.Load(dbURL); ok {
 		return nil
 	}
 
-	ddlStatements := []string{
-		`CREATE TABLE IF NOT EXISTS muse_accounts (
-			id TEXT PRIMARY KEY,
-			node_index INTEGER NOT NULL DEFAULT 1,
-			label TEXT NOT NULL,
-			plan_tier TEXT NOT NULL DEFAULT 'Muse.ai',
-			auth_type TEXT NOT NULL DEFAULT 'cookie',
-			upstream_url TEXT NOT NULL DEFAULT 'https://muse.ai',
-			proxy_url TEXT NOT NULL DEFAULT '',
-			device_profile TEXT NOT NULL DEFAULT '',
-			encrypted_credential TEXT NOT NULL,
-			fingerprint TEXT NOT NULL DEFAULT '',
-			has_hatch_sess INTEGER NOT NULL DEFAULT 0,
-			has_hatch_gw INTEGER NOT NULL DEFAULT 0,
-			status TEXT NOT NULL DEFAULT 'unavailable',
-			active_requests INTEGER NOT NULL DEFAULT 0,
-			tokens_remaining INTEGER NOT NULL DEFAULT 0,
-			tokens_quota INTEGER NOT NULL DEFAULT 0,
-			tokens_used INTEGER NOT NULL DEFAULT 0,
-			total_requests INTEGER NOT NULL DEFAULT 0,
-			fail_count INTEGER NOT NULL DEFAULT 0,
-			latency_ms INTEGER NOT NULL DEFAULT 0,
-			last_used_at TEXT NOT NULL DEFAULT '',
-			status_detail TEXT NOT NULL DEFAULT '',
-			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-		);`,
-		`CREATE INDEX IF NOT EXISTS idx_muse_accounts_status ON muse_accounts(status);`,
-		`CREATE TABLE IF NOT EXISTS mart_users (
-			id TEXT PRIMARY KEY,
-			username TEXT NOT NULL UNIQUE COLLATE NOCASE,
-			display_name TEXT NOT NULL DEFAULT '',
-			password_hash TEXT NOT NULL,
-			role TEXT NOT NULL DEFAULT 'user',
-			is_disabled INTEGER NOT NULL DEFAULT 0,
-			created_at TEXT NOT NULL DEFAULT (datetime('now')),
-			last_login_at TEXT NOT NULL DEFAULT ''
-		);`,
-		`CREATE INDEX IF NOT EXISTS idx_mart_users_username ON mart_users(username);`,
-		`CREATE TABLE IF NOT EXISTS chat_threads (
-			id TEXT PRIMARY KEY,
-			owner_id TEXT NOT NULL DEFAULT '',
-			title TEXT NOT NULL,
-			model TEXT NOT NULL DEFAULT '',
-			workspace TEXT NOT NULL DEFAULT 'chat',
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
-		);`,
-		`CREATE INDEX IF NOT EXISTS idx_chat_threads_updated ON chat_threads(updated_at DESC);`,
-		`CREATE TABLE IF NOT EXISTS chat_messages (
-			id TEXT PRIMARY KEY,
-			thread_id TEXT NOT NULL,
-			seq_num INTEGER NOT NULL,
-			role TEXT NOT NULL,
-			content TEXT NOT NULL,
-			attachments_json TEXT NOT NULL DEFAULT '[]',
-			node_label TEXT NOT NULL DEFAULT '',
-			model TEXT NOT NULL DEFAULT '',
-			latency_ms INTEGER NOT NULL DEFAULT 0,
-			tokens INTEGER NOT NULL DEFAULT 0,
-			timestamp TEXT NOT NULL,
-			FOREIGN KEY (thread_id) REFERENCES chat_threads(id) ON DELETE CASCADE
-		);`,
-		`CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_seq ON chat_messages(thread_id, seq_num);`,
-		`CREATE TABLE IF NOT EXISTS oauth_sessions (
-			session_id TEXT PRIMARY KEY,
-			login_url TEXT NOT NULL,
-			state TEXT NOT NULL DEFAULT '',
-			app_id TEXT NOT NULL DEFAULT '',
-			redirect_uri TEXT NOT NULL DEFAULT '',
-			cookies_json TEXT NOT NULL DEFAULT '{}',
-			created_at INTEGER NOT NULL
-		);`,
-		`CREATE TABLE IF NOT EXISTS routing_telemetry (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			thread_id TEXT NOT NULL DEFAULT '',
-			node_id TEXT NOT NULL DEFAULT '',
-			node_label TEXT NOT NULL DEFAULT '',
-			model TEXT NOT NULL DEFAULT '',
-			latency_ms INTEGER NOT NULL DEFAULT 0,
-			tokens_used INTEGER NOT NULL DEFAULT 0,
-			status TEXT NOT NULL DEFAULT 'ok',
-			created_at TEXT NOT NULL DEFAULT (datetime('now'))
-		);`,
-		`CREATE INDEX IF NOT EXISTS idx_routing_telemetry_created ON routing_telemetry(created_at DESC);`,
-		// -------------------------------------------------------
-		// Bảng Tài liệu & Artifacts (📄 panel Tài liệu)
-		// -------------------------------------------------------
-		`CREATE TABLE IF NOT EXISTS muse_documents (
-			id TEXT PRIMARY KEY,
-			owner_id TEXT NOT NULL DEFAULT '',
-			title TEXT NOT NULL,
-			content TEXT NOT NULL,
-			source_thread_id TEXT NOT NULL DEFAULT '',
-			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-		);`,
-		`CREATE INDEX IF NOT EXISTS idx_muse_documents_updated ON muse_documents(updated_at DESC);`,
-		// -------------------------------------------------------
-		// Bảng Bộ nhớ & Prompt mẫu (💡 panel Ý tưởng)
-		// -------------------------------------------------------
-		`CREATE TABLE IF NOT EXISTS muse_memories (
-			id TEXT PRIMARY KEY,
-			owner_id TEXT NOT NULL DEFAULT '',
-			title TEXT NOT NULL,
-			content TEXT NOT NULL,
-			is_active INTEGER NOT NULL DEFAULT 1,
-			created_at TEXT NOT NULL DEFAULT (datetime('now'))
-		);`,
-		// -------------------------------------------------------
-		// Bảng Nhiệm vụ & Hàng đợi lệnh (☑️ panel Nhiệm vụ)
-		// -------------------------------------------------------
-		`CREATE TABLE IF NOT EXISTS muse_tasks (
-			id TEXT PRIMARY KEY,
-			owner_id TEXT NOT NULL DEFAULT '',
-			title TEXT NOT NULL,
-			prompt TEXT NOT NULL DEFAULT '',
-			status TEXT NOT NULL DEFAULT 'pending',
-			assigned_node_id TEXT NOT NULL DEFAULT '',
-			result_summary TEXT NOT NULL DEFAULT '',
-			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-		);`,
-		`CREATE INDEX IF NOT EXISTS idx_muse_tasks_status ON muse_tasks(status, updated_at DESC);`,
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	var existingTables, existingOwnerCols int
+	errFastCheck := db.QueryRowContext(ctx, `
+		SELECT
+			(SELECT COUNT(1) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name IN ('muse_accounts','mart_users','chat_threads','chat_messages','oauth_sessions','routing_telemetry','muse_documents','muse_memories','muse_tasks')),
+			(SELECT COUNT(1) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name IN ('chat_threads','muse_documents','muse_memories','muse_tasks') AND column_name = 'owner_id')
+	`).Scan(&existingTables, &existingOwnerCols)
+	if errFastCheck == nil && existingTables == 9 && existingOwnerCols == 4 {
+		schemaVerifiedURLs.Store(dbURL, true)
+		s.invalidateStatusCache()
+		return nil
 	}
 
-	for _, ddl := range ddlStatements {
+	mysqlDDLs := []string{
+		`CREATE TABLE IF NOT EXISTS muse_accounts (
+			id VARCHAR(191) PRIMARY KEY,
+			node_index BIGINT NOT NULL DEFAULT 1,
+			label VARCHAR(255) NOT NULL DEFAULT '',
+			plan_tier VARCHAR(128) NOT NULL DEFAULT 'Muse.ai',
+			auth_type VARCHAR(64) NOT NULL DEFAULT 'cookie',
+			upstream_url VARCHAR(512) NOT NULL DEFAULT 'https://muse.ai',
+			proxy_url VARCHAR(512) NOT NULL DEFAULT '',
+			device_profile VARCHAR(512) NOT NULL DEFAULT '',
+			encrypted_credential LONGTEXT NOT NULL,
+			fingerprint VARCHAR(128) NOT NULL DEFAULT '',
+			has_hatch_sess INT NOT NULL DEFAULT 0,
+			has_hatch_gw INT NOT NULL DEFAULT 0,
+			status VARCHAR(64) NOT NULL DEFAULT 'unavailable',
+			active_requests BIGINT NOT NULL DEFAULT 0,
+			tokens_remaining BIGINT NOT NULL DEFAULT 0,
+			tokens_quota BIGINT NOT NULL DEFAULT 0,
+			tokens_used BIGINT NOT NULL DEFAULT 0,
+			total_requests BIGINT NOT NULL DEFAULT 0,
+			fail_count BIGINT NOT NULL DEFAULT 0,
+			latency_ms BIGINT NOT NULL DEFAULT 0,
+			last_used_at VARCHAR(64) NOT NULL DEFAULT '',
+			status_detail VARCHAR(1024) NOT NULL DEFAULT '',
+			updated_at VARCHAR(64) NOT NULL DEFAULT '',
+			INDEX idx_muse_accounts_status (status)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`,
+		`CREATE TABLE IF NOT EXISTS mart_users (
+			id VARCHAR(191) PRIMARY KEY,
+			username VARCHAR(191) NOT NULL UNIQUE,
+			display_name VARCHAR(255) NOT NULL DEFAULT '',
+			password_hash VARCHAR(512) NOT NULL,
+			role VARCHAR(64) NOT NULL DEFAULT 'user',
+			is_disabled INT NOT NULL DEFAULT 0,
+			created_at VARCHAR(64) NOT NULL DEFAULT '',
+			last_login_at VARCHAR(64) NOT NULL DEFAULT '',
+			INDEX idx_mart_users_username (username)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`,
+		`CREATE TABLE IF NOT EXISTS chat_threads (
+			id VARCHAR(191) PRIMARY KEY,
+			owner_id VARCHAR(191) NOT NULL DEFAULT '',
+			title VARCHAR(512) NOT NULL DEFAULT '',
+			model VARCHAR(128) NOT NULL DEFAULT '',
+			workspace VARCHAR(64) NOT NULL DEFAULT 'chat',
+			created_at VARCHAR(64) NOT NULL DEFAULT '',
+			updated_at VARCHAR(64) NOT NULL DEFAULT '',
+			INDEX idx_chat_threads_updated (updated_at),
+			INDEX idx_chat_threads_owner_updated (owner_id, updated_at)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`,
+		`CREATE TABLE IF NOT EXISTS chat_messages (
+			id VARCHAR(191) PRIMARY KEY,
+			thread_id VARCHAR(191) NOT NULL,
+			seq_num INT NOT NULL DEFAULT 0,
+			role VARCHAR(64) NOT NULL DEFAULT '',
+			content LONGTEXT NOT NULL,
+			attachments_json LONGTEXT NOT NULL,
+			node_label VARCHAR(255) NOT NULL DEFAULT '',
+			model VARCHAR(128) NOT NULL DEFAULT '',
+			latency_ms BIGINT NOT NULL DEFAULT 0,
+			tokens BIGINT NOT NULL DEFAULT 0,
+			timestamp VARCHAR(64) NOT NULL DEFAULT '',
+			INDEX idx_chat_messages_thread_seq (thread_id, seq_num)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`,
+		`CREATE TABLE IF NOT EXISTS oauth_sessions (
+			session_id VARCHAR(191) PRIMARY KEY,
+			login_url VARCHAR(2048) NOT NULL DEFAULT '',
+			state VARCHAR(255) NOT NULL DEFAULT '',
+			app_id VARCHAR(191) NOT NULL DEFAULT '',
+			redirect_uri VARCHAR(1024) NOT NULL DEFAULT '',
+			cookies_json LONGTEXT NOT NULL,
+			created_at BIGINT NOT NULL DEFAULT 0
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`,
+		`CREATE TABLE IF NOT EXISTS routing_telemetry (
+			id BIGINT PRIMARY KEY AUTO_INCREMENT,
+			thread_id VARCHAR(191) NOT NULL DEFAULT '',
+			node_id VARCHAR(191) NOT NULL DEFAULT '',
+			node_label VARCHAR(255) NOT NULL DEFAULT '',
+			model VARCHAR(128) NOT NULL DEFAULT '',
+			latency_ms BIGINT NOT NULL DEFAULT 0,
+			tokens_used BIGINT NOT NULL DEFAULT 0,
+			status VARCHAR(128) NOT NULL DEFAULT 'ok',
+			created_at VARCHAR(64) NOT NULL DEFAULT '',
+			INDEX idx_routing_telemetry_created (created_at)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`,
+		`CREATE TABLE IF NOT EXISTS muse_documents (
+			id VARCHAR(191) PRIMARY KEY,
+			owner_id VARCHAR(191) NOT NULL DEFAULT '',
+			title VARCHAR(512) NOT NULL DEFAULT '',
+			content LONGTEXT NOT NULL,
+			source_thread_id VARCHAR(191) NOT NULL DEFAULT '',
+			updated_at VARCHAR(64) NOT NULL DEFAULT '',
+			INDEX idx_muse_documents_updated (updated_at),
+			INDEX idx_muse_documents_owner_updated (owner_id, updated_at)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`,
+		`CREATE TABLE IF NOT EXISTS muse_memories (
+			id VARCHAR(191) PRIMARY KEY,
+			owner_id VARCHAR(191) NOT NULL DEFAULT '',
+			title VARCHAR(512) NOT NULL DEFAULT '',
+			content LONGTEXT NOT NULL,
+			is_active INT NOT NULL DEFAULT 1,
+			created_at VARCHAR(64) NOT NULL DEFAULT '',
+			INDEX idx_muse_memories_owner (owner_id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`,
+		`CREATE TABLE IF NOT EXISTS muse_tasks (
+			id VARCHAR(191) PRIMARY KEY,
+			owner_id VARCHAR(191) NOT NULL DEFAULT '',
+			title VARCHAR(512) NOT NULL DEFAULT '',
+			prompt LONGTEXT NOT NULL,
+			status VARCHAR(64) NOT NULL DEFAULT 'pending',
+			assigned_node_id VARCHAR(191) NOT NULL DEFAULT '',
+			result_summary VARCHAR(4096) NOT NULL DEFAULT '',
+			updated_at VARCHAR(64) NOT NULL DEFAULT '',
+			INDEX idx_muse_tasks_status (status, updated_at),
+			INDEX idx_muse_tasks_owner_status (owner_id, status, updated_at)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`,
+	}
+	for _, ddl := range mysqlDDLs {
 		if _, err := db.ExecContext(ctx, ddl); err != nil {
-			return fmt.Errorf("libsql schema init error: %w", err)
+			return fmt.Errorf("mysql schema init error: %w", err)
 		}
 	}
-
-	// Tự động nâng cấp bảng hiện có (thêm cột proxy_url, device_profile và owner_id cô lập theo từng tài khoản)
-	_, _ = db.ExecContext(ctx, `ALTER TABLE muse_accounts ADD COLUMN proxy_url TEXT NOT NULL DEFAULT '';`)
-	_, _ = db.ExecContext(ctx, `ALTER TABLE muse_accounts ADD COLUMN device_profile TEXT NOT NULL DEFAULT '';`)
-	_, _ = db.ExecContext(ctx, `ALTER TABLE chat_threads ADD COLUMN owner_id TEXT NOT NULL DEFAULT '';`)
-	_, _ = db.ExecContext(ctx, `ALTER TABLE muse_documents ADD COLUMN owner_id TEXT NOT NULL DEFAULT '';`)
-	_, _ = db.ExecContext(ctx, `ALTER TABLE muse_memories ADD COLUMN owner_id TEXT NOT NULL DEFAULT '';`)
-	_, _ = db.ExecContext(ctx, `ALTER TABLE muse_tasks ADD COLUMN owner_id TEXT NOT NULL DEFAULT '';`)
-	_, _ = db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_chat_threads_owner_updated ON chat_threads(owner_id, updated_at DESC);`)
-	_, _ = db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_muse_documents_owner_updated ON muse_documents(owner_id, updated_at DESC);`)
-	_, _ = db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_muse_memories_owner ON muse_memories(owner_id);`)
-	_, _ = db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_muse_tasks_owner_status ON muse_tasks(owner_id, status, updated_at DESC);`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE chat_threads ADD COLUMN owner_id VARCHAR(191) NOT NULL DEFAULT '';`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE muse_documents ADD COLUMN owner_id VARCHAR(191) NOT NULL DEFAULT '';`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE muse_memories ADD COLUMN owner_id VARCHAR(191) NOT NULL DEFAULT '';`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE muse_tasks ADD COLUMN owner_id VARCHAR(191) NOT NULL DEFAULT '';`)
+	schemaVerifiedURLs.Store(dbURL, true)
+	s.invalidateStatusCache()
 	return nil
 }
 
@@ -1158,13 +1048,9 @@ func (s *LibSQLStore) GetStatus() LibSQLStatusResponse {
 	dbURL := s.dbURL
 	dbFile := s.dbFile
 	isRemote := s.isRemote
-	isMySQL := s.isMySQL
 	s.mu.RUnlock()
 
-	driverName := "sql40-standard (database/sql + modernc.org/sqlite)"
-	if isMySQL {
-		driverName = "sql40-mysql (database/sql + Aiven MySQL TLS 1.2+)"
-	}
+	driverName := "sql40-mysql (database/sql + Aiven MySQL TLS 1.2+)"
 
 	if db == nil {
 		return LibSQLStatusResponse{
@@ -1204,7 +1090,7 @@ func (s *LibSQLStore) GetStatus() LibSQLStatusResponse {
 
 	// Gộp toàn bộ phiên bản Engine và số lượng bản ghi của 9 bảng vào 1 câu truy vấn duy nhất (1 round-trip mạng)
 	batchStatusSQL := `
-		SELECT sqlite_version(),
+		SELECT VERSION(),
 		       (SELECT COUNT(1) FROM mart_users),
 		       (SELECT COUNT(1) FROM muse_accounts),
 		       (SELECT COUNT(1) FROM chat_threads),
@@ -1227,11 +1113,7 @@ func (s *LibSQLStore) GetStatus() LibSQLStatusResponse {
 		&cOAuth,
 		&cTelemetry,
 	); err == nil {
-		if isMySQL {
-			resp.EngineVersion = "SQL40 Standard (MySQL " + dbVer + " TLS)"
-		} else {
-			resp.EngineVersion = "SQL40 Standard (SQLite " + dbVer + ")"
-		}
+		resp.EngineVersion = "SQL40 Standard (MySQL " + dbVer + " TLS)"
 		resp.Tables = []LibSQLTableStat{
 			{TableName: "mart_users", RowCount: cUsers},
 			{TableName: "muse_accounts", RowCount: cAccounts},
@@ -1244,7 +1126,7 @@ func (s *LibSQLStore) GetStatus() LibSQLStatusResponse {
 			{TableName: "routing_telemetry", RowCount: cTelemetry},
 		}
 	} else {
-		resp.EngineVersion = "SQL40 Standard Embedded"
+		resp.EngineVersion = "SQL40 Standard (MySQL TLS)"
 		tableNames := []string{
 			"mart_users",
 			"muse_accounts",
@@ -1266,23 +1148,7 @@ func (s *LibSQLStore) GetStatus() LibSQLStatusResponse {
 		}
 	}
 
-	if isMySQL {
-		resp.JournalMode = "WAL"
-	} else {
-		var journalMode string
-		if err := db.QueryRowContext(ctx, `PRAGMA journal_mode`).Scan(&journalMode); err == nil {
-			resp.JournalMode = strings.ToUpper(journalMode)
-		}
-		if resp.JournalMode == "" {
-			resp.JournalMode = "WAL"
-		}
-	}
-
-	if !isRemote && dbFile != "" {
-		if st, err := os.Stat(dbFile); err == nil {
-			resp.FileSizeBytes = st.Size()
-		}
-	}
+	resp.JournalMode = "WAL"
 
 	s.statusMu.Lock()
 	s.cachedStatus = &resp
@@ -1339,7 +1205,7 @@ func (s *LibSQLStore) ExecuteSQL(rawSQL string, args []interface{}) (*LibSQLQuer
 	res := &LibSQLQueryResult{
 		Columns:        []string{},
 		Rows:           [][]interface{}{},
-		DatabaseDriver: "libsql",
+		DatabaseDriver: "sql40-mysql",
 	}
 
 	if isQuery {
