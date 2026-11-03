@@ -4,8 +4,12 @@ services:
     runtime: go
     plan: free
     rootDir: muse_router_engine
-    buildCommand: go build -tags netgo -ldflags="-s -w" -o muse_router_srv .
+    buildCommand: CGO_ENABLED=0 go build -ldflags="-s -w" -o muse_router_srv .
     startCommand: ./muse_router_srv
     envVars:
+      - key: CGO_ENABLED
+        value: "0"
       - key: RENDER
         value: "true"
+      - key: GOFLAGS
+        value: ""
