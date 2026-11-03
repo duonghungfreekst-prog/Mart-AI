@@ -718,6 +718,22 @@ func TestAivenMySQLPushAndLiveSync(t *testing.T) {
 		t.Fatalf("Expected Aiven MySQL Connected == true")
 	}
 	t.Logf("Aiven MySQL Status: Engine=%s URL=%s Tables=%+v", st.EngineVersion, st.DatabaseURL, st.Tables)
+
+	if szRes, errSz := remoteStore.ExecuteSQL(`
+		SELECT table_schema,
+		       COUNT(1) AS table_count,
+		       ROUND(SUM(data_length + index_length) / 1024, 2) AS total_kb
+		FROM information_schema.tables
+		GROUP BY table_schema
+	`, nil); errSz == nil {
+		for _, r := range szRes.Rows {
+			t.Logf("Schema Size: %v", r)
+		}
+	}
+	// Dọn sạch database kiểm thử tạm nếu tồn tại để tiết kiệm dung lượng Aiven
+	if remoteStore.db != nil {
+		_, _ = remoteStore.db.Exec("DROP DATABASE IF EXISTS muse_router_test")
+	}
 }
 
 func TestAdminAccountLoginSettingsAndChatFlow(t *testing.T) {
