@@ -374,6 +374,10 @@ func normalizeAccountIndices(nodes []*MuseAccountNode) {
 		if strings.TrimSpace(n.DeviceProfile) == "" && n.Fingerprint != "" {
 			n.DeviceProfile = computeDeterministicDeviceProfile(n.Fingerprint)
 		}
+		if n.Status == "unavailable" && n.HasHatchSess && strings.Contains(n.StatusDetail, "AI Bridge") {
+			n.Status = "ready"
+			n.StatusDetail = "Đang hoạt động (Đồng bộ trực tiếp)"
+		}
 		if n.Status == "ready" || n.Status == "running" {
 			if n.TokensQuota <= 0 || n.TokensQuota == 1000000 {
 				n.TokensQuota = 1000000000
@@ -1484,6 +1488,19 @@ func (p *MuseRouterPool) RouteAndExecuteChat(
 		if errDo != nil {
 			cancel()
 			errMsg := fmt.Sprintf("Không kết nối được dịch vụ AI Bridge trên %s: %v", candidate.Label, errDo)
+			upClean := strings.TrimRight(strings.ToLower(strings.TrimSpace(candidate.UpstreamURL)), "/")
+			if candidate.AuthType == "api_key" || (upClean != "" && !strings.HasSuffix(upClean, "muse.ai")) {
+				directCtx, directCancel := context.WithTimeout(parentCtx, 45*time.Second)
+				replyDirect, tokDirect, errDirect := p.executeOpenAICompatibleDirect(directCtx, candidate, model, messagesPayload)
+				directCancel()
+				if errDirect == nil {
+					latMs := int(time.Since(startTs).Milliseconds())
+					return p.CompleteBrowserRelayTurn(resolvedThreadID, turnID, candidate.ID, model, replyDirect, tokDirect, latMs, "")
+				}
+				errMsg = errDirect.Error()
+			} else if candidate.HasHatchSess {
+				return p.prepareBrowserRelayResponse(candidate, resolvedThreadID, turnID, model, userPrompt)
+			}
 			p.releaseNode(candidate.ID, 0, 0, false, errMsg)
 			lastErr = errors.New(errMsg)
 			if !p.autoFailover {

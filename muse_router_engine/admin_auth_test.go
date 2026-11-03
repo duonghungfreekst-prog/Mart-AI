@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -161,5 +162,131 @@ func TestIngestEndpointSecurity(t *testing.T) {
 	}
 	if len(zr.File) != 5 {
 		t.Fatalf("expected 5 files in extension.zip, got %d", len(zr.File))
+	}
+}
+
+func TestWriteJSONErrorEscapesQuotes(t *testing.T) {
+	rec := httptest.NewRecorder()
+	WriteJSONError(rec, http.StatusBadGateway, `Không kết nối được dịch vụ AI Bridge: Post "http://127.0.0.1:18089/internal/chat": dial tcp`)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", rec.Code)
+	}
+	var parsed map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &parsed); err != nil {
+		t.Fatalf("WriteJSONError produced invalid JSON (%v): %s", err, rec.Body.String())
+	}
+	if !strings.Contains(parsed["error"], `"http://127.0.0.1:18089/internal/chat"`) {
+		t.Fatalf("unexpected error field: %q", parsed["error"])
+	}
+}
+
+func TestCloudBrowserRelayFlowAndNodeHealth(t *testing.T) {
+	t.Setenv("MART_ADMIN_PASSWORD", "")
+	tempDir := filepath.Join(".", "test_cloud_relay_flow")
+	t.Cleanup(func() { _ = os.RemoveAll(tempDir) })
+
+	app, err := NewServerApp(tempDir)
+	if err != nil {
+		t.Fatalf("NewServerApp failed: %v", err)
+	}
+	defer app.pool.Shutdown()
+	// Trỏ AI Bridge tới cổng đóng để mô phỏng môi trường Render Cloud không có Python Playwright
+	app.pool.aiBridgeURL = "http://127.0.0.1:1"
+
+	encCred, err := app.pool.rustBridge.EncryptSecret("hatch_sess=TEST_SESS_VALUE; datr=abc")
+	if err != nil {
+		t.Fatalf("EncryptSecret failed: %v", err)
+	}
+	fp := app.pool.rustBridge.ComputeFingerprint("hatch_sess=TEST_SESS_VALUE")
+
+	app.pool.mu.Lock()
+	app.pool.nodes = append(app.pool.nodes, &MuseAccountNode{
+		ID:                  "node_test_render_1",
+		Label:               "Muse #1",
+		PlanTier:            "Muse.ai",
+		AuthType:            "cookie",
+		UpstreamURL:         "https://muse.ai",
+		EncryptedCredential: encCred,
+		Fingerprint:         fp,
+		HasHatchSess:        true,
+		Status:              "unavailable",
+		StatusDetail:        `Không kết nối được dịch vụ AI Bridge trên Muse #1: Post "http://127.0.0.1:18089/internal/chat": connection refused`,
+	})
+	normalizeAccountIndices(app.pool.nodes)
+	app.pool.mu.Unlock()
+
+	sum := app.pool.GetSummary()
+	if sum.ReadyNodes != 1 || sum.UnavailableNodes != 0 {
+		t.Fatalf("expected Muse #1 auto-healed to ready, got summary=%+v", sum)
+	}
+
+	handler := app.Routes()
+
+	// 1) Gửi chat trên Render -> trả 200 browser_relay=true thay vì 502
+	sendReq := httptest.NewRequest(http.MethodPost, "/api/chat/send", strings.NewReader(`{"prompt":"xin chao"}`))
+	sendReq.Header.Set("Content-Type", "application/json")
+	sendRec := httptest.NewRecorder()
+	handler.ServeHTTP(sendRec, sendReq)
+	if sendRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for browser_relay, got %d: %s", sendRec.Code, sendRec.Body.String())
+	}
+	var relayPayload map[string]interface{}
+	if err := json.Unmarshal(sendRec.Body.Bytes(), &relayPayload); err != nil {
+		t.Fatalf("unmarshal relayPayload: %v", err)
+	}
+	if relayPayload["browser_relay"] != true {
+		t.Fatalf("expected browser_relay=true, got %+v", relayPayload)
+	}
+
+	// 2) Khi chưa cài tiện ích (hủy lượt chờ) -> Muse #1 vẫn phải giữ trạng thái ready (không bị Ngắt kết nối)
+	cancelBody, _ := json.Marshal(map[string]interface{}{
+		"thread_id": relayPayload["thread_id"],
+		"turn_id":   relayPayload["turn_id"],
+		"node_id":   relayPayload["node_id"],
+		"error":     "EXT_REQUIRED",
+	})
+	cancelReq := httptest.NewRequest(http.MethodPost, "/api/chat/relay-complete", bytes.NewReader(cancelBody))
+	cancelReq.Header.Set("Content-Type", "application/json")
+	cancelRec := httptest.NewRecorder()
+	handler.ServeHTTP(cancelRec, cancelReq)
+	if cancelRec.Code != http.StatusOK {
+		t.Fatalf("cancel relay expected 200, got %d", cancelRec.Code)
+	}
+	sumAfterCancel := app.pool.GetSummary()
+	if sumAfterCancel.ReadyNodes != 1 || sumAfterCancel.UnavailableNodes != 0 {
+		t.Fatalf("Muse #1 must remain ready after cancel, got %+v", sumAfterCancel)
+	}
+
+	// 3) Gửi lại khi đã có tiện ích v1.1 -> hoàn tất trả lời & cập nhật token/request
+	sendReq2 := httptest.NewRequest(http.MethodPost, "/api/chat/send", strings.NewReader(`{"prompt":"xin chao"}`))
+	sendReq2.Header.Set("Content-Type", "application/json")
+	sendRec2 := httptest.NewRecorder()
+	handler.ServeHTTP(sendRec2, sendReq2)
+	var relay2 map[string]interface{}
+	_ = json.Unmarshal(sendRec2.Body.Bytes(), &relay2)
+
+	completeBody, _ := json.Marshal(map[string]interface{}{
+		"thread_id":   relay2["thread_id"],
+		"turn_id":     relay2["turn_id"],
+		"node_id":     relay2["node_id"],
+		"reply":       "Chào bạn! Mình là Muse.",
+		"tokens_used": 28,
+		"latency_ms":  640,
+	})
+	compReq := httptest.NewRequest(http.MethodPost, "/api/chat/relay-complete", bytes.NewReader(completeBody))
+	compReq.Header.Set("Content-Type", "application/json")
+	compRec := httptest.NewRecorder()
+	handler.ServeHTTP(compRec, compReq)
+	if compRec.Code != http.StatusOK {
+		t.Fatalf("complete relay expected 200, got %d: %s", compRec.Code, compRec.Body.String())
+	}
+	var compData map[string]interface{}
+	_ = json.Unmarshal(compRec.Body.Bytes(), &compData)
+	if compData["reply"] != "Chào bạn! Mình là Muse." {
+		t.Fatalf("unexpected reply: %+v", compData)
+	}
+	sumFinal := app.pool.GetSummary()
+	if sumFinal.ReadyNodes != 1 || sumFinal.TotalRequests != 1 || sumFinal.TotalTokensUsed != 28 {
+		t.Fatalf("Muse #1 must stay ready with updated telemetry after completion, got %+v", sumFinal)
 	}
 }

@@ -424,7 +424,12 @@ func SecurityHeadersMiddleware(next http.Handler) http.Handler {
 func WriteJSONError(w http.ResponseWriter, status int, errCode string) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
-	_, _ = w.Write([]byte(fmt.Sprintf(`{"error":"%s"}`, SanitizeLog(errCode))))
+	body, err := json.Marshal(map[string]string{"error": SanitizeLog(errCode)})
+	if err != nil {
+		_, _ = w.Write([]byte(`{"error":"ERR_INTERNAL"}`))
+		return
+	}
+	_, _ = w.Write(body)
 }
 
 func WriteJSONResponse(w http.ResponseWriter, status int, payload interface{}) {

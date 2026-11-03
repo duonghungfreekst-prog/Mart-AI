@@ -1600,15 +1600,29 @@
     const ping = await sendExtensionMessage({ action: "ping" });
     if (ping && ping.ok) {
       state.hasMartExtension = true;
-      if (titleEl) {
-        titleEl.textContent = "🟢 Tiện ích Tự Động Bắt Tài Khoản Muse.ai đã kết nối sẵn sàng!";
+      if (!ping.supportsChatRelay) {
+        if (titleEl) {
+          titleEl.textContent = "🟡 Cần cập nhật Tiện ích Mart AI lên bản v1.1 để Chat trực tiếp trên Render!";
+        }
+        if (descEl) {
+          descEl.textContent =
+            "Bấm '⬇️ Tải bản v1.1 (.zip)' → giải nén đè lên thư mục tiện ích cũ → mở chrome://extensions bấm nút Tải lại (🔄).";
+        }
+        if (btnDl) {
+          btnDl.textContent = "⬇️ Tải bản v1.1 (.zip)";
+          btnDl.classList.remove("hidden-el");
+        }
+      } else {
+        if (titleEl) {
+          titleEl.textContent = "🟢 Tiện ích Mart AI (v1.1) đã kết nối — Sẵn sàng Tự Bắt & Chat thật trên Cloud!";
+        }
+        if (descEl) {
+          descEl.textContent = ping.hasExistingSession
+            ? "Đã phát hiện phiên muse.ai đang đăng nhập trên trình duyệt này! Bấm '⚡ Bắt ngay tab Muse đang mở' để thêm trong 1 giây, hoặc bấm '🚀 Đăng nhập Muse.ai & Tự Bắt' để đăng nhập tài khoản khác."
+            : "Chỉ cần bấm '🚀 Đăng nhập Muse.ai & Tự Bắt' — tiện ích sẽ mở trang đăng nhập chính chủ và tự động đưa tài khoản vào Pool ngay khi đăng nhập xong.";
+        }
+        if (btnDl) btnDl.classList.add("hidden-el");
       }
-      if (descEl) {
-        descEl.textContent = ping.hasExistingSession
-          ? "Đã phát hiện phiên muse.ai đang đăng nhập trên trình duyệt này! Bấm '⚡ Bắt ngay tab Muse đang mở' để thêm trong 1 giây, hoặc bấm '🚀 Đăng nhập Muse.ai & Tự Bắt' để đăng nhập tài khoản khác."
-          : "Chỉ cần bấm '🚀 Đăng nhập Muse.ai & Tự Bắt' — tiện ích sẽ mở trang đăng nhập chính chủ và tự động đưa tài khoản vào Pool ngay khi đăng nhập xong.";
-      }
-      if (btnDl) btnDl.classList.add("hidden-el");
       if (btnExisting) {
         btnExisting.classList.toggle("hidden-el", !ping.hasExistingSession);
       }
@@ -1616,9 +1630,141 @@
     }
 
     state.hasMartExtension = false;
-    if (btnDl) btnDl.classList.remove("hidden-el");
+    if (btnDl) {
+      btnDl.textContent = "⬇️ Tải Tiện Ích v1.1 (.zip)";
+      btnDl.classList.remove("hidden-el");
+    }
     if (btnExisting) btnExisting.classList.add("hidden-el");
     return false;
+  }
+
+  function showCloudExtensionRequiredModal(isOutdated) {
+    var existing = document.getElementById("martCloudExtModal");
+    if (existing && existing.parentNode) existing.remove();
+
+    var overlay = document.createElement("div");
+    overlay.id = "martCloudExtModal";
+    overlay.style.cssText =
+      "position:fixed;inset:0;z-index:9999;background:rgba(15,23,42,0.45);display:flex;align-items:center;justify-content:center;padding:16px;";
+
+    var box = document.createElement("div");
+    box.style.cssText =
+      "background:#ffffff;border-radius:16px;max-width:480px;width:100%;padding:22px 24px;box-shadow:0 20px 50px rgba(0,0,0,0.18);font-family:inherit;color:#171717;";
+
+    var titleText = isOutdated
+      ? "🔄 Cập nhật Tiện ích Chrome Mart AI lên v1.1"
+      : "🧩 Cài Tiện ích Chrome Mart AI (v1.1) để Chat trên Cloud";
+    var stepText = isOutdated
+      ? "Bạn đang cài tiện ích bản cũ (v1.0). Hãy tải bản <b>v1.1</b> bên dưới → giải nén đè lên thư mục cũ → mở <code>chrome://extensions</code> bấm nút <b>Tải lại (🔄)</b> rồi gửi lại tin nhắn."
+      : "Trên máy chủ Render không chạy trình duyệt ngầm nên cần Tiện ích Chrome <b>Mart AI v1.1</b> để gửi/nhận tin nhắn thật với <code>muse.ai</code> bằng chính IP trình duyệt của bạn (chống khóa tài khoản &amp; không lỗi 502):<br><br>" +
+        "1️⃣ Bấm <b>⬇️ Tải Tiện Ích v1.1 (.zip)</b> và giải nén ra thư mục.<br>" +
+        "2️⃣ Mở <code>chrome://extensions</code> → bật <b>Chế độ nhà phát triển</b> (góc phải trên).<br>" +
+        "3️⃣ Bấm <b>Tải tiện ích đã giải nén</b> → chọn thư mục vừa giải nén → quay lại đây bấm Gửi!";
+
+    box.innerHTML =
+      '<div style="font-size:16px;font-weight:700;margin-bottom:10px;color:#14532d;">' +
+      titleText +
+      "</div>" +
+      '<div style="font-size:13.5px;line-height:1.55;color:#334155;margin-bottom:18px;">' +
+      stepText +
+      "</div>" +
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end;">' +
+      '<a href="/api/accounts/extension.zip" class="muse-solid-btn" style="text-decoration:none;display:inline-flex;align-items:center;padding:8px 14px;font-size:13px;">⬇️ Tải Tiện Ích v1.1 (.zip)</a>' +
+      '<button type="button" id="btnCloseCloudExtModal" class="muse-outline-btn" style="padding:8px 14px;font-size:13px;">Đã cài xong — Đóng</button>' +
+      "</div>";
+
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    var closeBtn = document.getElementById("btnCloseCloudExtModal");
+    if (closeBtn) {
+      closeBtn.onclick = function () {
+        refreshCloudExtensionBanner();
+        overlay.remove();
+      };
+    }
+    overlay.addEventListener("click", function (ev) {
+      if (ev.target === overlay) overlay.remove();
+    });
+  }
+
+  async function executeBrowserRelayIfNeeded(res, onProgress) {
+    if (!res || !res.browser_relay) return res;
+
+    const ping = await sendExtensionMessage({ action: "ping" });
+    if (!ping || !ping.ok || !ping.supportsChatRelay) {
+      const cancelRes = await apiRequest("/api/chat/relay-complete", {
+        method: "POST",
+        body: {
+          thread_id: res.thread_id || "",
+          turn_id: res.turn_id || "",
+          node_id: res.node_id || "",
+          model: res.model || "",
+          error: "EXT_REQUIRED",
+        },
+      }).catch(function () {
+        return null;
+      });
+      if (cancelRes && cancelRes.summary) {
+        state.summary = cancelRes.summary;
+        updateMuseSidebarStatus();
+        renderSideNodesList();
+        renderAccountsTable();
+      }
+      const outdated = !!(ping && ping.ok && !ping.supportsChatRelay);
+      showCloudExtensionRequiredModal(outdated);
+      throw new Error(
+        outdated
+          ? "Hãy cập nhật Tiện ích Chrome Mart AI lên bản v1.1 rồi bấm gửi lại!"
+          : "Hãy cài Tiện ích Chrome Mart AI (v1.1) để chat trực tiếp trên Cloud!"
+      );
+    }
+
+    if (typeof onProgress === "function") {
+      onProgress(45, "Đang nhận phản hồi từ " + (res.routed_node || "Muse") + "...");
+    }
+
+    const relayOut = await sendExtensionMessage({
+      action: "execute_muse_chat",
+      prompt: res.prompt || "",
+      cookie: res.relay_cookie || "",
+    });
+
+    if (!relayOut || !relayOut.ok || !relayOut.content) {
+      const errMsg = (relayOut && relayOut.error) || "Không nhận được phản hồi từ phiên Muse.ai.";
+      const cancelRes = await apiRequest("/api/chat/relay-complete", {
+        method: "POST",
+        body: {
+          thread_id: res.thread_id || "",
+          turn_id: res.turn_id || "",
+          node_id: res.node_id || "",
+          model: res.model || "",
+          error: errMsg,
+        },
+      }).catch(function () {
+        return null;
+      });
+      if (cancelRes && cancelRes.summary) {
+        state.summary = cancelRes.summary;
+        updateMuseSidebarStatus();
+        renderSideNodesList();
+        renderAccountsTable();
+      }
+      throw new Error(errMsg);
+    }
+
+    return await apiRequest("/api/chat/relay-complete", {
+      method: "POST",
+      body: {
+        thread_id: res.thread_id || "",
+        turn_id: res.turn_id || "",
+        node_id: res.node_id || "",
+        model: res.model || "",
+        reply: relayOut.content,
+        tokens_used: relayOut.tokens_used || 0,
+        latency_ms: relayOut.latency_ms || 1000,
+      },
+    });
   }
 
   async function runExtensionCaptureFlow(btnEl, onlyExisting) {
@@ -2396,7 +2542,7 @@
             }
           } catch(_) { /* không có memories — bỏ qua */ }
 
-          const res = await apiRequest("/api/chat/send", {
+          let res = await apiRequest("/api/chat/send", {
             method: "POST",
             body: {
               thread_id: requestThreadId,
@@ -2408,7 +2554,26 @@
             },
           });
 
-          if (stoppedByUser) return;
+          if (stoppedByUser) {
+            if (res && res.browser_relay) {
+              await apiRequest("/api/chat/relay-complete", {
+                method: "POST",
+                body: {
+                  thread_id: res.thread_id || "",
+                  turn_id: res.turn_id || "",
+                  node_id: res.node_id || "",
+                  model: res.model || "",
+                  error: "USER_STOPPED",
+                },
+              }).catch(function () {});
+            }
+            return;
+          }
+
+          if (res && res.browser_relay) {
+            res = await executeBrowserRelayIfNeeded(res, updateMartCartProgress);
+            if (stoppedByUser) return;
+          }
 
           // Điền câu trả lời NGAY VÀO DÒNG ĐỂ TRỐNG ngay bên dưới câu hỏi đó
           if (aiRow && aiRow.parentNode) {
@@ -3242,14 +3407,18 @@
             showToast("🔄 Đang gửi nhiệm vụ cho Mart AI...");
             loadTasksList(currentTaskFilter);
 
-            var resp = await fetch("/api/tasks/run", {
+            var runRes = await apiRequest("/api/tasks/run", {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ task_id: id, prompt: prompt })
+              body: { task_id: id, prompt: prompt }
             });
-            if (!resp.ok) {
-              var errData = await resp.json().catch(function(){ return {}; });
-              throw new Error(errData.error || "HTTP " + resp.status);
+            if (runRes && runRes.browser_relay) {
+              runRes = await executeBrowserRelayIfNeeded(runRes);
+              var taskReply = (runRes && (runRes.reply || runRes.content)) || "";
+              var taskSum = taskReply.length > 1000 ? taskReply.slice(0, 997) + "..." : taskReply;
+              await libsqlExec(
+                "UPDATE muse_tasks SET status='done', result_summary=?, updated_at=? WHERE id=?",
+                [taskSum, nowISO(), id]
+              );
             }
             showToast("✅ Nhiệm vụ hoàn thành! Xem kết quả bên dưới.");
             loadTasksList(currentTaskFilter);

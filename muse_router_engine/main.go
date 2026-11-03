@@ -510,6 +510,7 @@ func (a *ServerApp) Routes() http.Handler {
 		WriteJSONResponse(w, http.StatusOK, res)
 	})
 
+	mux.HandleFunc("/api/chat/relay-complete", a.handleChatRelayComplete)
 	mux.HandleFunc("/api/chat/live-status", func(w http.ResponseWriter, r *http.Request) {
 		WriteJSONResponse(w, http.StatusOK, a.pool.GetLiveActivityStatus(r.Context()))
 	})
@@ -652,6 +653,12 @@ func (a *ServerApp) Routes() http.Handler {
 			WriteJSONError(w, http.StatusBadGateway, err.Error())
 			return
 		}
+		if isRelay, _ := res["browser_relay"].(bool); isRelay {
+			res["task_id"] = taskID
+			res["summary"] = a.pool.GetSummary()
+			WriteJSONResponse(w, http.StatusOK, res)
+			return
+		}
 		// Lấy nội dung reply
 		replyText := ""
 		if v, ok := res["reply"]; ok {
@@ -753,6 +760,14 @@ func (a *ServerApp) Routes() http.Handler {
 					results[idx] = batchResult{TaskID: taskID, Status: "error", ErrMsg: err.Error()}
 					return
 				}
+				if a.pool.CancelIfBrowserRelay(res) {
+					msg := "Cần chạy qua trình duyệt có Tiện ích Chrome Mart AI v1.1"
+					if taskID != "" {
+						_, _ = store.ExecuteSQL("UPDATE muse_tasks SET status='error', result_summary=?, updated_at=datetime('now') WHERE id=?", []interface{}{msg, taskID})
+					}
+					results[idx] = batchResult{TaskID: taskID, Status: "error", ErrMsg: msg}
+					return
+				}
 				replyText := ""
 				if v, ok := res["reply"]; ok {
 					replyText = fmt.Sprintf("%v", v)
@@ -835,6 +850,10 @@ func (a *ServerApp) Routes() http.Handler {
 			return
 		}
 
+		if a.pool.CancelIfBrowserRelay(res) {
+			WriteJSONError(w, http.StatusServiceUnavailable, "Tài khoản Cookie muse.ai trên Cloud cần chạy qua trình duyệt có Tiện ích Chrome Mart AI (hoặc dùng API Key).")
+			return
+		}
 		tokensUsed, _ := res["tokens_used"].(int64)
 		WriteJSONResponse(w, http.StatusOK, map[string]interface{}{
 			"id":          fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
