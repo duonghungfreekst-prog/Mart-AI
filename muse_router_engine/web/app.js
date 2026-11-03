@@ -1508,64 +1508,58 @@
       showToast("Trình duyệt chặn cửa sổ mới — hãy cho phép popup hoặc dán Link Đăng Nhập vào tab khác.");
     }
 
+    // Sau khi đăng nhập Meta, trình duyệt của người dùng tự hoàn tất phiên với muse.ai và vào thẳng
+    // giao diện chat (URL callback không còn trên thanh địa chỉ). Cookie hatch_sess là HttpOnly nên
+    // JavaScript không đọc được — chỉ có thể lấy qua DevTools. Chuyển nút sang chế độ "dán từ clipboard".
+    state.cloudLoginWaiting = true;
     if (btnEl) {
-      btnEl.textContent = "⏳ Đăng nhập Meta xong → copy URL trên thanh địa chỉ → quay lại đây";
+      btnEl.disabled = false;
+      btnEl.textContent = "📋 Đã đăng nhập xong? Copy hatch_sess (F12 → Application → Cookies → muse.ai) rồi bấm vào đây";
     }
     showToast(
-      "Sau khi đăng nhập Meta, trang sẽ chuyển tới địa chỉ có chữ 'oidc/callback'. Hãy copy toàn bộ URL đó (Ctrl+L, Ctrl+C) rồi quay lại tab này — hệ thống sẽ tự thêm tài khoản."
+      "Đăng nhập Meta xong, mở tab muse.ai → F12 → Application → Cookies → muse.ai → bấm đúp vào giá trị của hatch_sess → Ctrl+C. Rồi quay lại đây bấm nút đen."
     );
+  }
 
+  async function submitCloudLoginFromClipboard(btnEl) {
+    let text = "";
+    try {
+      text = (await navigator.clipboard.readText()).trim();
+    } catch (_) {
+      showToast("Không đọc được bộ nhớ tạm — hãy cho phép quyền clipboard hoặc dán hatch_sess vào ô bên trên rồi bấm 'Xác thực & Thêm tài khoản'.");
+      return;
+    }
+    if (!text) {
+      showToast("Bộ nhớ tạm chưa có giá trị hatch_sess — hãy copy lại từ DevTools.");
+      return;
+    }
+    if (/^https?:\/\//i.test(text) && !looksLikeOAuthCallback(text)) {
+      showToast("Bộ nhớ tạm đang là một đường link, không phải cookie hatch_sess.");
+      return;
+    }
+    state.cloudLoginWaiting = false;
     const labelEl = document.getElementById("accLabelInput");
     const proxyEl = document.getElementById("accProxyInput") || document.getElementById("quickProxyInput");
-    const deadline = Date.now() + 5 * 60 * 1000;
-    let handled = false;
-
-    const finish = async function (callbackUrl) {
-      if (handled) return;
-      handled = true;
-      window.removeEventListener("focus", onFocus);
-      clearInterval(timer);
-      await submitCookieCredential(
-        labelEl ? labelEl.value.trim() : "",
-        "cookie",
-        "https://muse.ai",
-        callbackUrl.trim(),
-        btnEl,
-        proxyEl ? proxyEl.value.trim() : ""
-      );
-      restore();
-    };
-
-    const tryReadClipboard = async function () {
-      if (handled || !document.hasFocus()) return;
-      if (Date.now() > deadline) {
-        handled = true;
-        window.removeEventListener("focus", onFocus);
-        clearInterval(timer);
-        restore();
-        showToast("Hết thời gian chờ đăng nhập — bấm lại nút để thử lại.");
-        return;
-      }
-      try {
-        const text = await navigator.clipboard.readText();
-        if (looksLikeOAuthCallback(text)) {
-          await finish(text);
-        }
-      } catch (_) {
-        // Chưa cấp quyền đọc clipboard: chờ người dùng cho phép hoặc dán thủ công vào ô Callback.
-      }
-    };
-
-    const onFocus = function () {
-      tryReadClipboard();
-    };
-    window.addEventListener("focus", onFocus);
-    const timer = setInterval(tryReadClipboard, 1500);
+    await submitCookieCredential(
+      labelEl ? labelEl.value.trim() : "",
+      "cookie",
+      "https://muse.ai",
+      text,
+      btnEl,
+      proxyEl ? proxyEl.value.trim() : ""
+    );
+    if (btnEl) {
+      btnEl.textContent = "🔌 Xác thực & Thêm tài khoản";
+    }
   }
 
   async function triggerInteractiveBrowserLogin(btnEl, sessionIdOverride, proxyUrlOverride) {
     if (!isLocalHost()) {
-      await cloudOAuthLoginFlow(btnEl);
+      if (state.cloudLoginWaiting) {
+        await submitCloudLoginFromClipboard(btnEl);
+      } else {
+        await cloudOAuthLoginFlow(btnEl);
+      }
       return;
     }
     const origText = btnEl ? btnEl.textContent : "";
@@ -1613,6 +1607,12 @@
     }
 
     const origText = btnEl ? btnEl.textContent : "";
+    if (/^https:\/\/auth\.meta\.com\//i.test(rawCred.trim())) {
+      showToast(
+        "Đây là Link Đăng Nhập, không phải cookie. Hãy mở link này để đăng nhập, rồi copy giá trị hatch_sess (F12 → Application → Cookies → muse.ai) dán vào đây."
+      );
+      return;
+    }
     if (btnEl) {
       btnEl.disabled = true;
       btnEl.textContent = "⏳ Đang xác thực với muse.ai...";
