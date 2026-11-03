@@ -84,6 +84,7 @@ type ChatMessage struct {
 
 type ChatThread struct {
 	ID        string        `json:"id"`
+	OwnerID   string        `json:"owner_id,omitempty"`
 	Title     string        `json:"title"`
 	Model     string        `json:"model"`
 	Workspace string        `json:"workspace"`
@@ -674,6 +675,21 @@ func (p *MuseRouterPool) GetSummary() RouterSummary {
 		LibSQLURL:         libURL,
 		Nodes:             safeNodes,
 	}
+}
+
+// GetPublicSummary trả về tóm tắt trạng thái Pool cho tài khoản người dùng thường (ẩn chi tiết Node/Cookie/Proxy nội bộ của Admin).
+func (p *MuseRouterPool) GetPublicSummary() RouterSummary {
+	sum := p.GetSummary()
+	sum.LibSQLURL = ""
+	sum.Nodes = []*MuseAccountNode{}
+	return sum
+}
+
+func ownerMatchesThread(threadOwnerID string, actorOwnerID string) bool {
+	if actorOwnerID == "" || actorOwnerID == "admin" {
+		return threadOwnerID == "" || threadOwnerID == "admin"
+	}
+	return threadOwnerID == actorOwnerID
 }
 
 func detectCookieFlags(raw string) (bool, bool) {
@@ -1755,8 +1771,22 @@ func (p *MuseRouterPool) RouteAndExecuteChat(
 	attachments []ChatAttachment,
 	idempotencyKey string,
 ) (map[string]interface{}, error) {
+	return p.RouteAndExecuteChatForOwner(parentCtx, "", threadID, preferredNodeID, model, workspace, userPrompt, attachments, idempotencyKey)
+}
+
+func (p *MuseRouterPool) RouteAndExecuteChatForOwner(
+	parentCtx context.Context,
+	ownerID string,
+	threadID string,
+	preferredNodeID string,
+	model string,
+	workspace string,
+	userPrompt string,
+	attachments []ChatAttachment,
+	idempotencyKey string,
+) (map[string]interface{}, error) {
 	if idempotencyKey != "" {
-		cacheKey := "idem:" + idempotencyKey
+		cacheKey := "idem:" + ownerID + ":" + idempotencyKey
 		if cachedResp, ok := p.cache.Get(cacheKey); ok {
 			if respMap, valid := cachedResp.(map[string]interface{}); valid {
 				LogInfo("Idempotency hit for key=%s", idempotencyKey)
@@ -1778,7 +1808,8 @@ func (p *MuseRouterPool) RouteAndExecuteChat(
 		model = "Muse"
 	}
 
-	resolvedThreadID, turnID, messagesPayload := p.reserveQuestionTurn(
+	resolvedThreadID, turnID, messagesPayload := p.reserveQuestionTurnForOwner(
+		ownerID,
 		threadID,
 		model,
 		workspace,
@@ -1850,6 +1881,11 @@ func (p *MuseRouterPool) RouteAndExecuteChat(
 						break
 					}
 					continue
+				}
+				if ownerID != "" {
+					p.unmarkNodeRunningKeepReady(candidate.ID)
+					p.cancelQuestionTurn(resolvedThreadID, turnID)
+					return nil, errors.New("Trình duyệt xử lý trên máy chủ đang bận — vui lòng thử lại sau giây lát.")
 				}
 				return p.prepareBrowserRelayResponse(candidate, resolvedThreadID, turnID, model, userPrompt)
 			}
@@ -1933,7 +1969,7 @@ func (p *MuseRouterPool) RouteAndExecuteChat(
 		}
 
 		if idempotencyKey != "" {
-			p.cache.Set("idem:"+idempotencyKey, result, 5*time.Minute)
+			p.cache.Set("idem:"+ownerID+":"+idempotencyKey, result, 5*time.Minute)
 		}
 		return result, nil
 	}
@@ -2079,6 +2115,17 @@ func (p *MuseRouterPool) reserveQuestionTurn(
 	userPrompt string,
 	attachments []ChatAttachment,
 ) (string, string, []map[string]string) {
+	return p.reserveQuestionTurnForOwner("", threadID, model, workspace, userPrompt, attachments)
+}
+
+func (p *MuseRouterPool) reserveQuestionTurnForOwner(
+	ownerID string,
+	threadID string,
+	model string,
+	workspace string,
+	userPrompt string,
+	attachments []ChatAttachment,
+) (string, string, []map[string]string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -2087,9 +2134,14 @@ func (p *MuseRouterPool) reserveQuestionTurn(
 	turnID := fmt.Sprintf("turn_%d", now.UnixNano())
 
 	var target *ChatThread
+	idTakenByOther := false
 	for _, t := range p.threads {
 		if t.ID == threadID {
-			target = t
+			if ownerMatchesThread(t.OwnerID, ownerID) {
+				target = t
+			} else {
+				idTakenByOther = true
+			}
 			break
 		}
 	}
@@ -2107,11 +2159,12 @@ func (p *MuseRouterPool) reserveQuestionTurn(
 
 	if target == nil {
 		newID := threadID
-		if strings.TrimSpace(newID) == "" {
-			newID = fmt.Sprintf("thread_%d", now.UnixMilli())
+		if strings.TrimSpace(newID) == "" || idTakenByOther {
+			newID = fmt.Sprintf("thread_%d_%d", now.UnixMilli(), now.UnixNano()%10000)
 		}
 		target = &ChatThread{
 			ID:        newID,
+			OwnerID:   ownerID,
 			Title:     title,
 			Model:     model,
 			Workspace: workspace,
@@ -2271,17 +2324,38 @@ func (p *MuseRouterPool) cancelQuestionTurn(threadID string, turnID string) {
 }
 
 func (p *MuseRouterPool) ListThreads() []*ChatThread {
+	return p.ListThreadsForOwner("")
+}
+
+func (p *MuseRouterPool) ListThreadsForOwner(ownerID string) []*ChatThread {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
 	out := make([]*ChatThread, 0, len(p.threads))
 	for _, t := range p.threads {
-		out = append(out, cloneChatThread(t))
+		if ownerMatchesThread(t.OwnerID, ownerID) {
+			out = append(out, cloneChatThread(t))
+		}
 	}
 	return out
 }
 
+func (p *MuseRouterPool) HasThreadAccess(ownerID string, threadID string) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	for _, t := range p.threads {
+		if t.ID == threadID {
+			return ownerMatchesThread(t.OwnerID, ownerID)
+		}
+	}
+	return false
+}
+
 func (p *MuseRouterPool) CreateNewThread(title string, model string, workspace string) *ChatThread {
+	return p.CreateNewThreadForOwner("", title, model, workspace)
+}
+
+func (p *MuseRouterPool) CreateNewThreadForOwner(ownerID string, title string, model string, workspace string) *ChatThread {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -2295,13 +2369,15 @@ func (p *MuseRouterPool) CreateNewThread(title string, model string, workspace s
 		workspace = "chat"
 	}
 
+	now := time.Now()
 	t := &ChatThread{
-		ID:        fmt.Sprintf("thread_%d", time.Now().UnixMilli()),
+		ID:        fmt.Sprintf("thread_%d_%d", now.UnixMilli(), now.UnixNano()%10000),
+		OwnerID:   ownerID,
 		Title:     title,
 		Model:     model,
 		Workspace: workspace,
-		CreatedAt: time.Now().Format(time.RFC3339),
-		UpdatedAt: time.Now().Format(time.RFC3339),
+		CreatedAt: now.Format(time.RFC3339),
+		UpdatedAt: now.Format(time.RFC3339),
 		Messages:  []ChatMessage{},
 	}
 	p.threads = append([]*ChatThread{t}, p.threads...)
@@ -2310,13 +2386,37 @@ func (p *MuseRouterPool) CreateNewThread(title string, model string, workspace s
 	return &c
 }
 
+func (p *MuseRouterPool) RenameThreadForOwner(ownerID string, threadID string, newTitle string) error {
+	cleanTitle := strings.TrimSpace(newTitle)
+	if cleanTitle == "" {
+		return errors.New("ERR_EMPTY_TITLE")
+	}
+	if len([]rune(cleanTitle)) > 120 {
+		cleanTitle = string([]rune(cleanTitle)[:120])
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, t := range p.threads {
+		if t.ID == threadID && ownerMatchesThread(t.OwnerID, ownerID) {
+			t.Title = cleanTitle
+			t.UpdatedAt = time.Now().Format(time.RFC3339)
+			return p.saveSingleThreadLocked(t)
+		}
+	}
+	return errors.New("ERR_THREAD_NOT_FOUND")
+}
+
 func (p *MuseRouterPool) DeleteThread(threadID string) error {
+	return p.DeleteThreadForOwner("", threadID)
+}
+
+func (p *MuseRouterPool) DeleteThreadForOwner(ownerID string, threadID string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	idx := -1
 	for i, t := range p.threads {
-		if t.ID == threadID {
+		if t.ID == threadID && ownerMatchesThread(t.OwnerID, ownerID) {
 			idx = i
 			break
 		}
@@ -2328,7 +2428,22 @@ func (p *MuseRouterPool) DeleteThread(threadID string) error {
 	if p.libsqlStore != nil {
 		_ = p.libsqlStore.DeleteThread(threadID)
 	}
-	return p.saveThreadsLocked()
+	return nil
+}
+
+func (p *MuseRouterPool) PurgeOwnerThreadsInMemory(ownerID string) {
+	if ownerID == "" || ownerID == "admin" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	kept := make([]*ChatThread, 0, len(p.threads))
+	for _, t := range p.threads {
+		if t.OwnerID != ownerID {
+			kept = append(kept, t)
+		}
+	}
+	p.threads = kept
 }
 
 func (p *MuseRouterPool) applyBackgroundFollowups(rawFollowups interface{}) []*ChatThread {
@@ -2413,6 +2528,10 @@ func (p *MuseRouterPool) applyBackgroundFollowups(rawFollowups interface{}) []*C
 }
 
 func (p *MuseRouterPool) GetLiveActivityStatus(ctx context.Context) map[string]interface{} {
+	return p.GetLiveActivityStatusForOwner(ctx, "")
+}
+
+func (p *MuseRouterPool) GetLiveActivityStatusForOwner(ctx context.Context, ownerID string) map[string]interface{} {
 	if !p.shouldTryPythonBridge() {
 		return map[string]interface{}{
 			"active":       false,
@@ -2436,7 +2555,26 @@ func (p *MuseRouterPool) GetLiveActivityStatus(ctx context.Context) map[string]i
 				if json.NewDecoder(resp.Body).Decode(&out) == nil && out != nil {
 					if rawFollowups, has := out["followups"]; has {
 						if updated := p.applyBackgroundFollowups(rawFollowups); len(updated) > 0 {
-							out["updated_threads"] = updated
+							filtered := make([]*ChatThread, 0, len(updated))
+							for _, ut := range updated {
+								if ownerMatchesThread(ut.OwnerID, ownerID) {
+									filtered = append(filtered, ut)
+								}
+							}
+							if len(filtered) > 0 {
+								out["updated_threads"] = filtered
+							} else {
+								delete(out, "updated_threads")
+							}
+						}
+					}
+					delete(out, "followups")
+					if sessID, _ := out["session_id"].(string); sessID != "" && !p.HasThreadAccess(ownerID, sessID) {
+						return map[string]interface{}{
+							"active":       false,
+							"status_text":  "Đã kết nối",
+							"avatar_frame": "",
+							"partial_md":   "",
 						}
 					}
 					return out

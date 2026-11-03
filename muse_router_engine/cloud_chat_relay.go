@@ -243,6 +243,11 @@ func (a *ServerApp) handleChatRelayComplete(w http.ResponseWriter, r *http.Reque
 		WriteJSONError(w, http.StatusBadRequest, "ERR_INVALID_INPUT")
 		return
 	}
+	actor := a.resolveActor(r)
+	if req.ThreadID != "" && !a.pool.HasThreadAccess(actor.OwnerScope(), req.ThreadID) {
+		WriteJSONError(w, http.StatusForbidden, "ERR_FORBIDDEN_THREAD")
+		return
+	}
 	res, err := a.pool.CompleteBrowserRelayTurn(
 		req.ThreadID,
 		req.TurnID,
@@ -257,7 +262,11 @@ func (a *ServerApp) handleChatRelayComplete(w http.ResponseWriter, r *http.Reque
 		WriteJSONError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	res["summary"] = a.pool.GetSummary()
+	if actor.Role == "admin" {
+		res["summary"] = a.pool.GetSummary()
+	} else {
+		res["summary"] = a.pool.GetPublicSummary()
+	}
 	WriteJSONResponse(w, http.StatusOK, res)
 }
 

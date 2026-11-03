@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css?v=5.3">
+  <link rel="stylesheet" href="/styles.css?v=5.4">
 </head>
 <body>
   <!-- Cảnh báo mất kết nối Backend (chỉ hiện khi dịch vụ chưa bật) -->
@@ -88,6 +88,12 @@
       </nav>
 
       <div class="rail-bottom-group">
+        <!-- Tài khoản cá nhân & Không gian riêng -->
+        <button type="button" class="rail-user-avatar-btn hidden-el" id="railBtnUserAccount" title="Tài khoản &amp; Form riêng của bạn" aria-label="Tài khoản của bạn">
+          <span id="railUserAvatarInitial">U</span>
+          <span class="rail-user-isolated-dot" aria-hidden="true"></span>
+        </button>
+
         <!-- Tải xuống -->
         <button type="button" class="rail-icon-btn" id="railBtnQuickLogin" title="Tải xuống">
           <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -143,8 +149,12 @@
             </div>
           </div>
 
-          <!-- Nút nổi Góc Phải: 📝 Mới (Kèm chấm xanh nhỏ ở góc trên phải giống ảnh gốc) -->
+          <!-- Nút nổi Góc Phải: Tài khoản riêng + 📝 Mới -->
           <div class="floating-top-right">
+            <button type="button" class="floating-pill-btn hidden-el" id="btnFloatingUserAccount" title="Quản lý tài khoản &amp; chuyển không gian riêng">
+              <span class="user-pill-avatar" id="floatingUserInitial">U</span>
+              <span class="floating-account-name-text" id="floatingUserName">Tài khoản</span>
+            </button>
             <button type="button" class="floating-pill-btn" id="btnNewThread" title="Mới">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
@@ -641,6 +651,16 @@
                 <span>Thêm tài khoản vào Ví</span>
               </button>
 
+              <button type="button" class="admin-nav-pill" onclick="document.getElementById('adminUsersSection').scrollIntoView({behavior:'smooth'})">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                  <circle cx="9" cy="7" r="4"/>
+                  <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                  <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                </svg>
+                <span>Tài khoản người dùng</span>
+              </button>
+
               <div class="admin-nav-pill" style="cursor:default;color:#15803d;">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
@@ -835,15 +855,71 @@
               </form>
             </div>
 
-          <!-- BẢNG ĐIỀU KHIỂN & TRUY VẤN TRỰC TIẾP CƠ SỞ DỮ LIỆU CHUẨN LIBSQL (ĐÃ ẨN TRÊN UI, CHẠY NGẦM) -->
+            <!-- KHỐI QUẢN LÝ TÀI KHOẢN NGƯỜI DÙNG (MỖI TÀI KHOẢN QUẢN LÝ 1 FORM RIÊNG) -->
+            <div style="margin-top:28px;" id="adminUsersSection">
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
+                <div>
+                  <span class="admin-section-label">👥 Quản lý Tài khoản Người dùng (<span id="adminUsersCountLabel">0 tài khoản</span>)</span>
+                  <div style="font-size:12.5px;color:#737373;margin-top:2px;">
+                    Mỗi tài khoản sở hữu Đoạn chat, Tài liệu, Bộ nhớ &amp; Nhiệm vụ độc lập 100% — không nhìn thấy và không ảnh hưởng tài khoản khác.
+                  </div>
+                </div>
+                <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                  <button type="button" class="muse-outline-btn" id="btnAdminRefreshUsers" style="min-height:34px;font-size:12.5px;background:#fff;">
+                    ↻ Làm mới
+                  </button>
+                  <button type="button" class="muse-solid-btn" id="btnAdminOpenCreateUser" style="min-height:34px;font-size:12.5px;">
+                    + Tạo tài khoản mới
+                  </button>
+                </div>
+              </div>
+
+              <!-- Form tạo nhanh tài khoản người dùng ngay trong Admin -->
+              <form id="adminCreateUserForm" class="admin-gray-block hidden-el" style="margin-bottom:14px;border:1px solid #fed7aa;background:#fff7ed;">
+                <div style="font-size:13.5px;font-weight:600;color:#9a3412;margin-bottom:10px;">
+                  ➕ Tạo tài khoản người dùng mới (Form làm việc độc lập)
+                </div>
+                <div class="grid-2-cols" style="margin-bottom:10px;">
+                  <div class="input-block">
+                    <label for="adminNewUsername">Tên đăng nhập (viết liền, không dấu)</label>
+                    <input type="text" id="adminNewUsername" class="clean-input" style="background:#fff;" placeholder="Ví dụ: nhanvien_01">
+                  </div>
+                  <div class="input-block">
+                    <label for="adminNewDisplayName">Tên hiển thị / Tên Form riêng</label>
+                    <input type="text" id="adminNewDisplayName" class="clean-input" style="background:#fff;" placeholder="Ví dụ: Phòng Marketing">
+                  </div>
+                </div>
+                <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+                  <div class="input-block" style="flex:1;min-width:200px;">
+                    <label for="adminNewPassword">Mật khẩu (tối thiểu 6 ký tự)</label>
+                    <input type="password" id="adminNewPassword" class="clean-input" style="background:#fff;" placeholder="Nhập mật khẩu cho tài khoản này">
+                  </div>
+                  <button type="submit" class="muse-solid-btn" id="btnAdminSubmitNewUser" style="min-height:38px;">
+                    ✓ Tạo tài khoản
+                  </button>
+                  <button type="button" class="muse-outline-btn" id="btnAdminCancelNewUser" style="min-height:38px;background:#fff;">
+                    Hủy
+                  </button>
+                </div>
+              </form>
+
+              <div class="admin-gray-block">
+                <div id="adminUsersEmptyState" style="text-align:center;color:#737373;font-size:13px;padding:18px 8px;">
+                  Chưa có tài khoản người dùng nào. Người dùng có thể tự đăng ký trên trang chủ hoặc bạn nhấn "+ Tạo tài khoản mới" ở trên.
+                </div>
+                <div id="adminUsersList" class="admin-users-list"></div>
+              </div>
+            </div>
+
+          <!-- BẢNG ĐIỀU KHIỂN & TRUY VẤN TRỰC TIẾP CƠ SỞ DỮ LIỆU CHUẨN SQL40 (ĐÃ ẨN TRÊN UI, CHẠY NGẦM) -->
           <div class="clean-card hidden-el" id="libsqlStudioCard">
             <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
               <div>
                 <h2 style="font-size:0.98rem;font-weight:700;color:#171717;">
-                  🗄️ Cơ Sở Dữ Liệu Chuẩn LibSQL Trực Tiếp (Embedded WAL &amp; Giao Thức Hrana v2 Pipeline)
+                  🗄️ Cơ Sở Dữ Liệu Chuẩn SQL40 Trực Tiếp (Embedded WAL &amp; Standard SQL Engine)
                 </h2>
                 <p style="font-size:0.82rem;color:#737373;margin-top:2px;" id="libsqlStatusSubtext">
-                  Toàn bộ tài khoản, đoạn chat, tin nhắn, phiên OAuth và nhật ký điều phối của hệ thống Web được lưu &amp; truy vấn trực tiếp qua chuẩn <code>libsql</code>.
+                  Toàn bộ tài khoản, đoạn chat, tin nhắn, phiên OAuth và nhật ký điều phối của hệ thống Web được lưu &amp; truy vấn trực tiếp qua chuẩn <code>SQL40</code>.
                 </p>
               </div>
               <div style="display:flex;gap:6px;flex-wrap:wrap;" id="libsqlTablePills">
@@ -865,26 +941,26 @@
               </div>
             </div>
 
-            <!-- Cấu hình URL kết nối libSQL (file:... hoặc libsql://...) -->
+            <!-- Cấu hình URL kết nối SQL40 -->
             <form id="libsqlConfigForm" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px;">
               <div style="flex:2;min-width:240px;">
                 <label for="libsqlUrlInput" style="display:block;font-size:11.5px;font-weight:600;color:#475569;margin-bottom:4px;">
-                  Chuỗi kết nối LibSQL (<code>file:...</code> nhúng trực tiếp hoặc <code>libsql://...</code> / <code>http://...</code>)
+                  Chuỗi kết nối SQL40 (<code>file:...</code> nhúng trực tiếp)
                 </label>
                 <input type="text" id="libsqlUrlInput" class="clean-input" style="font-family:var(--font-mono);font-size:12px;" placeholder="file:f:/tools muse ai/data/muse_router.libsql.db">
               </div>
               <div style="flex:1;min-width:160px;">
                 <label for="libsqlTokenInput" style="display:block;font-size:11.5px;font-weight:600;color:#475569;margin-bottom:4px;">
-                  Auth Token (nếu dùng Turso / sqld từ xa)
+                  Auth Token (nếu dùng kết nối từ xa)
                 </label>
                 <input type="password" id="libsqlTokenInput" class="clean-input" style="font-family:var(--font-mono);font-size:12px;" placeholder="Để trống với chế độ file nhúng">
               </div>
               <button type="submit" class="muse-outline-btn" id="btnApplyLibsqlConfig" style="min-height:36px;">
-                🔄 Kết nối LibSQL
+                🔄 Kết nối SQL40
               </button>
             </form>
 
-            <!-- Ô chạy truy vấn SQL trực tiếp qua chuẩn Hrana v2 Pipeline (/v2/pipeline) -->
+            <!-- Ô chạy truy vấn SQL40 trực tiếp -->
             <form id="libsqlQueryForm" style="display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap;">
               <textarea
                 id="libsqlSqlInput"
@@ -893,7 +969,7 @@
                 style="flex:1;min-width:260px;font-family:var(--font-mono);font-size:12.5px;"
               >SELECT id, node_index, label, status, fingerprint, total_requests, latency_ms, last_used_at, status_detail FROM muse_accounts ORDER BY node_index ASC;</textarea>
               <button type="submit" class="muse-solid-btn" id="btnRunLibsqlQuery" style="min-height:42px;">
-                ▶️ Thực thi qua LibSQL Pipeline
+                ▶️ Thực thi qua SQL40 Engine
               </button>
             </form>
 
@@ -905,7 +981,7 @@
                 <tbody id="libsqlResultBody">
                   <tr>
                     <td style="text-align:center;color:#737373;padding:14px;">
-                      Bấm một bảng phía trên hoặc nhấn "▶️ Thực thi qua LibSQL Pipeline" để truy vấn trực tiếp.
+                      Bấm một bảng phía trên hoặc nhấn "▶️ Thực thi qua SQL40 Engine" để truy vấn trực tiếp.
                     </td>
                   </tr>
                 </tbody>
@@ -916,14 +992,14 @@
       </section>
 
       <!-- ============================================================
-           PANEL: 🔍 TÌM KIẾM — Full-text search qua libSQL
+           PANEL: 🔍 TÌM KIẾM — Full-text search qua SQL40
            ============================================================ -->
       <section class="fullpage-panel hidden-el" id="panelSearch" aria-label="Tìm kiếm đoạn chat">
         <div class="panel-page-inner">
           <div class="panel-page-header">
             <div>
               <h1 class="panel-page-title">🔍 Tìm kiếm</h1>
-              <p class="panel-page-subtitle">Tìm toàn văn trong tất cả đoạn chat và tin nhắn đã lưu trong libSQL</p>
+              <p class="panel-page-subtitle">Tìm toàn văn trong tất cả đoạn chat và tin nhắn đã lưu trong SQL40 (cô lập theo tài khoản của bạn)</p>
             </div>
           </div>
           <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;">
@@ -936,14 +1012,14 @@
       </section>
 
       <!-- ============================================================
-           PANEL: 📄 TÀI LIỆU — muse_documents trong libSQL
+           PANEL: 📄 TÀI LIỆU — muse_documents trong SQL40
            ============================================================ -->
       <section class="fullpage-panel hidden-el" id="panelDocs" aria-label="Tài liệu và Artifacts">
         <div class="panel-page-inner">
           <div class="panel-page-header">
             <div>
               <h1 class="panel-page-title">📄 Tài liệu</h1>
-              <p class="panel-page-subtitle">Tài liệu và artifacts được trích xuất từ cuộc hội thoại, lưu trực tiếp trong libSQL</p>
+              <p class="panel-page-subtitle">Tài liệu và artifacts được trích xuất từ cuộc hội thoại, lưu trực tiếp trong SQL40</p>
             </div>
             <button type="button" class="muse-solid-btn" id="btnNewDoc" style="min-height:36px;padding:0 16px;">+ Tạo tài liệu mới</button>
           </div>
@@ -954,7 +1030,7 @@
               <input type="text" id="docTitleInput" class="clean-input" placeholder="Tiêu đề tài liệu..." style="font-size:14px;font-weight:600;">
               <textarea id="docContentInput" class="clean-textarea" rows="10" placeholder="Nội dung tài liệu (hỗ trợ Markdown)..."></textarea>
               <div style="display:flex;gap:8px;">
-                <button type="button" class="muse-solid-btn" id="btnSaveDoc" style="min-height:34px;">💾 Lưu vào libSQL</button>
+                <button type="button" class="muse-solid-btn" id="btnSaveDoc" style="min-height:34px;">💾 Lưu vào SQL40</button>
                 <button type="button" class="muse-outline-btn" id="btnCancelDoc" style="min-height:34px;">Hủy</button>
               </div>
             </div>
@@ -968,7 +1044,7 @@
       </section>
 
       <!-- ============================================================
-           PANEL: 💡 Ý TƯỞNG & BỘ NHỚ — muse_memories trong libSQL
+           PANEL: 💡 Ý TƯỞNG & BỘ NHỚ — muse_memories trong SQL40
            ============================================================ -->
       <section class="fullpage-panel hidden-el" id="panelIdeas" aria-label="Ý tưởng và Bộ nhớ">
         <div class="panel-page-inner">
@@ -1175,8 +1251,187 @@
     </main>
 
     <div class="toast-region" id="toastRegion" aria-live="polite"></div>
+
+    <!-- ====================================================================
+         MÀN HÌNH ĐĂNG NHẬP / TẠO TÀI KHOẢN RIÊNG BIỆT (#authGateOverlay)
+         ==================================================================== -->
+    <div class="auth-gate-overlay hidden-el" id="authGateOverlay" role="dialog" aria-modal="true" aria-labelledby="authGateHeading">
+      <div class="auth-card">
+        <div class="auth-brand-row">
+          <svg width="40" height="40" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <circle cx="32" cy="32" r="32" fill="#FFF7ED"/>
+            <path d="M14 19H19.5L23.5 38.5H45.5L49.5 24H21" stroke="#EA580C" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M23.5 38.5L22 43.5H46" stroke="#EA580C" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="25.5" cy="48.5" r="3.6" fill="#1E293B"/>
+            <circle cx="42.5" cy="48.5" r="3.6" fill="#1E293B"/>
+            <path d="M35 13L36.5 16.5L40 18L36.5 19.5L35 23L33.5 19.5L30 18L33.5 16.5L35 13Z" fill="#F59E0B"/>
+          </svg>
+          <div>
+            <span class="auth-brand-badge">🔒 Không gian độc lập 100%</span>
+          </div>
+        </div>
+
+        <h1 class="auth-heading" id="authGateHeading">Đăng nhập Mart AI</h1>
+        <p class="auth-subtitle" id="authGateSubtitle">
+          Mỗi tài khoản quản lý một form làm việc riêng (Đoạn chat, Tài liệu, Bộ nhớ &amp; Nhiệm vụ độc lập — không ảnh hưởng tài khoản khác).
+        </p>
+
+        <!-- Thanh chuyển Tab: Đăng nhập | Tạo tài khoản mới -->
+        <div class="auth-tabs-bar" id="authTabsBar" role="tablist">
+          <button type="button" class="auth-tab-btn active" id="authTabLoginBtn" role="tab" aria-selected="true">
+            Đăng nhập
+          </button>
+          <button type="button" class="auth-tab-btn" id="authTabRegisterBtn" role="tab" aria-selected="false">
+            Tạo tài khoản mới
+          </button>
+        </div>
+
+        <div class="auth-error-alert hidden-el" id="authErrorAlert" role="alert"></div>
+
+        <!-- FORM 1: ĐĂNG NHẬP / TẠO TÀI KHOẢN NGƯỜI DÙNG -->
+        <form id="userAuthForm" autocomplete="on">
+          <div class="auth-field-group">
+            <label class="auth-field-label" for="authUsernameInput">Tên tài khoản</label>
+            <input
+              type="text"
+              id="authUsernameInput"
+              class="auth-field-input"
+              placeholder="Ví dụ: minh_anh (3–32 ký tự, không dấu)"
+              autocomplete="username"
+              required
+            >
+          </div>
+
+          <div class="auth-field-group hidden-el" id="authDisplayNameGroup">
+            <label class="auth-field-label" for="authDisplayNameInput">Tên hiển thị / Tên Form riêng (tùy chọn)</label>
+            <input
+              type="text"
+              id="authDisplayNameInput"
+              class="auth-field-input"
+              placeholder="Ví dụ: Minh Anh — Dự án A"
+              autocomplete="name"
+            >
+          </div>
+
+          <div class="auth-field-group">
+            <label class="auth-field-label" for="authPasswordInput">Mật khẩu</label>
+            <input
+              type="password"
+              id="authPasswordInput"
+              class="auth-field-input"
+              placeholder="Nhập mật khẩu (tối thiểu 6 ký tự)"
+              autocomplete="current-password"
+              required
+            >
+          </div>
+
+          <div class="auth-field-group hidden-el" id="authConfirmPasswordGroup">
+            <label class="auth-field-label" for="authConfirmPasswordInput">Nhập lại mật khẩu</label>
+            <input
+              type="password"
+              id="authConfirmPasswordInput"
+              class="auth-field-input"
+              placeholder="Nhập lại mật khẩu xác nhận"
+              autocomplete="new-password"
+            >
+          </div>
+
+          <button type="submit" class="auth-submit-btn" id="btnUserAuthSubmit">
+            Vào không gian riêng
+          </button>
+        </form>
+
+        <!-- FORM 2: MỞ KHÓA QUẢN TRỊ VIÊN HỆ THỐNG (/admin) -->
+        <form id="adminUnlockForm" class="hidden-el">
+          <div class="auth-field-group">
+            <label class="auth-field-label" for="adminUnlockPasswordInput">Mật khẩu Quản trị viên (<code>MART_ADMIN_PASSWORD</code>)</label>
+            <input
+              type="password"
+              id="adminUnlockPasswordInput"
+              class="auth-field-input"
+              placeholder="Nhập mật khẩu quản trị viên hệ thống"
+              autocomplete="current-password"
+            >
+          </div>
+          <button type="submit" class="auth-submit-btn" id="btnAdminUnlockSubmit">
+            🔓 Mở trang Quản trị Pool &amp; Tài khoản
+          </button>
+        </form>
+
+        <div class="auth-footer-links">
+          <span id="authMultiTabHint">💡 Có thể mở nhiều tab cho nhiều tài khoản khác nhau</span>
+          <button type="button" class="auth-link-btn" id="btnSwitchAdminUnlockMode">
+            Quản trị viên (/admin)
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ====================================================================
+         HỘP THOẠI HỒ SƠ TÀI KHOẢN & CHUYỂN TÀI KHOẢN (#accountProfileModal)
+         ==================================================================== -->
+    <div class="auth-modal-backdrop hidden-el" id="accountProfileModal" role="dialog" aria-modal="true" aria-labelledby="profileModalTitle">
+      <div class="auth-card" style="max-width:440px;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:14px;">
+          <div style="display:flex;align-items:center;gap:12px;">
+            <div class="rail-user-avatar-btn" style="width:44px;height:44px;font-size:17px;cursor:default;" id="profileModalAvatar">U</div>
+            <div>
+              <h2 class="auth-heading" style="font-size:17px;" id="profileModalTitle">Tài khoản của bạn</h2>
+              <div style="font-size:12.5px;color:#6b7280;margin-top:2px;" id="profileModalSub">@username</div>
+            </div>
+          </div>
+          <button type="button" class="admin-close-circle-btn" id="btnCloseProfileModal" aria-label="Đóng">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+
+        <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:10px 13px;font-size:12.5px;color:#166534;margin-bottom:16px;line-height:1.45;">
+          ✅ <strong>Form làm việc độc lập:</strong> Mọi đoạn chat, tài liệu, bộ nhớ và nhiệm vụ bạn tạo chỉ thuộc riêng tài khoản này — không ảnh hưởng tới bất kỳ tài khoản nào khác.
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px;">
+          <button type="button" class="auth-secondary-btn" id="btnProfileSwitchAccount">
+            🔄 Đổi / Tạo tài khoản
+          </button>
+          <button type="button" class="auth-secondary-btn" id="btnProfileTogglePwForm">
+            🔑 Đổi mật khẩu
+          </button>
+        </div>
+
+        <!-- Nút vào /admin chỉ hiện khi tài khoản đang mở có quyền admin -->
+        <button type="button" class="auth-secondary-btn hidden-el" id="btnProfileOpenAdmin" style="width:100%;margin-bottom:12px;border-color:#fed7aa;background:#fff7ed;color:#9a3412;">
+          ⚙️ Mở Quản trị Pool Token &amp; Người dùng (/admin)
+        </button>
+
+        <!-- Form đổi mật khẩu & tên hiển thị (ẩn mặc định) -->
+        <form id="profileChangePwForm" class="hidden-el" style="background:#fafaf9;border:1px solid #e7e5e4;border-radius:14px;padding:14px;margin-bottom:14px;">
+          <div class="auth-field-group" style="margin-bottom:10px;">
+            <label class="auth-field-label" for="profileNewDisplayName">Tên hiển thị</label>
+            <input type="text" id="profileNewDisplayName" class="auth-field-input" style="min-height:38px;font-size:13.5px;">
+          </div>
+          <div class="auth-field-group" style="margin-bottom:10px;">
+            <label class="auth-field-label" for="profileCurrentPw">Mật khẩu hiện tại</label>
+            <input type="password" id="profileCurrentPw" class="auth-field-input" style="min-height:38px;font-size:13.5px;" required>
+          </div>
+          <div class="auth-field-group" style="margin-bottom:12px;">
+            <label class="auth-field-label" for="profileNewPw">Mật khẩu mới (tối thiểu 6 ký tự)</label>
+            <input type="password" id="profileNewPw" class="auth-field-input" style="min-height:38px;font-size:13.5px;" required>
+          </div>
+          <button type="submit" class="auth-submit-btn" id="btnProfileSavePw" style="min-height:38px;font-size:13px;">
+            Lưu thay đổi
+          </button>
+        </form>
+
+        <button type="button" class="auth-secondary-btn" id="btnProfileLogout" style="width:100%;color:#dc2626;border-color:#fecaca;">
+          🚪 Đăng xuất khỏi phiên này
+        </button>
+      </div>
+    </div>
   </div>
 
-  <script src="/app.js?v=5.3"></script>
+  <script src="/app.js?v=5.4"></script>
 </body>
 </html>

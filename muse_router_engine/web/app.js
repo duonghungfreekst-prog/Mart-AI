@@ -84,12 +84,50 @@
     activeThreadId: "",
     pendingAttachments: [],
     jwtToken: "",
+    currentUser: null,
+    authMode: "login",
+    adminPasswordRequired: false,
+    sessionIntervalsStarted: false,
     lastOAuthSessionId: "",
     lastOAuthLoginUrl: "",
     lastNodesSignature: "",
     bgActive: false,
     pendingChatCount: 0,
   };
+
+  function loadStoredSessionToken() {
+    try {
+      var tabTok = sessionStorage.getItem("mart_tab_jwt") || "";
+      if (tabTok) return tabTok;
+      var lastTok = localStorage.getItem("mart_last_jwt") || "";
+      if (lastTok) {
+        sessionStorage.setItem("mart_tab_jwt", lastTok);
+        return lastTok;
+      }
+    } catch (_) {}
+    return "";
+  }
+
+  function persistSessionToken(tok) {
+    state.jwtToken = tok || "";
+    try {
+      if (tok) {
+        sessionStorage.setItem("mart_tab_jwt", tok);
+        localStorage.setItem("mart_last_jwt", tok);
+      }
+    } catch (_) {}
+  }
+
+  function clearSessionToken(onlyThisTab) {
+    state.jwtToken = "";
+    state.currentUser = null;
+    try {
+      sessionStorage.removeItem("mart_tab_jwt");
+      if (!onlyThisTab) {
+        localStorage.removeItem("mart_last_jwt");
+      }
+    } catch (_) {}
+  }
 
   function showToast(message) {
     const region = document.getElementById("toastRegion");
@@ -232,6 +270,7 @@
     const headers = Object.assign(
       {
         "Content-Type": "application/json",
+        "X-Mart-Client": "web",
       },
       opts.headers || {}
     );
@@ -248,7 +287,15 @@
       return {};
     });
     if (!resp.ok) {
-      throw new Error(data.error || "ERR_HTTP_" + resp.status);
+      const code = data.error || "ERR_HTTP_" + resp.status;
+      if (resp.status === 401 && !opts.skipAuthPrompt) {
+        if (code === "ERR_ADMIN_AUTH_REQUIRED") {
+          openAuthGate("admin_unlock");
+        } else if (code === "ERR_AUTH_REQUIRED") {
+          openAuthGate("login");
+        }
+      }
+      throw new Error(code);
     }
     return data;
   }
@@ -329,6 +376,7 @@
   window.MuseLibSQLClient = libsqlClient;
 
   async function refreshLibSQLStatus() {
+    if (!state.currentUser || state.currentUser.role !== "admin") return;
     try {
       const st = await apiRequest("/api/libsql/status");
       const sideBadge = document.getElementById("sideLibsqlBadge");
@@ -450,6 +498,7 @@
   // ============================================================================
 
   async function refreshRouterState(forceRender) {
+    if (!state.currentUser) return;
     const offlineBanner = document.getElementById("offlineBanner");
     try {
       const data = await apiRequest("/api/router/summary");
@@ -477,6 +526,10 @@
       }
       updateMuseSidebarStatus();
     } catch (err) {
+      const msg = (err && err.message) || "";
+      if (msg.indexOf("ERR_AUTH") === 0 || msg.indexOf("ERR_ADMIN") === 0 || msg.indexOf("ERR_FORBIDDEN") === 0) {
+        return;
+      }
       if (offlineBanner) offlineBanner.classList.remove("hidden-el");
     }
   }
@@ -1346,6 +1399,12 @@
   var ALL_PANELS = ["panelChat", "panelSearch", "panelDocs", "panelIdeas", "panelTasks", "panelLibrary", "panelAccounts"];
 
   function switchMainView(mode) {
+    if (mode === "accounts") {
+      if (!state.currentUser || state.currentUser.role !== "admin") {
+        openAuthGate("admin_unlock");
+        return;
+      }
+    }
     state.viewMode = mode;
     if (mode !== "accounts" && typeof activeInlineChromeCleanup === "function") {
       activeInlineChromeCleanup(true);
@@ -1401,6 +1460,7 @@
         silentAutoSyncAccounts();
       }
       refreshLibSQLStatus();
+      loadAdminUsersList();
       var studioCard = document.getElementById("libsqlStudioCard");
       var sqlInput = document.getElementById("libsqlSqlInput");
       if (studioCard && !studioCard.classList.contains("hidden-el") && sqlInput && sqlInput.value.trim()) {
@@ -3056,10 +3116,10 @@
               var cleanPrompt = memPrefixIdx >= 0 ? rawPrompt.slice(memPrefixIdx + 10) : rawPrompt;
               var autoTitle = cleanPrompt.replace(/\n/g, " ").trim().slice(0, 60) || "Đoạn chat";
               if (autoTitle.length === 60) autoTitle += "…";
-              await libsqlExec(
-                "UPDATE chat_threads SET title=?, updated_at=? WHERE id=?",
-                [autoTitle, nowISO(), autoTitleThreadId]
-              );
+              await apiRequest("/api/threads/rename", {
+                method: "POST",
+                body: { thread_id: autoTitleThreadId, title: autoTitle },
+              });
               curThread.title = autoTitle;
               // Cập nhật sidebar
               var threadItem = document.querySelector(".thread-item[data-id='" + autoTitleThreadId + "'] .thread-title");
@@ -3181,15 +3241,14 @@
   }
 
   async function getActiveMemoriesCached() {
+    if (!state.currentUser) return [];
     var now = Date.now();
     if (Array.isArray(state.cachedActiveMemories) && now - (state.cachedActiveMemoriesTs || 0) < 120000) {
       return state.cachedActiveMemories;
     }
     try {
-      var memResult = await libsqlExec(
-        "SELECT content FROM muse_memories WHERE is_active=1 ORDER BY created_at ASC LIMIT 10"
-      );
-      var rows = libsqlRows(memResult);
+      var memResp = await apiRequest("/api/workspace/memories?active_only=1");
+      var rows = Array.isArray(memResp && memResp.memories) ? memResp.memories : [];
       state.cachedActiveMemories = rows;
       state.cachedActiveMemoriesTs = now;
       return rows;
@@ -3261,97 +3320,764 @@
     }
   }
 
+  /* ====================================================================
+     👤 HỆ THỐNG ĐA TÀI KHOẢN NGƯỜI DÙNG & WORKSPACE ĐỘC LẬP 100%
+     ==================================================================== */
+
+  function computeAvatarColors(seedText) {
+    var palettes = [
+      { bg: "#FFF7ED", fg: "#EA580C", solid: "#EA580C" },
+      { bg: "#EFF6FF", fg: "#2563EB", solid: "#2563EB" },
+      { bg: "#F0FDF4", fg: "#15803D", solid: "#16A34A" },
+      { bg: "#FAF5FF", fg: "#7E22CE", solid: "#9333EA" },
+      { bg: "#FFF1F2", fg: "#BE123C", solid: "#E11D48" },
+      { bg: "#ECFEFF", fg: "#0E7490", solid: "#0891B2" }
+    ];
+    var s = String(seedText || "U");
+    var h = 0;
+    for (var i = 0; i < s.length; i++) {
+      h = (h * 31 + s.charCodeAt(i)) >>> 0;
+    }
+    return palettes[h % palettes.length];
+  }
+
+  function updateUserAccountBadges() {
+    var railBtn = document.getElementById("railBtnUserAccount");
+    var railInitial = document.getElementById("railUserAvatarInitial");
+    var floatBtn = document.getElementById("btnFloatingUserAccount");
+    var floatInit = document.getElementById("floatingUserInitial");
+    var floatName = document.getElementById("floatingUserName");
+    var u = state.currentUser;
+
+    if (!u) {
+      if (railBtn) railBtn.classList.add("hidden-el");
+      if (floatBtn) floatBtn.classList.add("hidden-el");
+      return;
+    }
+
+    var displayName = u.display_name || u.username || "Tài khoản";
+    var initial = String(displayName).trim().charAt(0).toUpperCase() || "U";
+    var pal = computeAvatarColors(u.username || u.id || displayName);
+
+    if (railBtn) {
+      railBtn.classList.remove("hidden-el");
+      railBtn.style.background = pal.bg;
+      railBtn.style.color = pal.fg;
+      railBtn.title = displayName + " (@" + (u.username || "") + ") — Form riêng độc lập";
+    }
+    if (railInitial) railInitial.textContent = initial;
+
+    if (floatBtn) {
+      floatBtn.classList.remove("hidden-el");
+      floatBtn.title = "Đang dùng tài khoản: " + displayName + " (@" + (u.username || "") + ")";
+    }
+    if (floatInit) {
+      floatInit.textContent = initial;
+      floatInit.style.background = pal.solid;
+    }
+    if (floatName) {
+      floatName.textContent = displayName.length > 18 ? displayName.slice(0, 18) + "…" : displayName;
+    }
+  }
+
+  function resetWorkspaceDOMAndState() {
+    state.threads = [];
+    state.activeThreadId = "";
+    state.pendingAttachments = [];
+    state.cachedActiveMemories = null;
+    state.cachedActiveMemoriesTs = 0;
+    state.lastNodesSignature = "";
+
+    ["threadsList", "popoverThreadsList", "chatMessagesViewport", "searchResultsList", "docsList", "memoriesList", "tasksList", "libArtifactsGrid"].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.innerHTML = "";
+    });
+    var viewport = document.getElementById("chatMessagesViewport");
+    var welcome = document.getElementById("chatWelcomeScreen");
+    if (viewport) viewport.classList.add("hidden-el");
+    if (welcome) welcome.style.display = "flex";
+  }
+
+  function setAuthError(msg) {
+    var alertEl = document.getElementById("authErrorAlert");
+    if (!alertEl) return;
+    if (!msg) {
+      alertEl.textContent = "";
+      alertEl.classList.add("hidden-el");
+    } else {
+      alertEl.textContent = msg;
+      alertEl.classList.remove("hidden-el");
+    }
+  }
+
+  function openAuthGate(mode) {
+    var overlay = document.getElementById("authGateOverlay");
+    if (!overlay) return;
+    state.authMode = mode || "login";
+    setAuthError("");
+
+    var tabsBar = document.getElementById("authTabsBar");
+    var tabLogin = document.getElementById("authTabLoginBtn");
+    var tabReg = document.getElementById("authTabRegisterBtn");
+    var userForm = document.getElementById("userAuthForm");
+    var adminForm = document.getElementById("adminUnlockForm");
+    var dispGroup = document.getElementById("authDisplayNameGroup");
+    var confGroup = document.getElementById("authConfirmPasswordGroup");
+    var heading = document.getElementById("authGateHeading");
+    var subtitle = document.getElementById("authGateSubtitle");
+    var submitBtn = document.getElementById("btnUserAuthSubmit");
+    var switchAdminBtn = document.getElementById("btnSwitchAdminUnlockMode");
+    var pwInput = document.getElementById("authPasswordInput");
+
+    overlay.classList.remove("hidden-el");
+
+    if (state.authMode === "admin_unlock") {
+      if (tabsBar) tabsBar.classList.add("hidden-el");
+      if (userForm) userForm.classList.add("hidden-el");
+      if (adminForm) adminForm.classList.remove("hidden-el");
+      if (heading) heading.textContent = "Quản trị viên Mart AI (/admin)";
+      if (subtitle) {
+        subtitle.textContent = state.adminPasswordRequired
+          ? "Nhập mật khẩu Quản trị viên (MART_ADMIN_PASSWORD) để quản lý Pool Token & danh sách tài khoản người dùng."
+          : "Máy chủ Local chưa đặt MART_ADMIN_PASSWORD — nhấn nút bên dưới để mở thẳng trang Quản trị.";
+      }
+      if (switchAdminBtn) switchAdminBtn.textContent = "← Quay lại Đăng nhập người dùng";
+      var admInp = document.getElementById("adminUnlockPasswordInput");
+      if (admInp) {
+        admInp.required = Boolean(state.adminPasswordRequired);
+        setTimeout(function () { admInp.focus(); }, 40);
+      }
+      return;
+    }
+
+    if (tabsBar) tabsBar.classList.remove("hidden-el");
+    if (userForm) userForm.classList.remove("hidden-el");
+    if (adminForm) adminForm.classList.add("hidden-el");
+    if (switchAdminBtn) switchAdminBtn.textContent = "Quản trị viên (/admin)";
+
+    var isReg = state.authMode === "register";
+    if (tabLogin) {
+      tabLogin.classList.toggle("active", !isReg);
+      tabLogin.setAttribute("aria-selected", isReg ? "false" : "true");
+    }
+    if (tabReg) {
+      tabReg.classList.toggle("active", isReg);
+      tabReg.setAttribute("aria-selected", isReg ? "true" : "false");
+    }
+    if (dispGroup) dispGroup.classList.toggle("hidden-el", !isReg);
+    if (confGroup) confGroup.classList.toggle("hidden-el", !isReg);
+    if (pwInput) pwInput.setAttribute("autocomplete", isReg ? "new-password" : "current-password");
+
+    if (heading) {
+      heading.textContent = isReg ? "Tạo tài khoản riêng mới" : "Đăng nhập Mart AI";
+    }
+    if (subtitle) {
+      subtitle.textContent = isReg
+        ? "Tạo không gian riêng cho bạn — mọi đoạn chat, tài liệu, bộ nhớ & nhiệm vụ đều tách biệt hoàn toàn với tài khoản khác."
+        : "Mỗi tài khoản quản lý một form làm việc riêng (Đoạn chat, Tài liệu, Bộ nhớ & Nhiệm vụ độc lập — không ảnh hưởng tài khoản khác).";
+    }
+    if (submitBtn) {
+      submitBtn.textContent = isReg ? "✨ Tạo tài khoản & Mở Form riêng" : "Vào không gian riêng";
+    }
+
+    var userInp = document.getElementById("authUsernameInput");
+    if (userInp) {
+      setTimeout(function () { userInp.focus(); }, 40);
+    }
+  }
+
+  function closeAuthGate() {
+    var overlay = document.getElementById("authGateOverlay");
+    if (overlay) overlay.classList.add("hidden-el");
+    setAuthError("");
+  }
+
+  async function onAuthenticatedSessionReady(targetView) {
+    closeAuthGate();
+    updateUserAccountBadges();
+    resetWorkspaceDOMAndState();
+
+    if (targetView) {
+      switchMainView(targetView);
+    } else if (state.viewMode === "accounts" && (!state.currentUser || state.currentUser.role !== "admin")) {
+      switchMainView("chat");
+    }
+
+    await Promise.all([
+      refreshRouterState(true),
+      loadThreads()
+    ]);
+
+    if (state.viewMode === "accounts" && state.currentUser && state.currentUser.role === "admin") {
+      refreshLibSQLStatus();
+      loadAdminUsersList();
+      if (!state.prewarmedChromeOnce && state.summary && (state.summary.ready_nodes || 0) === 0) {
+        state.prewarmedChromeOnce = true;
+        apiRequest("/api/accounts/remote-login/prewarm", { method: "POST" }).catch(function () {});
+      }
+    } else if (state.viewMode === "library") {
+      loadLibraryArtifacts();
+    } else if (state.viewMode === "docs") {
+      loadDocsList();
+    } else if (state.viewMode === "ideas") {
+      loadMemoriesList();
+    } else if (state.viewMode === "tasks") {
+      loadTasksList("all");
+    }
+
+    getActiveMemoriesCached().catch(function () {});
+  }
+
+  function openProfileModal() {
+    var u = state.currentUser;
+    if (!u) {
+      openAuthGate("login");
+      return;
+    }
+    var modal = document.getElementById("accountProfileModal");
+    if (!modal) return;
+
+    var dName = u.display_name || u.username || "Tài khoản";
+    var pal = computeAvatarColors(u.username || u.id || dName);
+    var avEl = document.getElementById("profileModalAvatar");
+    var titleEl = document.getElementById("profileModalTitle");
+    var subEl = document.getElementById("profileModalSub");
+    var openAdminBtn = document.getElementById("btnProfileOpenAdmin");
+    var togglePwBtn = document.getElementById("btnProfileTogglePwForm");
+    var pwForm = document.getElementById("profileChangePwForm");
+    var dispInp = document.getElementById("profileNewDisplayName");
+
+    if (avEl) {
+      avEl.textContent = String(dName).trim().charAt(0).toUpperCase() || "U";
+      avEl.style.background = pal.bg;
+      avEl.style.color = pal.fg;
+    }
+    if (titleEl) titleEl.textContent = dName;
+    if (subEl) {
+      subEl.textContent =
+        "@" + (u.username || "user") + (u.role === "admin" ? " · Quản trị viên hệ thống" : " · Không gian cá nhân độc lập");
+    }
+    if (openAdminBtn) {
+      openAdminBtn.classList.toggle("hidden-el", u.role !== "admin");
+    }
+    if (togglePwBtn) {
+      togglePwBtn.classList.toggle("hidden-el", u.role === "admin");
+    }
+    if (pwForm) pwForm.classList.add("hidden-el");
+    if (dispInp) dispInp.value = dName;
+
+    modal.classList.remove("hidden-el");
+  }
+
+  function closeProfileModal() {
+    var modal = document.getElementById("accountProfileModal");
+    if (modal) modal.classList.add("hidden-el");
+  }
+
+  function wireUserAuthAndProfile() {
+    var tabLogin = document.getElementById("authTabLoginBtn");
+    var tabReg = document.getElementById("authTabRegisterBtn");
+    var switchAdminBtn = document.getElementById("btnSwitchAdminUnlockMode");
+    var userForm = document.getElementById("userAuthForm");
+    var adminForm = document.getElementById("adminUnlockForm");
+
+    if (tabLogin) {
+      tabLogin.addEventListener("click", function () {
+        openAuthGate("login");
+      });
+    }
+    if (tabReg) {
+      tabReg.addEventListener("click", function () {
+        openAuthGate("register");
+      });
+    }
+    if (switchAdminBtn) {
+      switchAdminBtn.addEventListener("click", function () {
+        if (state.authMode === "admin_unlock") {
+          openAuthGate("login");
+        } else {
+          openAuthGate("admin_unlock");
+        }
+      });
+    }
+
+    if (userForm) {
+      userForm.addEventListener("submit", async function (ev) {
+        ev.preventDefault();
+        setAuthError("");
+        var username = (document.getElementById("authUsernameInput").value || "").trim();
+        var displayName = (document.getElementById("authDisplayNameInput").value || "").trim();
+        var password = document.getElementById("authPasswordInput").value || "";
+        var confirmPw = document.getElementById("authConfirmPasswordInput").value || "";
+        var submitBtn = document.getElementById("btnUserAuthSubmit");
+
+        if (!username || !password) {
+          setAuthError("Vui lòng nhập đầy đủ tên tài khoản và mật khẩu.");
+          return;
+        }
+        if (state.authMode === "register" && password !== confirmPw) {
+          setAuthError("Mật khẩu xác nhận không khớp — vui lòng kiểm tra lại.");
+          return;
+        }
+
+        var origLabel = submitBtn ? submitBtn.textContent : "";
+        if (submitBtn) {
+          submitBtn.disabled = true;
+          submitBtn.textContent = "⏳ Đang xác thực...";
+        }
+        try {
+          var endpoint = state.authMode === "register" ? "/api/users/register" : "/api/users/login";
+          var payload =
+            state.authMode === "register"
+              ? { username: username, display_name: displayName, password: password }
+              : { username: username, password: password };
+          var res = await apiRequest(endpoint, {
+            method: "POST",
+            body: payload,
+            skipAuthPrompt: true,
+          });
+          persistSessionToken(res.token || "");
+          state.currentUser = res.user || null;
+
+          document.getElementById("authPasswordInput").value = "";
+          document.getElementById("authConfirmPasswordInput").value = "";
+
+          showToast(
+            state.authMode === "register"
+              ? "🎉 Đã tạo tài khoản @" + (state.currentUser.username || username) + " — Form riêng đã sẵn sàng!"
+              : "👋 Xin chào " + (state.currentUser.display_name || username) + "!"
+          );
+          await onAuthenticatedSessionReady("chat");
+        } catch (err) {
+          setAuthError(err.message || "Không thể đăng nhập.");
+        } finally {
+          if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.textContent = origLabel;
+          }
+        }
+      });
+    }
+
+    if (adminForm) {
+      adminForm.addEventListener("submit", async function (ev) {
+        ev.preventDefault();
+        setAuthError("");
+        var pw = document.getElementById("adminUnlockPasswordInput").value || "";
+        var btn = document.getElementById("btnAdminUnlockSubmit");
+        var orig = btn ? btn.textContent : "";
+        if (btn) {
+          btn.disabled = true;
+          btn.textContent = "⏳ Đang mở khóa Quản trị...";
+        }
+        try {
+          var res = await apiRequest("/api/users/admin-login", {
+            method: "POST",
+            body: { password: pw },
+            skipAuthPrompt: true,
+          });
+          persistSessionToken(res.token || "");
+          state.currentUser = res.user || { id: "admin", username: "admin", display_name: "Quản trị viên", role: "admin" };
+          document.getElementById("adminUnlockPasswordInput").value = "";
+          showToast("🔓 Đã mở trang Quản trị Pool Token & Người dùng.");
+          await onAuthenticatedSessionReady("accounts");
+        } catch (err) {
+          setAuthError(err.message || "Mật khẩu Quản trị viên không đúng.");
+        } finally {
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = orig;
+          }
+        }
+      });
+    }
+
+    ["railBtnUserAccount", "btnFloatingUserAccount"].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) {
+        el.addEventListener("click", function () {
+          openProfileModal();
+        });
+      }
+    });
+
+    var closeModalBtn = document.getElementById("btnCloseProfileModal");
+    var profileModal = document.getElementById("accountProfileModal");
+    if (closeModalBtn) {
+      closeModalBtn.addEventListener("click", closeProfileModal);
+    }
+    if (profileModal) {
+      profileModal.addEventListener("click", function (ev) {
+        if (ev.target === profileModal) closeProfileModal();
+      });
+    }
+
+    var btnSwitchAcc = document.getElementById("btnProfileSwitchAccount");
+    if (btnSwitchAcc) {
+      btnSwitchAcc.addEventListener("click", function () {
+        closeProfileModal();
+        // Chỉ xóa token của tab hiện tại để các tab khác vẫn giữ nguyên tài khoản đang dùng!
+        clearSessionToken(true);
+        resetWorkspaceDOMAndState();
+        updateUserAccountBadges();
+        openAuthGate("login");
+      });
+    }
+
+    var btnLogout = document.getElementById("btnProfileLogout");
+    if (btnLogout) {
+      btnLogout.addEventListener("click", function () {
+        closeProfileModal();
+        clearSessionToken(false);
+        resetWorkspaceDOMAndState();
+        updateUserAccountBadges();
+        showToast("Đã đăng xuất khỏi tài khoản.");
+        openAuthGate("login");
+      });
+    }
+
+    var btnOpenAdmin = document.getElementById("btnProfileOpenAdmin");
+    if (btnOpenAdmin) {
+      btnOpenAdmin.addEventListener("click", function () {
+        closeProfileModal();
+        switchMainView("accounts");
+      });
+    }
+
+    var btnTogglePw = document.getElementById("btnProfileTogglePwForm");
+    var pwForm = document.getElementById("profileChangePwForm");
+    if (btnTogglePw && pwForm) {
+      btnTogglePw.addEventListener("click", function () {
+        pwForm.classList.toggle("hidden-el");
+      });
+    }
+
+    if (pwForm) {
+      pwForm.addEventListener("submit", async function (ev) {
+        ev.preventDefault();
+        var newDisp = (document.getElementById("profileNewDisplayName").value || "").trim();
+        var curPw = document.getElementById("profileCurrentPw").value || "";
+        var newPw = document.getElementById("profileNewPw").value || "";
+        var saveBtn = document.getElementById("btnProfileSavePw");
+        if (saveBtn) saveBtn.disabled = true;
+        try {
+          var res = await apiRequest("/api/users/password", {
+            method: "POST",
+            body: {
+              display_name: newDisp,
+              current_password: curPw,
+              new_password: newPw,
+            },
+          });
+          if (res.token) persistSessionToken(res.token);
+          if (res.user) state.currentUser = res.user;
+          updateUserAccountBadges();
+          document.getElementById("profileCurrentPw").value = "";
+          document.getElementById("profileNewPw").value = "";
+          pwForm.classList.add("hidden-el");
+          closeProfileModal();
+          showToast("✅ Đã cập nhật thông tin & mật khẩu tài khoản.");
+        } catch (err) {
+          showToast("❌ " + err.message);
+        } finally {
+          if (saveBtn) saveBtn.disabled = false;
+        }
+      });
+    }
+  }
+
+  function wireAdminUsersPanel() {
+    var btnRefresh = document.getElementById("btnAdminRefreshUsers");
+    var btnOpenCreate = document.getElementById("btnAdminOpenCreateUser");
+    var btnCancelCreate = document.getElementById("btnAdminCancelNewUser");
+    var createForm = document.getElementById("adminCreateUserForm");
+
+    if (btnRefresh) {
+      btnRefresh.addEventListener("click", function () {
+        loadAdminUsersList();
+      });
+    }
+    if (btnOpenCreate && createForm) {
+      btnOpenCreate.addEventListener("click", function () {
+        createForm.classList.toggle("hidden-el");
+        if (!createForm.classList.contains("hidden-el")) {
+          var inp = document.getElementById("adminNewUsername");
+          if (inp) inp.focus();
+        }
+      });
+    }
+    if (btnCancelCreate && createForm) {
+      btnCancelCreate.addEventListener("click", function () {
+        createForm.classList.add("hidden-el");
+      });
+    }
+    if (createForm) {
+      createForm.addEventListener("submit", async function (ev) {
+        ev.preventDefault();
+        var uName = (document.getElementById("adminNewUsername").value || "").trim();
+        var dName = (document.getElementById("adminNewDisplayName").value || "").trim();
+        var pw = document.getElementById("adminNewPassword").value || "";
+        var subBtn = document.getElementById("btnAdminSubmitNewUser");
+        if (!uName || !pw) {
+          showToast("⚠️ Vui lòng nhập tên đăng nhập và mật khẩu.");
+          return;
+        }
+        if (subBtn) subBtn.disabled = true;
+        try {
+          await apiRequest("/api/users/register", {
+            method: "POST",
+            body: { username: uName, display_name: dName, password: pw },
+            skipAuthPrompt: true,
+          });
+          document.getElementById("adminNewUsername").value = "";
+          document.getElementById("adminNewDisplayName").value = "";
+          document.getElementById("adminNewPassword").value = "";
+          createForm.classList.add("hidden-el");
+          showToast("✅ Đã tạo tài khoản @" + uName + " với không gian riêng biệt!");
+          loadAdminUsersList();
+        } catch (err) {
+          showToast("❌ " + err.message);
+        } finally {
+          if (subBtn) subBtn.disabled = false;
+        }
+      });
+    }
+  }
+
+  async function loadAdminUsersList() {
+    if (!state.currentUser || state.currentUser.role !== "admin") return;
+    var listEl = document.getElementById("adminUsersList");
+    var emptyEl = document.getElementById("adminUsersEmptyState");
+    var countEl = document.getElementById("adminUsersCountLabel");
+    if (!listEl) return;
+
+    try {
+      var res = await apiRequest("/api/admin/users");
+      var users = Array.isArray(res && res.users) ? res.users : [];
+      if (countEl) countEl.textContent = users.length + " tài khoản";
+
+      if (users.length === 0) {
+        if (emptyEl) emptyEl.style.display = "";
+        listEl.innerHTML = "";
+        return;
+      }
+      if (emptyEl) emptyEl.style.display = "none";
+      listEl.innerHTML = "";
+
+      users.forEach(function (u) {
+        var pal = computeAvatarColors(u.username || u.id);
+        var dName = u.display_name || u.username || "User";
+        var initial = String(dName).trim().charAt(0).toUpperCase() || "U";
+        var statusBadge = u.is_disabled
+          ? '<span style="padding:2px 8px;border-radius:999px;background:#fef2f2;color:#dc2626;font-size:11.5px;font-weight:600;border:1px solid #fecaca;">Đã khóa</span>'
+          : '<span style="padding:2px 8px;border-radius:999px;background:#f0fdf4;color:#15803d;font-size:11.5px;font-weight:600;border:1px solid #bbf7d0;">Đang hoạt động</span>';
+
+        var row = document.createElement("div");
+        row.className = "admin-user-row";
+        row.innerHTML =
+          '<div style="display:flex;align-items:center;gap:12px;min-width:220px;flex:1;">' +
+            '<div style="width:36px;height:36px;border-radius:50%;background:' + pal.bg + ';color:' + pal.fg + ';display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;flex-shrink:0;">' +
+              escapeHtml(initial) +
+            '</div>' +
+            '<div>' +
+              '<div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;">' +
+                '<strong style="font-size:14px;color:#171717;">' + escapeHtml(dName) + '</strong>' +
+                '<code style="font-size:12px;color:#525252;">@' + escapeHtml(u.username || "") + '</code>' +
+                statusBadge +
+              '</div>' +
+              '<div style="font-size:12px;color:#737373;margin-top:3px;">' +
+                '💬 ' + (u.thread_count || 0) + ' đoạn chat · 📄 ' + (u.doc_count || 0) + ' tài liệu · ☑️ ' + (u.task_count || 0) + ' nhiệm vụ' +
+                (u.last_login_at ? ' · Đăng nhập cuối: ' + escapeHtml(u.last_login_at) : '') +
+              '</div>' +
+            '</div>' +
+          '</div>' +
+          '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">' +
+            '<button type="button" class="admin-action-pill-btn" data-adm-toggle="' + escapeHtml(u.id) + '" data-disabled="' + (u.is_disabled ? "1" : "0") + '">' +
+              (u.is_disabled ? '🔓 Mở khóa' : '🔒 Khóa') +
+            '</button>' +
+            '<button type="button" class="admin-action-pill-btn" data-adm-pw="' + escapeHtml(u.id) + '" data-uname="' + escapeHtml(u.username || "") + '">' +
+              '🔑 Đặt lại MK' +
+            '</button>' +
+            '<button type="button" class="admin-action-pill-btn" style="color:#dc2626;border-color:#fecaca;" data-adm-del="' + escapeHtml(u.id) + '" data-uname="' + escapeHtml(u.username || "") + '">' +
+              '🗑️ Xóa' +
+            '</button>' +
+          '</div>';
+        listEl.appendChild(row);
+      });
+
+      listEl.querySelectorAll("[data-adm-toggle]").forEach(function (btn) {
+        btn.addEventListener("click", async function () {
+          var uid = btn.getAttribute("data-adm-toggle");
+          var curDis = btn.getAttribute("data-disabled") === "1";
+          try {
+            await apiRequest("/api/admin/users/toggle", {
+              method: "POST",
+              body: { user_id: uid, is_disabled: !curDis },
+            });
+            showToast(!curDis ? "🔒 Đã khóa tài khoản." : "🔓 Đã mở khóa tài khoản.");
+            loadAdminUsersList();
+          } catch (err) {
+            showToast("❌ " + err.message);
+          }
+        });
+      });
+
+      listEl.querySelectorAll("[data-adm-pw]").forEach(function (btn) {
+        btn.addEventListener("click", async function () {
+          var uid = btn.getAttribute("data-adm-pw");
+          var uname = btn.getAttribute("data-uname");
+          var newPw = prompt("Nhập mật khẩu mới cho tài khoản @" + uname + " (tối thiểu 6 ký tự):");
+          if (!newPw) return;
+          try {
+            await apiRequest("/api/admin/users/reset-password", {
+              method: "POST",
+              body: { user_id: uid, new_password: newPw },
+            });
+            showToast("✅ Đã đặt lại mật khẩu cho @" + uname + ".");
+          } catch (err) {
+            showToast("❌ " + err.message);
+          }
+        });
+      });
+
+      listEl.querySelectorAll("[data-adm-del]").forEach(function (btn) {
+        btn.addEventListener("click", async function () {
+          var uid = btn.getAttribute("data-adm-del");
+          var uname = btn.getAttribute("data-uname");
+          if (!confirm("Xóa vĩnh viễn tài khoản @" + uname + " và toàn bộ đoạn chat/tài liệu riêng của tài khoản này? (Không ảnh hưởng tới tài khoản khác)")) {
+            return;
+          }
+          try {
+            await apiRequest("/api/admin/users/delete", {
+              method: "POST",
+              body: { user_id: uid },
+            });
+            showToast("🗑️ Đã xóa tài khoản @" + uname + ".");
+            loadAdminUsersList();
+          } catch (err) {
+            showToast("❌ " + err.message);
+          }
+        });
+      });
+    } catch (err) {
+      console.warn("loadAdminUsersList:", err);
+    }
+  }
+
   async function initSession() {
     setupEventListeners();
+    wireUserAuthAndProfile();
+    wireAdminUsersPanel();
     wireSearchPanel();
     wireDocsPanel();
     wireMemoriesPanel();
     wireTasksPanel();
     wireLibraryPanel();
 
-    // Chuyển ngay sang panel tương ứng từ mili-giây đầu tiên (không chờ mạng)
+    state.jwtToken = loadStoredSessionToken();
+
     var initPath = window.location.pathname;
-    if (initPath === "/cai-dat" || initPath === "/admin" || window.location.hash === "#cai-dat") {
-      state.lastSilentSyncTs = Date.now();
-      switchMainView("accounts");
-    } else if (initPath === "/library/artifacts") {
-      switchMainView("library");
-    }
+    var wantsAdminPage = initPath === "/cai-dat" || initPath === "/admin" || window.location.hash === "#cai-dat";
+    var wantsLibraryPage = initPath === "/library/artifacts";
 
     try {
-      const auth = await apiRequest("/api/auth/session");
-      if (auth && auth.token) {
-        state.jwtToken = auth.token;
+      var me = await apiRequest("/api/users/me", { skipAuthPrompt: true });
+      state.adminPasswordRequired = Boolean(me && me.admin_password_required);
+      if (me && me.authenticated && me.user) {
+        state.currentUser = me.user;
+      } else {
+        state.currentUser = null;
       }
     } catch (err) {
-      console.warn("Session init:", err);
+      console.warn("User session check:", err);
     }
 
-    await Promise.all([
-      refreshRouterState(true),
-      loadThreads(),
-    ]);
-    if (state.viewMode === "accounts") {
-      refreshLibSQLStatus();
-      if (
-        !state.prewarmedChromeOnce &&
-        state.summary &&
-        (state.summary.ready_nodes || 0) === 0
-      ) {
-        state.prewarmedChromeOnce = true;
-        apiRequest("/api/accounts/remote-login/prewarm", { method: "POST" }).catch(function () {});
+    // Nếu chủ máy mở thẳng /admin hoặc /cai-dat:
+    if (wantsAdminPage) {
+      if (state.currentUser && state.currentUser.role === "admin") {
+        await onAuthenticatedSessionReady("accounts");
+      } else if (!state.adminPasswordRequired) {
+        // Trên máy Local chưa đặt MART_ADMIN_PASSWORD -> tự cấp phiên Admin cho tab /admin
+        try {
+          var autoAdm = await apiRequest("/api/users/admin-login", {
+            method: "POST",
+            body: { password: "" },
+            skipAuthPrompt: true,
+          });
+          persistSessionToken(autoAdm.token || "");
+          state.currentUser = autoAdm.user || { id: "admin", username: "admin", display_name: "Quản trị viên", role: "admin" };
+          await onAuthenticatedSessionReady("accounts");
+        } catch (_) {
+          openAuthGate("admin_unlock");
+        }
+      } else {
+        openAuthGate("admin_unlock");
       }
+    } else if (state.currentUser) {
+      await onAuthenticatedSessionReady(wantsLibraryPage ? "library" : "chat");
+    } else {
+      openAuthGate("login");
     }
-    // Nạp trước bộ nhớ tùy chỉnh vào RAM (không chặn giao diện)
-    getActiveMemoriesCached().catch(function () {});
 
-    setInterval(function () {
-      if (!document.hidden) {
-        refreshRouterState();
-      }
-    }, 15000);
+    if (!state.sessionIntervalsStarted) {
+      state.sessionIntervalsStarted = true;
+      setInterval(function () {
+        if (!document.hidden && state.currentUser) {
+          refreshRouterState();
+        }
+      }, 15000);
 
-    document.addEventListener("visibilitychange", function () {
-      if (!document.hidden) {
-        refreshRouterState();
-      }
-    });
+      document.addEventListener("visibilitychange", function () {
+        if (!document.hidden && state.currentUser) {
+          refreshRouterState();
+        }
+      });
 
-    // Theo dõi tiến trình chỉ khi đang có câu hỏi chờ xử lý (không bắn request rỗng khi nhàn rỗi)
-    setInterval(pollBackgroundActivity, 1800);
+      // Theo dõi tiến trình chỉ khi đang có câu hỏi chờ xử lý (không bắn request rỗng khi nhàn rỗi)
+      setInterval(pollBackgroundActivity, 1800);
 
-    // Keyboard shortcuts: Ctrl+K → Search, Ctrl+N → Chat mới, Ctrl+Shift+S → Trang cài đặt riêng, Esc → Chat
-    document.addEventListener("keydown", function(ev) {
-      // Phím tắt bí mật chỉ mình chủ máy biết: Ctrl + Shift + S -> Mở Trang Cài Đặt Riêng
-      if (ev.ctrlKey && ev.shiftKey && (ev.key === "S" || ev.key === "s")) {
-        ev.preventDefault();
-        switchMainView(state.viewMode === "accounts" ? "chat" : "accounts");
-        return;
-      }
-      // Không trigger khi đang gõ trong input/textarea
-      var tag = (ev.target || {}).tagName || "";
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
-        // Chỉ cho phép Esc thoát khỏi input
-        if (ev.key === "Escape") { ev.target.blur(); }
-        return;
-      }
-      if (ev.ctrlKey && ev.key === "k") {
-        ev.preventDefault();
-        switchMainView("search");
-        var searchInput = document.getElementById("searchInput");
-        if (searchInput) { searchInput.focus(); }
-        showToast("🔍 Tìm kiếm (Ctrl+K)");
-      } else if (ev.ctrlKey && ev.key === "n") {
-        ev.preventDefault();
-        switchMainView("chat");
-        var btnNew = document.getElementById("btnNewThread");
-        if (btnNew) btnNew.click();
-        showToast("💬 Đoạn chat mới (Ctrl+N)");
-      } else if (ev.key === "Escape") {
-        ev.preventDefault();
-        switchMainView("chat");
-      }
-    });
+      // Keyboard shortcuts: Ctrl+K → Search, Ctrl+N → Chat mới, Ctrl+Shift+S → Trang cài đặt riêng, Esc → Chat
+      document.addEventListener("keydown", function(ev) {
+        var profileModal = document.getElementById("accountProfileModal");
+        if (ev.key === "Escape" && profileModal && !profileModal.classList.contains("hidden-el")) {
+          ev.preventDefault();
+          closeProfileModal();
+          return;
+        }
+        var authGate = document.getElementById("authGateOverlay");
+        if (authGate && !authGate.classList.contains("hidden-el")) {
+          return;
+        }
+        // Phím tắt cho Quản trị viên: Ctrl + Shift + S -> Mở Trang Cài Đặt Riêng
+        if (ev.ctrlKey && ev.shiftKey && (ev.key === "S" || ev.key === "s")) {
+          ev.preventDefault();
+          switchMainView(state.viewMode === "accounts" ? "chat" : "accounts");
+          return;
+        }
+        // Không trigger khi đang gõ trong input/textarea
+        var tag = (ev.target || {}).tagName || "";
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
+          if (ev.key === "Escape") { ev.target.blur(); }
+          return;
+        }
+        if (ev.ctrlKey && ev.key === "k") {
+          ev.preventDefault();
+          switchMainView("search");
+          var searchInput = document.getElementById("searchInput");
+          if (searchInput) { searchInput.focus(); }
+          showToast("🔍 Tìm kiếm (Ctrl+K)");
+        } else if (ev.ctrlKey && ev.key === "n") {
+          ev.preventDefault();
+          switchMainView("chat");
+          var btnNew = document.getElementById("btnNewThread");
+          if (btnNew) btnNew.click();
+          showToast("💬 Đoạn chat mới (Ctrl+N)");
+        } else if (ev.key === "Escape") {
+          ev.preventDefault();
+          switchMainView("chat");
+        }
+      });
+    }
 
     // Xin quyền Browser Notification khi khởi động (nếu chưa có)
     if ("Notification" in window && Notification.permission === "default") {
@@ -3360,44 +4086,8 @@
   }
 
   /* ====================================================================
-     HELPER: Chạy pipeline libSQL qua Hrana v2 (POST /v2/pipeline)
+     HELPER: Chuẩn SQL40 REST API (Thay thế libsqlExec /v2/pipeline cũ)
      ==================================================================== */
-  async function libsqlExec(sql, args) {
-    args = args || [];
-    var hranaArgs = args.map(function(v) {
-      if (v === null || v === undefined) return { type: "null" };
-      if (typeof v === "number" && Number.isInteger(v)) return { type: "integer", value: String(v) };
-      if (typeof v === "number") return { type: "float", value: v };
-      return { type: "text", value: String(v) };
-    });
-    var body = {
-      requests: [
-        { type: "execute", stmt: { sql: sql, args: hranaArgs, want_rows: true } },
-        { type: "close" }
-      ]
-    };
-    var resp = await fetch("/v2/pipeline", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
-    });
-    if (!resp.ok) throw new Error("libSQL pipeline HTTP " + resp.status);
-    var data = await resp.json();
-    var r0 = data.results && data.results[0];
-    if (!r0 || r0.type !== "ok") throw new Error((r0 && r0.error && r0.error.message) || "libSQL error");
-    return r0.response && r0.response.result;
-  }
-
-  function libsqlRows(result) {
-    if (!result || !result.rows) return [];
-    var cols = (result.cols || []).map(function(c){ return c.name; });
-    return result.rows.map(function(row) {
-      var obj = {};
-      cols.forEach(function(col, i) { obj[col] = row[i] ? row[i].value : null; });
-      return obj;
-    });
-  }
-
   function nowISO() { return new Date().toISOString().replace("T"," ").slice(0,19); }
   function uuid4() {
     return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function(c){
@@ -3407,7 +4097,7 @@
   }
 
   /* ====================================================================
-     🔍 PANEL SEARCH — Tìm kiếm toàn văn trong libSQL
+     🔍 PANEL SEARCH — Tìm kiếm toàn văn trong SQL40 (Cô lập theo tài khoản)
      ==================================================================== */
   function wireSearchPanel() {
     var btnSearch = document.getElementById("btnRunSearch");
@@ -3419,24 +4109,16 @@
       if (!q) return;
       var countEl = document.getElementById("searchResultsCount");
       var listEl = document.getElementById("searchResultsList");
-      listEl.innerHTML = "<p style='color:#737373;font-size:13px;'>Đang tìm kiếm...</p>";
+      listEl.innerHTML = "<p style='color:#737373;font-size:13px;'>Đang tìm kiếm trong SQL40...</p>";
       try {
-        var like = "%" + q + "%";
-        // Tìm trong threads
-        var trResult = await libsqlExec(
-          "SELECT id, title, updated_at FROM chat_threads WHERE title LIKE ? ORDER BY updated_at DESC LIMIT 20", [like]
-        );
-        var threads = libsqlRows(trResult);
-        // Tìm trong messages
-        var msgResult = await libsqlExec(
-          "SELECT m.id, m.thread_id, m.role, substr(m.content,1,200) AS snippet, m.timestamp, t.title AS thread_title FROM chat_messages m LEFT JOIN chat_threads t ON t.id=m.thread_id WHERE m.content LIKE ? ORDER BY m.timestamp DESC LIMIT 30", [like]
-        );
-        var msgs = libsqlRows(msgResult);
+        var data = await apiRequest("/api/workspace/search?q=" + encodeURIComponent(q));
+        var threads = (data && data.threads) || [];
+        var msgs = (data && data.messages) || [];
         var total = threads.length + msgs.length;
         if (countEl) countEl.textContent = 'Tìm thấy ' + total + ' kết quả cho "' + q + '"';
         listEl.innerHTML = "";
         if (total === 0) {
-          listEl.innerHTML = "<p style='text-align:center;color:#737373;padding:30px 0;'>Không tìm thấy kết quả nào.</p>";
+          listEl.innerHTML = "<p style='text-align:center;color:#737373;padding:30px 0;'>Không tìm thấy kết quả nào trong tài khoản của bạn.</p>";
           return;
         }
         threads.forEach(function(t) {
@@ -3475,7 +4157,7 @@
   }
 
   /* ====================================================================
-     📄 PANEL DOCS — Tài liệu & Artifacts từ libSQL (muse_documents)
+     📄 PANEL DOCS — Tài liệu & Artifacts trong SQL40 (muse_documents)
      ==================================================================== */
   function wireDocsPanel() {
     var btnNew = document.getElementById("btnNewDoc");
@@ -3500,12 +4182,12 @@
       if (!title) { showToast("⚠️ Vui lòng nhập tiêu đề tài liệu."); return; }
       if (!content) { showToast("⚠️ Vui lòng nhập nội dung tài liệu."); return; }
       try {
-        await libsqlExec(
-          "INSERT INTO muse_documents(id,title,content,updated_at) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title, content=excluded.content, updated_at=excluded.updated_at",
-          [id, title, content, nowISO()]
-        );
+        await apiRequest("/api/workspace/docs", {
+          method: "POST",
+          body: { action: "save", id: id, title: title, content: content }
+        });
         document.getElementById("docEditorCard").classList.add("hidden-el");
-        showToast("✅ Đã lưu tài liệu vào libSQL.");
+        showToast("✅ Đã lưu tài liệu vào SQL40.");
         loadDocsList();
       } catch(e) { showToast("❌ Lỗi lưu tài liệu: " + e.message); }
     });
@@ -3515,12 +4197,11 @@
     var listEl = document.getElementById("docsList");
     var emptyEl = document.getElementById("docsEmptyState");
     if (!listEl) return;
-    // Loading spinner
     listEl.innerHTML = '<div style="text-align:center;padding:24px;color:#94a3b8;font-size:13px;">⏳ Đang tải tài liệu...</div>';
     if (emptyEl) emptyEl.style.display = "none";
     try {
-      var result = await libsqlExec("SELECT id, title, substr(content,1,200) AS preview, updated_at FROM muse_documents ORDER BY updated_at DESC LIMIT 100");
-      var rows = libsqlRows(result);
+      var res = await apiRequest("/api/workspace/docs");
+      var rows = (res && res.docs) || [];
       if (rows.length === 0) {
         if (emptyEl) emptyEl.style.display = "";
         listEl.innerHTML = "";
@@ -3543,17 +4224,16 @@
           '</div>';
         listEl.appendChild(card);
       });
-      // Gán sự kiện nút
       listEl.querySelectorAll("[data-action='edit-doc']").forEach(function(btn) {
         btn.addEventListener("click", async function() {
           var id = btn.getAttribute("data-id");
           try {
-            var r = await libsqlExec("SELECT id,title,content FROM muse_documents WHERE id=?", [id]);
-            var rows2 = libsqlRows(r);
-            if (!rows2.length) return;
-            document.getElementById("docEditingId").value = rows2[0].id;
-            document.getElementById("docTitleInput").value = rows2[0].title||"";
-            document.getElementById("docContentInput").value = rows2[0].content||"";
+            var r = await apiRequest("/api/workspace/docs?id=" + encodeURIComponent(id));
+            var docObj = r && r.doc;
+            if (!docObj) return;
+            document.getElementById("docEditingId").value = docObj.id;
+            document.getElementById("docTitleInput").value = docObj.title||"";
+            document.getElementById("docContentInput").value = docObj.content||"";
             document.getElementById("docEditorCard").classList.remove("hidden-el");
             document.getElementById("docTitleInput").focus();
           } catch(e) { showToast("❌ " + e.message); }
@@ -3563,24 +4243,23 @@
         btn.addEventListener("click", async function() {
           var id = btn.getAttribute("data-id");
           try {
-            var r = await libsqlExec("SELECT content FROM muse_documents WHERE id=?", [id]);
-            var rows2 = libsqlRows(r);
-            if (!rows2.length) return;
-            await navigator.clipboard.writeText(rows2[0].content||"");
+            var r = await apiRequest("/api/workspace/docs?id=" + encodeURIComponent(id));
+            var docObj = r && r.doc;
+            if (!docObj) return;
+            await navigator.clipboard.writeText(docObj.content||"");
             showToast("✅ Đã sao chép nội dung tài liệu.");
           } catch(e) { showToast("❌ " + e.message); }
         });
       });
-      // Export .md
       listEl.querySelectorAll("[data-action='export-doc']").forEach(function(btn) {
         btn.addEventListener("click", async function() {
           var id = btn.getAttribute("data-id");
           var title = btn.getAttribute("data-title") || "tai-lieu";
           try {
-            var r = await libsqlExec("SELECT title,content FROM muse_documents WHERE id=?", [id]);
-            var rows2 = libsqlRows(r);
-            if (!rows2.length) return;
-            var mdContent = "# " + (rows2[0].title||"Tài liệu") + "\n\n" + (rows2[0].content||"");
+            var r = await apiRequest("/api/workspace/docs?id=" + encodeURIComponent(id));
+            var docObj = r && r.doc;
+            if (!docObj) return;
+            var mdContent = "# " + (docObj.title||"Tài liệu") + "\n\n" + (docObj.content||"");
             var blob = new Blob([mdContent], { type: "text/markdown;charset=utf-8" });
             var url = URL.createObjectURL(blob);
             var a = document.createElement("a");
@@ -3598,7 +4277,10 @@
           if (!confirm("Xóa tài liệu này?")) return;
           var id = btn.getAttribute("data-id");
           try {
-            await libsqlExec("DELETE FROM muse_documents WHERE id=?", [id]);
+            await apiRequest("/api/workspace/docs", {
+              method: "POST",
+              body: { action: "delete", id: id }
+            });
             showToast("✅ Đã xóa tài liệu.");
             loadDocsList();
           } catch(e) { showToast("❌ " + e.message); }
@@ -3608,7 +4290,7 @@
   }
 
   /* ====================================================================
-     💡 PANEL IDEAS — Bộ nhớ & Prompt mẫu (muse_memories)
+     💡 PANEL IDEAS — Bộ nhớ & Prompt mẫu trong SQL40 (muse_memories)
      ==================================================================== */
   function wireMemoriesPanel() {
     var btnNew = document.getElementById("btnNewMemory");
@@ -3632,13 +4314,13 @@
       var content = document.getElementById("memoryContentInput").value.trim();
       if (!title || !content) { showToast("⚠️ Vui lòng nhập đủ tiêu đề và nội dung."); return; }
       try {
-        await libsqlExec(
-          "INSERT INTO muse_memories(id,title,content,is_active,created_at) VALUES(?,?,?,1,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title, content=excluded.content",
-          [id, title, content, nowISO()]
-        );
+        await apiRequest("/api/workspace/memories", {
+          method: "POST",
+          body: { action: "save", id: id, title: title, content: content }
+        });
         state.cachedActiveMemoriesTs = 0;
         document.getElementById("memoryEditorCard").classList.add("hidden-el");
-        showToast("✅ Đã lưu bộ nhớ vào libSQL.");
+        showToast("✅ Đã lưu bộ nhớ vào SQL40.");
         loadMemoriesList();
       } catch(e) { showToast("❌ " + e.message); }
     });
@@ -3648,12 +4330,11 @@
     var listEl = document.getElementById("memoriesList");
     var emptyEl = document.getElementById("memoriesEmptyState");
     if (!listEl) return;
-    // Loading spinner
     listEl.innerHTML = '<div style="text-align:center;padding:24px;color:#94a3b8;font-size:13px;">⏳ Đang tải bộ nhớ...</div>';
     if (emptyEl) emptyEl.style.display = "none";
     try {
-      var result = await libsqlExec("SELECT id, title, content, is_active, created_at FROM muse_memories ORDER BY created_at DESC LIMIT 100");
-      var rows = libsqlRows(result);
+      var res = await apiRequest("/api/workspace/memories");
+      var rows = (res && res.memories) || [];
       if (rows.length === 0) {
         if (emptyEl) emptyEl.style.display = "";
         listEl.innerHTML = "";
@@ -3683,19 +4364,20 @@
           '</div>';
         listEl.appendChild(card);
       });
-      // Toggle bật/tắt bộ nhớ
       listEl.querySelectorAll(".mem-toggle-chk").forEach(function(chk) {
         chk.addEventListener("change", async function() {
           var id = chk.getAttribute("data-id");
           var val = chk.checked ? 1 : 0;
           try {
-            await libsqlExec("UPDATE muse_memories SET is_active=? WHERE id=?", [val, id]);
+            await apiRequest("/api/workspace/memories", {
+              method: "POST",
+              body: { action: "toggle", id: id, is_active: val }
+            });
             state.cachedActiveMemoriesTs = 0;
             showToast(chk.checked ? "✅ Bộ nhớ đã bật." : "ℹ️ Bộ nhớ đã tắt.");
           } catch(e) { showToast("❌ " + e.message); }
         });
       });
-      // Chạy ngay trong Chat
       listEl.querySelectorAll("[data-action='run-memory']").forEach(function(btn) {
         btn.addEventListener("click", function() {
           var content = btn.getAttribute("data-content");
@@ -3705,13 +4387,15 @@
           showToast("📋 Đã chèn vào ô nhập. Nhấn Enter để gửi.");
         });
       });
-      // Xóa bộ nhớ
       listEl.querySelectorAll("[data-action='del-memory']").forEach(function(btn) {
         btn.addEventListener("click", async function() {
           if (!confirm("Xóa bộ nhớ này?")) return;
           var id = btn.getAttribute("data-id");
           try {
-            await libsqlExec("DELETE FROM muse_memories WHERE id=?", [id]);
+            await apiRequest("/api/workspace/memories", {
+              method: "POST",
+              body: { action: "delete", id: id }
+            });
             state.cachedActiveMemoriesTs = 0;
             showToast("✅ Đã xóa bộ nhớ.");
             loadMemoriesList();
@@ -3722,7 +4406,7 @@
   }
 
   /* ====================================================================
-     ☑️ PANEL TASKS — Nhiệm vụ & Hàng đợi lệnh (muse_tasks)
+     ☑️ PANEL TASKS — Nhiệm vụ & Hàng đợi lệnh trong SQL40 (muse_tasks)
      ==================================================================== */
   var currentTaskFilter = "all";
 
@@ -3732,16 +4416,12 @@
     var btnCancel = document.getElementById("btnCancelTask");
     if (!btnNew || !btnSave) return;
 
-    // Nút "⚡ Chạy tất cả" — batch concurrent qua /api/tasks/batch
     var btnRunAll = document.getElementById("btnRunAllPending");
     if (btnRunAll) {
       btnRunAll.addEventListener("click", async function() {
         try {
-          // Lấy tất cả task pending từ libSQL
-          var result = await libsqlExec(
-            "SELECT id, title, prompt FROM muse_tasks WHERE status='pending' ORDER BY updated_at ASC LIMIT 10"
-          );
-          var rows = libsqlRows(result);
+          var resPend = await apiRequest("/api/workspace/tasks?status=pending&sort=ASC&limit=10");
+          var rows = (resPend && resPend.tasks) || [];
           if (rows.length === 0) {
             showToast("⚠️ Không có nhiệm vụ nào đang chờ xử lý.");
             return;
@@ -3753,16 +4433,10 @@
           var tasks = rows.map(function(r) {
             return { task_id: r.id, prompt: r.prompt, title: r.title || "" };
           });
-          var resp = await fetch("/api/tasks/batch", {
+          var data = await apiRequest("/api/tasks/batch", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ tasks: tasks })
+            body: { tasks: tasks }
           });
-          if (!resp.ok) {
-            var errData = await resp.json().catch(function(){ return {}; });
-            throw new Error(errData.error || "HTTP " + resp.status);
-          }
-          var data = await resp.json();
           var doneCount = (data.results || []).filter(function(r){ return r.status === "done"; }).length;
           var errCount  = (data.results || []).filter(function(r){ return r.status === "error"; }).length;
           showToast("✅ Hoàn thành " + doneCount + "/" + rows.length + " nhiệm vụ" + (errCount > 0 ? " · " + errCount + " lỗi" : "") + ".");
@@ -3792,17 +4466,16 @@
       var prompt = document.getElementById("taskPromptInput").value.trim();
       if (!title) { showToast("⚠️ Vui lòng nhập tên nhiệm vụ."); return; }
       try {
-        await libsqlExec(
-          "INSERT INTO muse_tasks(id,title,prompt,status,updated_at) VALUES(?,?,?,'pending',?) ON CONFLICT(id) DO UPDATE SET title=excluded.title, prompt=excluded.prompt, updated_at=excluded.updated_at",
-          [id, title, prompt, nowISO()]
-        );
+        await apiRequest("/api/workspace/tasks", {
+          method: "POST",
+          body: { action: "save", id: id, title: title, prompt: prompt }
+        });
         document.getElementById("taskEditorCard").classList.add("hidden-el");
-        showToast("✅ Đã lưu nhiệm vụ vào libSQL.");
+        showToast("✅ Đã lưu nhiệm vụ vào SQL40.");
         loadTasksList(currentTaskFilter);
       } catch(e) { showToast("❌ " + e.message); }
     });
 
-    // Filter buttons
     document.querySelectorAll(".task-filter-btn").forEach(function(btn) {
       btn.addEventListener("click", function() {
         document.querySelectorAll(".task-filter-btn").forEach(function(b){ b.classList.remove("active"); });
@@ -3817,20 +4490,11 @@
     var listEl = document.getElementById("tasksList");
     var emptyEl = document.getElementById("tasksEmptyState");
     if (!listEl) return;
-    // Loading spinner
     listEl.innerHTML = '<div style="text-align:center;padding:24px;color:#94a3b8;font-size:13px;">⏳ Đang tải nhiệm vụ...</div>';
     if (emptyEl) emptyEl.style.display = "none";
     try {
-      var sql, params;
-      if (!filter || filter === "all") {
-        sql = "SELECT id,title,prompt,status,result_summary,updated_at FROM muse_tasks ORDER BY updated_at DESC LIMIT 100";
-        params = [];
-      } else {
-        sql = "SELECT id,title,prompt,status,result_summary,updated_at FROM muse_tasks WHERE status=? ORDER BY updated_at DESC LIMIT 100";
-        params = [filter];
-      }
-      var result = await libsqlExec(sql, params);
-      var rows = libsqlRows(result);
+      var res = await apiRequest("/api/workspace/tasks?status=" + encodeURIComponent(filter || "all"));
+      var rows = (res && res.tasks) || [];
       if (rows.length === 0) {
         if (emptyEl) emptyEl.style.display = "";
         listEl.innerHTML = "";
@@ -3860,14 +4524,16 @@
         listEl.appendChild(card);
       });
 
-      // Gửi task cho Mart AI qua /api/tasks/run (endpoint riêng có progress tracking)
       listEl.querySelectorAll("[data-action='run-task']").forEach(function(btn) {
         btn.addEventListener("click", async function() {
           var id = btn.getAttribute("data-id");
           var prompt = btn.getAttribute("data-prompt");
           if (!prompt) { showToast("⚠️ Nhiệm vụ này không có lệnh yêu cầu."); return; }
           try {
-            await libsqlExec("UPDATE muse_tasks SET status='running', updated_at=? WHERE id=?", [nowISO(), id]);
+            await apiRequest("/api/workspace/tasks", {
+              method: "POST",
+              body: { action: "status", id: id, status: "running" }
+            });
             showToast("🔄 Đang gửi nhiệm vụ cho Mart AI...");
             loadTasksList(currentTaskFilter);
 
@@ -3879,25 +4545,24 @@
               runRes = await executeBrowserRelayIfNeeded(runRes);
               var taskReply = (runRes && (runRes.reply || runRes.content)) || "";
               var taskSum = taskReply.length > 1000 ? taskReply.slice(0, 997) + "..." : taskReply;
-              await libsqlExec(
-                "UPDATE muse_tasks SET status='done', result_summary=?, updated_at=? WHERE id=?",
-                [taskSum, nowISO(), id]
-              );
+              await apiRequest("/api/workspace/tasks", {
+                method: "POST",
+                body: { action: "status", id: id, status: "done", result_summary: taskSum }
+              });
             }
             showToast("✅ Nhiệm vụ hoàn thành! Xem kết quả bên dưới.");
             loadTasksList(currentTaskFilter);
           } catch(e) {
-            await libsqlExec(
-              "UPDATE muse_tasks SET status='error', result_summary=?, updated_at=? WHERE id=?",
-              [e.message, nowISO(), id]
-            ).catch(function(){});
+            await apiRequest("/api/workspace/tasks", {
+              method: "POST",
+              body: { action: "status", id: id, status: "error", result_summary: e.message }
+            }).catch(function(){});
             showToast("❌ Lỗi: " + e.message);
             loadTasksList(currentTaskFilter);
           }
         });
       });
 
-      // Mở trong Chat
       listEl.querySelectorAll("[data-action='chat-task']").forEach(function(btn) {
         btn.addEventListener("click", function() {
           var prompt = btn.getAttribute("data-prompt");
@@ -3908,25 +4573,29 @@
         });
       });
 
-      // Chạy lại
       listEl.querySelectorAll("[data-action='reset-task']").forEach(function(btn) {
         btn.addEventListener("click", async function() {
           var id = btn.getAttribute("data-id");
           try {
-            await libsqlExec("UPDATE muse_tasks SET status='pending', result_summary='', updated_at=? WHERE id=?", [nowISO(), id]);
+            await apiRequest("/api/workspace/tasks", {
+              method: "POST",
+              body: { action: "reset", id: id }
+            });
             showToast("🔁 Đã đặt lại trạng thái nhiệm vụ.");
             loadTasksList(currentTaskFilter);
           } catch(e) { showToast("❌ " + e.message); }
         });
       });
 
-      // Xóa task
       listEl.querySelectorAll("[data-action='del-task']").forEach(function(btn) {
         btn.addEventListener("click", async function() {
           if (!confirm("Xóa nhiệm vụ này?")) return;
           var id = btn.getAttribute("data-id");
           try {
-            await libsqlExec("DELETE FROM muse_tasks WHERE id=?", [id]);
+            await apiRequest("/api/workspace/tasks", {
+              method: "POST",
+              body: { action: "delete", id: id }
+            });
             showToast("✅ Đã xóa nhiệm vụ.");
             loadTasksList(currentTaskFilter);
           } catch(e) { showToast("❌ " + e.message); }
@@ -3937,29 +4606,25 @@
 
   /* ====================================================================
      🔧 FIX 2: Auto-extract artifact từ reply Muse → lưu vào muse_documents
-     Quét code blocks (```...```) và section markdown dài > 200 ký tự
      ==================================================================== */
   async function autoExtractDocuments(replyText, threadId) {
     if (!replyText || replyText.length < 100) return;
     var extracted = [];
-    // Trích xuất code blocks
     var codeRegex = /```(\w*)\n([\s\S]+?)```/g;
     var match;
     var codeIdx = 1;
     while ((match = codeRegex.exec(replyText)) !== null) {
       var lang = match[1] || "text";
       var code = match[2].trim();
-      if (code.length < 40) continue; // Bỏ qua code quá ngắn
+      if (code.length < 40) continue;
       extracted.push({
         title: "Code " + lang.toUpperCase() + " #" + codeIdx + " — " + nowISO().slice(0,10),
         content: "```" + lang + "\n" + code + "\n```"
       });
       codeIdx++;
     }
-    // Trích xuất đoạn văn dài > 400 ký tự không có code block
     var plainText = replyText.replace(/```[\s\S]*?```/g, "").trim();
     if (plainText.length > 400) {
-      // Lấy tiêu đề từ dòng đầu tiên có nội dung
       var firstLine = plainText.split("\n").map(function(l){ return l.replace(/^#+\s*/, "").trim(); }).filter(Boolean)[0] || "Tài liệu";
       if (firstLine.length > 60) firstLine = firstLine.slice(0, 60) + "...";
       extracted.push({
@@ -3968,18 +4633,23 @@
       });
     }
     if (extracted.length === 0) return;
-    // Lưu vào muse_documents (tránh trùng lặp bằng cách check title + ngày)
     for (var i = 0; i < extracted.length; i++) {
       var item = extracted[i];
       try {
-        await libsqlExec(
-          "INSERT INTO muse_documents(id,title,content,source_thread_id,updated_at) VALUES(?,?,?,?,?)",
-          [uuid4(), item.title, item.content, threadId || "", nowISO()]
-        );
+        await apiRequest("/api/workspace/docs", {
+          method: "POST",
+          body: {
+            action: "save",
+            id: uuid4(),
+            title: item.title,
+            content: item.content,
+            source_thread_id: threadId || ""
+          }
+        });
       } catch(_) { /* Bỏ qua lỗi insert trùng */ }
     }
     if (extracted.length > 0) {
-      showToast("📄 Đã lưu " + extracted.length + " tài liệu vào panel Tài liệu.");
+      showToast("📄 Đã lưu " + extracted.length + " tài liệu vào SQL40 (Tài liệu).");
     }
   }
 
@@ -4006,23 +4676,23 @@
   async function loadThreadMessagesPage(threadId, offset) {
     if (!threadId) return;
     offset = offset || 0;
-    var resp = await fetch("/api/threads/messages?thread_id=" + encodeURIComponent(threadId) + "&limit=50&offset=" + offset);
-    if (!resp.ok) return;
-    var data = await resp.json();
-    chatPageState.threadId = threadId;
-    chatPageState.offset = offset;
-    // Đếm tổng từ response
-    if (data.total && data.total.rows && data.total.rows[0]) {
-      chatPageState.total = parseInt(data.total.rows[0][0].value || "0", 10);
+    try {
+      var data = await apiRequest("/api/threads/messages?thread_id=" + encodeURIComponent(threadId) + "&limit=50&offset=" + offset);
+      chatPageState.threadId = threadId;
+      chatPageState.offset = offset;
+      if (data && data.total && data.total.rows && data.total.rows[0]) {
+        chatPageState.total = parseInt(data.total.rows[0][0].value || "0", 10);
+      }
+      return data;
+    } catch (_) {
+      return null;
     }
-    return data;
   }
 
-  // Thêm nút phân trang vào viewport chat khi thread dài
   function renderChatPagination(viewport) {
     var existing = document.getElementById("chatPaginationBar");
     if (existing) existing.remove();
-    if (chatPageState.total <= chatPageState.limit) return; // Không cần phân trang
+    if (chatPageState.total <= chatPageState.limit) return;
     var bar = document.createElement("div");
     bar.id = "chatPaginationBar";
     bar.style.cssText = "display:flex;justify-content:center;align-items:center;gap:8px;padding:10px 0;font-size:13px;color:#64748b;";
@@ -4057,7 +4727,7 @@
   }
 
   /* ====================================================================
-     📚 PANEL LIBRARY — Thư viện Giả liệu (https://muse.ai/library/artifacts)
+     📚 PANEL LIBRARY — Thư viện Giả liệu (Cô lập theo tài khoản trong SQL40)
      ==================================================================== */
   var currentLibCategory = "all";
   var currentLibSortDesc = true;
@@ -4119,10 +4789,10 @@
           return;
         }
         try {
-          await libsqlExec(
-            "INSERT INTO muse_documents(id,title,content,updated_at) VALUES(?,?,?,?)",
-            [uuid4(), title, content, nowISO()]
-          );
+          await apiRequest("/api/workspace/docs", {
+            method: "POST",
+            body: { action: "save", id: uuid4(), title: title, content: content }
+          });
           document.getElementById("libNewTitleInput").value = "";
           document.getElementById("libNewContentInput").value = "";
           creatorCard.classList.add("hidden-el");
@@ -4160,10 +4830,9 @@
     try {
       var q = searchInp ? searchInp.value.trim().toLowerCase() : "";
       var orderDir = currentLibSortDesc ? "DESC" : "ASC";
-      var res = await libsqlExec(
-        "SELECT id, title, content, updated_at FROM muse_documents ORDER BY updated_at " + orderDir + " LIMIT 100"
-      );
-      var rows = libsqlRows(res).filter(function (doc) {
+      var res = await apiRequest("/api/workspace/docs?full=1&sort=" + orderDir);
+      var allDocs = (res && res.docs) || [];
+      var rows = allDocs.filter(function (doc) {
         var title = String(doc.title || "").toLowerCase();
         var content = String(doc.content || "").toLowerCase();
         if (q && title.indexOf(q) === -1 && content.indexOf(q) === -1) return false;
@@ -4205,7 +4874,10 @@
         btn.addEventListener("click", async function (ev) {
           ev.stopPropagation();
           var id = btn.getAttribute("data-del-lib");
-          await libsqlExec("DELETE FROM muse_documents WHERE id=?", [id]);
+          await apiRequest("/api/workspace/docs", {
+            method: "POST",
+            body: { action: "delete", id: id }
+          });
           loadLibraryArtifacts();
         });
       });

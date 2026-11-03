@@ -186,11 +186,18 @@ func (s *LibSQLStore) connectInternal(targetURL string, authToken string) error 
 			return fmt.Errorf("libsql NewConnector error: %w", connErr)
 		}
 		db = sql.OpenDB(connector)
-	} else {
-		// Mở trực tiếp qua driver "libsql" chính thức đã đăng ký bởi github.com/tursodatabase/libsql-client-go/libsql
+	} else if isRemote {
 		db, err = sql.Open("libsql", targetURL)
 		if err != nil {
 			return fmt.Errorf("sql.Open(libsql) error: %w", err)
+		}
+	} else {
+		// Mở trực tiếp bằng Standard SQL40 Engine (database/sql + modernc.org/sqlite thuần chuẩn SQL)
+		cleanPath := strings.TrimPrefix(targetURL, "file://")
+		cleanPath = strings.TrimPrefix(cleanPath, "file:")
+		db, err = sql.Open("sqlite", cleanPath)
+		if err != nil {
+			return fmt.Errorf("sql.Open(sqlite/sql40) error: %w", err)
 		}
 	}
 
@@ -293,8 +300,20 @@ func (s *LibSQLStore) initSchema() error {
 			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_muse_accounts_status ON muse_accounts(status);`,
+		`CREATE TABLE IF NOT EXISTS mart_users (
+			id TEXT PRIMARY KEY,
+			username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+			display_name TEXT NOT NULL DEFAULT '',
+			password_hash TEXT NOT NULL,
+			role TEXT NOT NULL DEFAULT 'user',
+			is_disabled INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			last_login_at TEXT NOT NULL DEFAULT ''
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_mart_users_username ON mart_users(username);`,
 		`CREATE TABLE IF NOT EXISTS chat_threads (
 			id TEXT PRIMARY KEY,
+			owner_id TEXT NOT NULL DEFAULT '',
 			title TEXT NOT NULL,
 			model TEXT NOT NULL DEFAULT '',
 			workspace TEXT NOT NULL DEFAULT 'chat',
@@ -343,6 +362,7 @@ func (s *LibSQLStore) initSchema() error {
 		// -------------------------------------------------------
 		`CREATE TABLE IF NOT EXISTS muse_documents (
 			id TEXT PRIMARY KEY,
+			owner_id TEXT NOT NULL DEFAULT '',
 			title TEXT NOT NULL,
 			content TEXT NOT NULL,
 			source_thread_id TEXT NOT NULL DEFAULT '',
@@ -354,6 +374,7 @@ func (s *LibSQLStore) initSchema() error {
 		// -------------------------------------------------------
 		`CREATE TABLE IF NOT EXISTS muse_memories (
 			id TEXT PRIMARY KEY,
+			owner_id TEXT NOT NULL DEFAULT '',
 			title TEXT NOT NULL,
 			content TEXT NOT NULL,
 			is_active INTEGER NOT NULL DEFAULT 1,
@@ -364,6 +385,7 @@ func (s *LibSQLStore) initSchema() error {
 		// -------------------------------------------------------
 		`CREATE TABLE IF NOT EXISTS muse_tasks (
 			id TEXT PRIMARY KEY,
+			owner_id TEXT NOT NULL DEFAULT '',
 			title TEXT NOT NULL,
 			prompt TEXT NOT NULL DEFAULT '',
 			status TEXT NOT NULL DEFAULT 'pending',
@@ -380,9 +402,17 @@ func (s *LibSQLStore) initSchema() error {
 		}
 	}
 
-	// Tự động nâng cấp bảng muse_accounts hiện có (thêm cột proxy_url & device_profile nếu chưa có)
+	// Tự động nâng cấp bảng hiện có (thêm cột proxy_url, device_profile và owner_id cô lập theo từng tài khoản)
 	_, _ = db.ExecContext(ctx, `ALTER TABLE muse_accounts ADD COLUMN proxy_url TEXT NOT NULL DEFAULT '';`)
 	_, _ = db.ExecContext(ctx, `ALTER TABLE muse_accounts ADD COLUMN device_profile TEXT NOT NULL DEFAULT '';`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE chat_threads ADD COLUMN owner_id TEXT NOT NULL DEFAULT '';`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE muse_documents ADD COLUMN owner_id TEXT NOT NULL DEFAULT '';`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE muse_memories ADD COLUMN owner_id TEXT NOT NULL DEFAULT '';`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE muse_tasks ADD COLUMN owner_id TEXT NOT NULL DEFAULT '';`)
+	_, _ = db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_chat_threads_owner_updated ON chat_threads(owner_id, updated_at DESC);`)
+	_, _ = db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_muse_documents_owner_updated ON muse_documents(owner_id, updated_at DESC);`)
+	_, _ = db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_muse_memories_owner ON muse_memories(owner_id);`)
+	_, _ = db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_muse_tasks_owner_status ON muse_tasks(owner_id, status, updated_at DESC);`)
 	return nil
 }
 
@@ -622,10 +652,10 @@ func (s *LibSQLStore) LoadThreadsWithMessages() ([]*ChatThread, error) {
 	defer cancel()
 
 	tRows, err := db.QueryContext(ctx, `
-		SELECT id, title, model, workspace, created_at, updated_at
+		SELECT id, COALESCE(owner_id, ''), title, model, workspace, created_at, updated_at
 		FROM chat_threads
 		ORDER BY updated_at DESC
-		LIMIT 100
+		LIMIT 500
 	`)
 	if err != nil {
 		return nil, err
@@ -636,7 +666,7 @@ func (s *LibSQLStore) LoadThreadsWithMessages() ([]*ChatThread, error) {
 	threadIdxMap := make(map[string]int)
 	for tRows.Next() {
 		t := &ChatThread{}
-		if err := tRows.Scan(&t.ID, &t.Title, &t.Model, &t.Workspace, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		if err := tRows.Scan(&t.ID, &t.OwnerID, &t.Title, &t.Model, &t.Workspace, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			return nil, err
 		}
 		t.Messages = []ChatMessage{}
@@ -714,14 +744,15 @@ func (s *LibSQLStore) SaveThreadWithMessages(t *ChatThread) error {
 	}()
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO chat_threads (id, title, model, workspace, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO chat_threads (id, owner_id, title, model, workspace, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
+			owner_id = CASE WHEN chat_threads.owner_id = '' THEN excluded.owner_id ELSE chat_threads.owner_id END,
 			title = excluded.title,
 			model = excluded.model,
 			workspace = excluded.workspace,
 			updated_at = excluded.updated_at
-	`, t.ID, t.Title, t.Model, t.Workspace, t.CreatedAt, t.UpdatedAt)
+	`, t.ID, t.OwnerID, t.Title, t.Model, t.Workspace, t.CreatedAt, t.UpdatedAt)
 	if err != nil {
 		return err
 	}
@@ -842,7 +873,7 @@ func (s *LibSQLStore) GetStatus() LibSQLStatusResponse {
 
 	resp := LibSQLStatusResponse{
 		Connected:    db != nil,
-		Driver:       "libsql (github.com/tursodatabase/libsql-client-go/libsql + modernc.org/sqlite)",
+		Driver:       "sql40-standard (database/sql + modernc.org/sqlite)",
 		DatabaseURL:  dbURL,
 		DatabaseFile: dbFile,
 		IsRemote:     isRemote,
@@ -858,9 +889,9 @@ func (s *LibSQLStore) GetStatus() LibSQLStatusResponse {
 
 	var sqliteVer string
 	if err := db.QueryRowContext(ctx, `SELECT sqlite_version()`).Scan(&sqliteVer); err == nil {
-		resp.EngineVersion = "libSQL / SQLite " + sqliteVer
+		resp.EngineVersion = "SQL40 Standard (SQLite " + sqliteVer + ")"
 	} else {
-		resp.EngineVersion = "libSQL Embedded"
+		resp.EngineVersion = "SQL40 Standard Embedded"
 	}
 
 	var journalMode string
@@ -875,9 +906,13 @@ func (s *LibSQLStore) GetStatus() LibSQLStatusResponse {
 	}
 
 	tableNames := []string{
+		"mart_users",
 		"muse_accounts",
 		"chat_threads",
 		"chat_messages",
+		"muse_documents",
+		"muse_memories",
+		"muse_tasks",
 		"oauth_sessions",
 		"routing_telemetry",
 	}

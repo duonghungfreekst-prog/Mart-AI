@@ -459,3 +459,210 @@ func TestRealSubscriptionSyncAndZeroPctNewAccount(t *testing.T) {
 		t.Fatalf("Expected used account to have 18%% ('Đã dùng 18%%'), got %d%% (%q)", nodeUsed.FreePlanPercent, nodeUsed.FreePlanValue)
 	}
 }
+
+func TestMultiUserAccountIsolationAndSQL40Standard(t *testing.T) {
+	t.Setenv("MART_ADMIN_PASSWORD", "AdminMaster2026!")
+
+	tmpDir := t.TempDir()
+	app, err := NewServerApp(filepath.Join(tmpDir, "data"))
+	if err != nil {
+		t.Fatalf("NewServerApp: %v", err)
+	}
+	defer app.pool.Shutdown()
+	handler := app.Routes()
+
+	doReq := func(method, path, token string, bodyObj interface{}) *httptest.ResponseRecorder {
+		var bodyBytes []byte
+		if bodyObj != nil {
+			bodyBytes, _ = json.Marshal(bodyObj)
+		}
+		req := httptest.NewRequest(method, path, bytes.NewReader(bodyBytes))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Mart-Client", "web")
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// 1. Đăng nhập Admin để kiểm tra SQL40 Status
+	recAdminLogin := doReq(http.MethodPost, "/api/users/admin-login", "", map[string]string{
+		"password": "AdminMaster2026!",
+	})
+	if recAdminLogin.Code != http.StatusOK {
+		t.Fatalf("Admin login failed: %d %s", recAdminLogin.Code, recAdminLogin.Body.String())
+	}
+	var adminLoginResp struct {
+		Token string `json:"token"`
+	}
+	_ = json.Unmarshal(recAdminLogin.Body.Bytes(), &adminLoginResp)
+	if adminLoginResp.Token == "" {
+		t.Fatalf("Expected admin token")
+	}
+
+	recSQL := doReq(http.MethodGet, "/api/sql/status", adminLoginResp.Token, nil)
+	if recSQL.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK from /api/sql/status, got %d", recSQL.Code)
+	}
+	var sqlStatus LibSQLStatusResponse
+	_ = json.Unmarshal(recSQL.Body.Bytes(), &sqlStatus)
+	if !sqlStatus.Connected || !strings.HasPrefix(sqlStatus.EngineVersion, "SQL40 Standard") {
+		t.Fatalf("Expected SQL40 Standard engine, got connected=%v version=%q", sqlStatus.Connected, sqlStatus.EngineVersion)
+	}
+
+	// 2. Đăng ký 2 tài khoản người dùng độc lập: user_a và user_b
+	recRegA := doReq(http.MethodPost, "/api/users/register", "", map[string]string{
+		"username":     "user_a",
+		"display_name": "Form Riêng A",
+		"password":     "PassUserA123",
+	})
+	if recRegA.Code != http.StatusOK {
+		t.Fatalf("Register user_a failed: %d %s", recRegA.Code, recRegA.Body.String())
+	}
+	var regA struct {
+		Token string      `json:"token"`
+		User  RequestActor `json:"user"`
+	}
+	_ = json.Unmarshal(recRegA.Body.Bytes(), &regA)
+
+	recRegB := doReq(http.MethodPost, "/api/users/register", "", map[string]string{
+		"username":     "user_b",
+		"display_name": "Form Riêng B",
+		"password":     "PassUserB123",
+	})
+	if recRegB.Code != http.StatusOK {
+		t.Fatalf("Register user_b failed: %d %s", recRegB.Code, recRegB.Body.String())
+	}
+	var regB struct {
+		Token string      `json:"token"`
+		User  RequestActor `json:"user"`
+	}
+	_ = json.Unmarshal(recRegB.Body.Bytes(), &regB)
+
+	// 3. user_a tạo đoạn chat, tài liệu, bộ nhớ và nhiệm vụ riêng
+	recThreadA := doReq(http.MethodPost, "/api/threads", regA.Token, map[string]string{
+		"title": "Dự án mật của User A",
+		"model": "Muse",
+	})
+	if recThreadA.Code != http.StatusOK {
+		t.Fatalf("Create thread A failed: %d", recThreadA.Code)
+	}
+	var threadA ChatThread
+	_ = json.Unmarshal(recThreadA.Body.Bytes(), &threadA)
+
+	recDocA := doReq(http.MethodPost, "/api/workspace/docs", regA.Token, map[string]string{
+		"action":  "save",
+		"title":   "Báo cáo tài chính A",
+		"content": "Nội dung chỉ dành cho User A",
+	})
+	if recDocA.Code != http.StatusOK {
+		t.Fatalf("Create doc A failed: %d %s", recDocA.Code, recDocA.Body.String())
+	}
+
+	recMemA := doReq(http.MethodPost, "/api/workspace/memories", regA.Token, map[string]string{
+		"action":  "save",
+		"title":   "Bộ nhớ riêng A",
+		"content": "Luôn xưng hô với User A",
+	})
+	if recMemA.Code != http.StatusOK {
+		t.Fatalf("Create memory A failed: %d", recMemA.Code)
+	}
+
+	recTaskA := doReq(http.MethodPost, "/api/workspace/tasks", regA.Token, map[string]string{
+		"action": "save",
+		"title":  "Nhiệm vụ riêng A",
+		"prompt": "Phân tích dữ liệu A",
+	})
+	if recTaskA.Code != http.StatusOK {
+		t.Fatalf("Create task A failed: %d", recTaskA.Code)
+	}
+
+	// 4. user_b tạo đoạn chat và tài liệu riêng
+	recThreadB := doReq(http.MethodPost, "/api/threads", regB.Token, map[string]string{
+		"title": "Kế hoạch riêng của User B",
+		"model": "Muse",
+	})
+	if recThreadB.Code != http.StatusOK {
+		t.Fatalf("Create thread B failed: %d", recThreadB.Code)
+	}
+
+	recDocB := doReq(http.MethodPost, "/api/workspace/docs", regB.Token, map[string]string{
+		"action":  "save",
+		"title":   "Tài liệu của User B",
+		"content": "Nội dung độc lập của B",
+	})
+	if recDocB.Code != http.StatusOK {
+		t.Fatalf("Create doc B failed: %d", recDocB.Code)
+	}
+
+	// 5. Kiểm tra cô lập tuyệt đối: user_b KHÔNG nhìn thấy bất kỳ dữ liệu nào của user_a
+	recListThreadsB := doReq(http.MethodGet, "/api/threads", regB.Token, nil)
+	var listThreadsB struct {
+		Threads []ChatThread `json:"threads"`
+	}
+	_ = json.Unmarshal(recListThreadsB.Body.Bytes(), &listThreadsB)
+	if len(listThreadsB.Threads) != 1 || listThreadsB.Threads[0].Title != "Kế hoạch riêng của User B" {
+		t.Fatalf("Isolation breach on threads for user_b: %+v", listThreadsB.Threads)
+	}
+
+	recListDocsB := doReq(http.MethodGet, "/api/workspace/docs", regB.Token, nil)
+	var listDocsB struct {
+		Docs []map[string]string `json:"docs"`
+	}
+	_ = json.Unmarshal(recListDocsB.Body.Bytes(), &listDocsB)
+	if len(listDocsB.Docs) != 1 || listDocsB.Docs[0]["title"] != "Tài liệu của User B" {
+		t.Fatalf("Isolation breach on docs for user_b: %+v", listDocsB.Docs)
+	}
+
+	recListMemsB := doReq(http.MethodGet, "/api/workspace/memories", regB.Token, nil)
+	var listMemsB struct {
+		Memories []map[string]string `json:"memories"`
+	}
+	_ = json.Unmarshal(recListMemsB.Body.Bytes(), &listMemsB)
+	if len(listMemsB.Memories) != 0 {
+		t.Fatalf("Expected 0 memories for user_b, got %+v", listMemsB.Memories)
+	}
+
+	recSearchB := doReq(http.MethodGet, "/api/workspace/search?q=User+A", regB.Token, nil)
+	var searchB struct {
+		Threads  []map[string]string `json:"threads"`
+		Messages []map[string]string `json:"messages"`
+	}
+	_ = json.Unmarshal(recSearchB.Body.Bytes(), &searchB)
+	if len(searchB.Threads) != 0 || len(searchB.Messages) != 0 {
+		t.Fatalf("Search isolation breach: user_b found user_a data: %+v", searchB)
+	}
+
+	// 6. user_b cố tình đọc hoặc xóa đoạn chat của user_a -> bị chặn 403/404
+	recStealMsg := doReq(http.MethodGet, "/api/threads/messages?thread_id="+threadA.ID, regB.Token, nil)
+	if recStealMsg.Code != http.StatusForbidden {
+		t.Fatalf("Expected 403 Forbidden when user_b reads user_a thread messages, got %d", recStealMsg.Code)
+	}
+
+	// 7. user_a cố tình gọi API Admin -> bị chặn 403 Forbidden
+	recForbidAdmin := doReq(http.MethodGet, "/api/admin/users", regA.Token, nil)
+	if recForbidAdmin.Code != http.StatusForbidden {
+		t.Fatalf("Expected 403 Forbidden when user_a calls /api/admin/users, got %d", recForbidAdmin.Code)
+	}
+
+	// 8. Admin xem danh sách tài khoản và xóa user_a -> dữ liệu user_b vẫn còn nguyên vẹn
+	recAdminUsers := doReq(http.MethodGet, "/api/admin/users", adminLoginResp.Token, nil)
+	if recAdminUsers.Code != http.StatusOK {
+		t.Fatalf("Admin list users failed: %d", recAdminUsers.Code)
+	}
+	recDelA := doReq(http.MethodPost, "/api/admin/users/delete", adminLoginResp.Token, map[string]string{
+		"user_id": regA.User.UserID,
+	})
+	if recDelA.Code != http.StatusOK {
+		t.Fatalf("Admin delete user_a failed: %d %s", recDelA.Code, recDelA.Body.String())
+	}
+
+	// Xác nhận user_b vẫn còn nguyên đoạn chat và tài liệu
+	recCheckB := doReq(http.MethodGet, "/api/threads", regB.Token, nil)
+	_ = json.Unmarshal(recCheckB.Body.Bytes(), &listThreadsB)
+	if len(listThreadsB.Threads) != 1 {
+		t.Fatalf("Expected user_b threads to remain intact after deleting user_a, got %d", len(listThreadsB.Threads))
+	}
+}

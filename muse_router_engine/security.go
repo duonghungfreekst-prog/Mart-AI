@@ -9,14 +9,18 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -137,16 +141,48 @@ type jwtHeader struct {
 }
 
 type jwtClaims struct {
-	Sub string `json:"sub"`
-	Iss string `json:"iss"`
-	Iat int64  `json:"iat"`
-	Exp int64  `json:"exp"`
+	Sub      string `json:"sub"`
+	Username string `json:"username,omitempty"`
+	Name     string `json:"name,omitempty"`
+	Role     string `json:"role,omitempty"`
+	Iss      string `json:"iss"`
+	Iat      int64  `json:"iat"`
+	Exp      int64  `json:"exp"`
 }
 
 func NewRS256JWTManager(cache *TTLCache) (*RS256JWTManager, error) {
-	priv, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return nil, err
+	return NewRS256JWTManagerWithKeyFile(cache, "", "")
+}
+
+func NewRS256JWTManagerWithKeyFile(cache *TTLCache, keyPath string, masterKey string) (*RS256JWTManager, error) {
+	var priv *rsa.PrivateKey
+	if keyPath != "" && masterKey != "" {
+		if rawEnc, errRead := os.ReadFile(keyPath); errRead == nil && len(rawEnc) > 0 {
+			if pemStr, errDec := decryptSecretNative(strings.TrimSpace(string(rawEnc)), masterKey); errDec == nil {
+				if blk, _ := pem.Decode([]byte(pemStr)); blk != nil {
+					if parsed, errParse := x509.ParsePKCS1PrivateKey(blk.Bytes); errParse == nil {
+						priv = parsed
+					}
+				}
+			}
+		}
+	}
+	if priv == nil {
+		var err error
+		priv, err = rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			return nil, err
+		}
+		if keyPath != "" && masterKey != "" {
+			_ = os.MkdirAll(filepath.Dir(keyPath), 0750)
+			pemBytes := pem.EncodeToMemory(&pem.Block{
+				Type:  "RSA PRIVATE KEY",
+				Bytes: x509.MarshalPKCS1PrivateKey(priv),
+			})
+			if enc, errEnc := encryptSecretNative(string(pemBytes), masterKey); errEnc == nil {
+				_ = os.WriteFile(keyPath, []byte(enc), 0600)
+			}
+		}
 	}
 	mgr := &RS256JWTManager{
 		privateKey: priv,
@@ -167,16 +203,23 @@ func base64URLDecode(str string) ([]byte, error) {
 }
 
 func (m *RS256JWTManager) IssueToken(subject string, ttl time.Duration) (string, error) {
+	return m.IssueUserToken(subject, subject, subject, "admin", ttl)
+}
+
+func (m *RS256JWTManager) IssueUserToken(userID, username, displayName, role string, ttl time.Duration) (string, error) {
 	hdrBytes, err := json.Marshal(jwtHeader{Alg: "RS256", Typ: "JWT"})
 	if err != nil {
 		return "", err
 	}
 	now := time.Now().Unix()
 	claimsBytes, err := json.Marshal(jwtClaims{
-		Sub: subject,
-		Iss: "muse_router_engine",
-		Iat: now,
-		Exp: now + int64(ttl.Seconds()),
+		Sub:      userID,
+		Username: username,
+		Name:     displayName,
+		Role:     role,
+		Iss:      "muse_router_engine",
+		Iat:      now,
+		Exp:      now + int64(ttl.Seconds()),
 	})
 	if err != nil {
 		return "", err
@@ -355,6 +398,77 @@ func computeFingerprintNative(secret string) string {
 }
 
 // ============================================================================
+// PBKDF2-HMAC-SHA256 PASSWORD HASHING & CONSTANT-TIME VERIFY (PHAN 3 BAT BUOC)
+// ============================================================================
+
+const pbkdf2Iterations = 120000
+
+func pbkdf2SHA256(password, salt []byte, iter, keyLen int) []byte {
+	numBlocks := (keyLen + sha256.Size - 1) / sha256.Size
+	dk := make([]byte, 0, numBlocks*sha256.Size)
+	var blockBuf [4]byte
+	prf := hmac.New(sha256.New, password)
+	u := make([]byte, sha256.Size)
+	t := make([]byte, sha256.Size)
+	for block := 1; block <= numBlocks; block++ {
+		prf.Reset()
+		_, _ = prf.Write(salt)
+		binary.BigEndian.PutUint32(blockBuf[:], uint32(block))
+		_, _ = prf.Write(blockBuf[:])
+		u = prf.Sum(u[:0])
+		copy(t, u)
+		for i := 2; i <= iter; i++ {
+			prf.Reset()
+			_, _ = prf.Write(u)
+			u = prf.Sum(u[:0])
+			for j := range t {
+				t[j] ^= u[j]
+			}
+		}
+		dk = append(dk, t...)
+	}
+	return dk[:keyLen]
+}
+
+func HashPasswordPBKDF2(password string) (string, error) {
+	if len(password) < 6 {
+		return "", errors.New("ERR_PASSWORD_TOO_SHORT")
+	}
+	var salt [16]byte
+	if _, err := rand.Read(salt[:]); err != nil {
+		return "", err
+	}
+	dk := pbkdf2SHA256([]byte(password), salt[:], pbkdf2Iterations, 32)
+	return fmt.Sprintf(
+		"pbkdf2_sha256$%d$%s$%s",
+		pbkdf2Iterations,
+		hex.EncodeToString(salt[:]),
+		hex.EncodeToString(dk),
+	), nil
+}
+
+func VerifyPasswordPBKDF2(password, encoded string) bool {
+	parts := strings.Split(encoded, "$")
+	if len(parts) != 4 || parts[0] != "pbkdf2_sha256" {
+		return false
+	}
+	iter, err := strconv.Atoi(parts[1])
+	if err != nil || iter < 10000 || iter > 1000000 {
+		return false
+	}
+	salt, err := hex.DecodeString(parts[2])
+	if err != nil || len(salt) < 8 {
+		return false
+	}
+	expectedDK, err := hex.DecodeString(parts[3])
+	if err != nil || len(expectedDK) != 32 {
+		return false
+	}
+	computedDK := pbkdf2SHA256([]byte(password), salt, iter, 32)
+	return subtle.ConstantTimeCompare(computedDK, expectedDK) == 1
+}
+
+// ============================================================================
 // SECURITY HEADERS & EXACT CORS MIDDLEWARE (PHAN 3 BAT BUOC)
 // ============================================================================
 
@@ -404,7 +518,7 @@ func SecurityHeadersMiddleware(next http.Handler) http.Handler {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Vary", "Origin")
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Idempotency-Key")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Idempotency-Key, X-Mart-Client")
 			} else {
 				LogWarn("Blocked disallowed CORS origin: %s", origin)
 				WriteJSONError(w, http.StatusForbidden, "ERR_CORS_ORIGIN_FORBIDDEN")

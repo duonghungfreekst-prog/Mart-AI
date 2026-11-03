@@ -44,7 +44,7 @@ func NewServerApp(dataDir string) (*ServerApp, error) {
 	}
 
 	cache := NewTTLCache()
-	jwtMgr, err := NewRS256JWTManager(cache)
+	jwtMgr, err := NewRS256JWTManagerWithKeyFile(cache, filepath.Join(dataDir, "jwt_rs256.key.enc"), masterKey)
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +96,12 @@ func (a *ServerApp) Routes() http.Handler {
 	})
 
 	mux.HandleFunc("/api/auth/session", func(w http.ResponseWriter, r *http.Request) {
-		token, err := a.jwtMgr.IssueToken("muse_router_operator", 12*time.Hour)
+		actor := a.resolveActor(r)
+		sub := nonEmptyStr(actor.UserID, "muse_router_operator")
+		uname := nonEmptyStr(actor.Username, "admin")
+		dname := nonEmptyStr(actor.DisplayName, "Quản trị viên")
+		role := nonEmptyStr(actor.Role, "admin")
+		token, err := a.jwtMgr.IssueUserToken(sub, uname, dname, role, 12*time.Hour)
 		if err != nil {
 			LogError("JWT RS256 issue error: %v", err)
 			WriteJSONError(w, http.StatusInternalServerError, "ERR_TOKEN_ISSUE_FAILED")
@@ -108,9 +113,31 @@ func (a *ServerApp) Routes() http.Handler {
 		})
 	})
 
+	// 1.5. Quản lý Tài khoản Người dùng & Workspace Cô lập theo từng tài khoản
+	mux.HandleFunc("/api/users/register", a.handleUserRegister)
+	mux.HandleFunc("/api/users/login", a.handleUserLogin)
+	mux.HandleFunc("/api/users/admin-login", a.handleAdminUnlockLogin)
+	mux.HandleFunc("/api/users/me", a.handleUserMe)
+	mux.HandleFunc("/api/users/password", a.handleUserChangePassword)
+
+	mux.HandleFunc("/api/admin/users", a.handleAdminUsersList)
+	mux.HandleFunc("/api/admin/users/toggle", a.handleAdminUserToggle)
+	mux.HandleFunc("/api/admin/users/reset-password", a.handleAdminUserResetPassword)
+	mux.HandleFunc("/api/admin/users/delete", a.handleAdminUserDelete)
+
+	mux.HandleFunc("/api/workspace/search", a.handleWorkspaceSearch)
+	mux.HandleFunc("/api/workspace/docs", a.handleWorkspaceDocs)
+	mux.HandleFunc("/api/workspace/memories", a.handleWorkspaceMemories)
+	mux.HandleFunc("/api/workspace/tasks", a.handleWorkspaceTasks)
+
 	// 2. Router Summary & Config
 	mux.HandleFunc("/api/router/summary", func(w http.ResponseWriter, r *http.Request) {
-		WriteJSONResponse(w, http.StatusOK, a.pool.GetSummary())
+		actor := a.resolveActor(r)
+		if actor.Role == "admin" {
+			WriteJSONResponse(w, http.StatusOK, a.pool.GetSummary())
+			return
+		}
+		WriteJSONResponse(w, http.StatusOK, a.pool.GetPublicSummary())
 	})
 
 	mux.HandleFunc("/api/router/config", func(w http.ResponseWriter, r *http.Request) {
@@ -354,8 +381,10 @@ func (a *ServerApp) Routes() http.Handler {
 	mux.HandleFunc("/api/accounts/remote-login/state", a.handleRemoteLoginState)
 	mux.HandleFunc("/api/accounts/remote-login/input", a.handleRemoteLoginInput)
 	mux.HandleFunc("/api/accounts/remote-login/cancel", a.handleRemoteLoginCancel)
-	// 4. Quản lý Phiên Hội Thoại (Threads) & Muse AI Chat thật (lưu trực tiếp trong libSQL)
+	// 4. Quản lý Phiên Hội Thoại (Threads) & Muse AI Chat thật (cô lập theo từng tài khoản trong libSQL)
 	mux.HandleFunc("/api/threads", func(w http.ResponseWriter, r *http.Request) {
+		actor := a.resolveActor(r)
+		ownerScope := actor.OwnerScope()
 		if r.Method == http.MethodPost {
 			var req struct {
 				Title     string `json:"title"`
@@ -366,12 +395,12 @@ func (a *ServerApp) Routes() http.Handler {
 				WriteJSONError(w, http.StatusBadRequest, "ERR_INVALID_INPUT")
 				return
 			}
-			created := a.pool.CreateNewThread(req.Title, req.Model, req.Workspace)
+			created := a.pool.CreateNewThreadForOwner(ownerScope, req.Title, req.Model, req.Workspace)
 			WriteJSONResponse(w, http.StatusOK, created)
 			return
 		}
 		WriteJSONResponse(w, http.StatusOK, map[string]interface{}{
-			"threads": a.pool.ListThreads(),
+			"threads": a.pool.ListThreadsForOwner(ownerScope),
 		})
 	})
 
@@ -389,8 +418,30 @@ func (a *ServerApp) Routes() http.Handler {
 			WriteJSONError(w, http.StatusBadRequest, "ERR_INVALID_INPUT")
 			return
 		}
-		created := a.pool.CreateNewThread(req.Title, req.Model, req.Workspace)
+		actor := a.resolveActor(r)
+		created := a.pool.CreateNewThreadForOwner(actor.OwnerScope(), req.Title, req.Model, req.Workspace)
 		WriteJSONResponse(w, http.StatusOK, created)
+	})
+
+	mux.HandleFunc("/api/threads/rename", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			WriteJSONError(w, http.StatusMethodNotAllowed, "ERR_METHOD_NOT_ALLOWED")
+			return
+		}
+		var req struct {
+			ThreadID string `json:"thread_id"`
+			Title    string `json:"title"`
+		}
+		if err := a.readJSONBody(r, &req); err != nil {
+			WriteJSONError(w, http.StatusBadRequest, "ERR_INVALID_INPUT")
+			return
+		}
+		actor := a.resolveActor(r)
+		if err := a.pool.RenameThreadForOwner(actor.OwnerScope(), req.ThreadID, req.Title); err != nil {
+			WriteJSONError(w, http.StatusNotFound, "ERR_THREAD_NOT_FOUND")
+			return
+		}
+		WriteJSONResponse(w, http.StatusOK, map[string]interface{}{"renamed": true})
 	})
 
 	mux.HandleFunc("/api/threads/delete", func(w http.ResponseWriter, r *http.Request) {
@@ -405,7 +456,8 @@ func (a *ServerApp) Routes() http.Handler {
 			WriteJSONError(w, http.StatusBadRequest, "ERR_INVALID_INPUT")
 			return
 		}
-		if err := a.pool.DeleteThread(req.ThreadID); err != nil {
+		actor := a.resolveActor(r)
+		if err := a.pool.DeleteThreadForOwner(actor.OwnerScope(), req.ThreadID); err != nil {
 			WriteJSONError(w, http.StatusNotFound, "ERR_THREAD_NOT_FOUND")
 			return
 		}
@@ -428,6 +480,11 @@ func (a *ServerApp) Routes() http.Handler {
 		offsetStr := r.URL.Query().Get("offset")
 		if threadID == "" {
 			WriteJSONError(w, http.StatusBadRequest, "ERR_MISSING_THREAD_ID")
+			return
+		}
+		actor := a.resolveActor(r)
+		if !a.pool.HasThreadAccess(actor.OwnerScope(), threadID) {
+			WriteJSONError(w, http.StatusForbidden, "ERR_FORBIDDEN_THREAD")
 			return
 		}
 		limit := int64(50)
@@ -482,11 +539,17 @@ func (a *ServerApp) Routes() http.Handler {
 			WriteJSONError(w, http.StatusBadRequest, "ERR_INVALID_INPUT")
 			return
 		}
+		actor := a.resolveActor(r)
+		preferredNode := req.PreferredNodeID
+		if actor.Role != "admin" {
+			preferredNode = "auto"
+		}
 		idemKey := r.Header.Get("X-Idempotency-Key")
-		res, err := a.pool.RouteAndExecuteChat(
+		res, err := a.pool.RouteAndExecuteChatForOwner(
 			r.Context(),
+			actor.OwnerScope(),
 			req.ThreadID,
-			req.PreferredNodeID,
+			preferredNode,
 			req.Model,
 			req.Workspace,
 			req.Prompt,
@@ -498,26 +561,33 @@ func (a *ServerApp) Routes() http.Handler {
 			WriteJSONError(w, http.StatusBadGateway, err.Error())
 			return
 		}
-		res["summary"] = a.pool.GetSummary()
+		if actor.Role == "admin" {
+			res["summary"] = a.pool.GetSummary()
+		} else {
+			res["summary"] = a.pool.GetPublicSummary()
+		}
 		WriteJSONResponse(w, http.StatusOK, res)
 	})
 
 	mux.HandleFunc("/api/chat/relay-complete", a.handleChatRelayComplete)
 	mux.HandleFunc("/api/chat/live-status", func(w http.ResponseWriter, r *http.Request) {
-		WriteJSONResponse(w, http.StatusOK, a.pool.GetLiveActivityStatus(r.Context()))
+		actor := a.resolveActor(r)
+		WriteJSONResponse(w, http.StatusOK, a.pool.GetLiveActivityStatusForOwner(r.Context(), actor.OwnerScope()))
 	})
 
-	// 4.5. Cơ sở dữ liệu chuẩn libSQL trực tiếp cho hệ thống Web (Status / SQL Query / Config / Hrana v2 Pipeline)
-	mux.HandleFunc("/api/libsql/status", func(w http.ResponseWriter, r *http.Request) {
+	// 4.5. Cơ sở dữ liệu chuẩn SQL40 trực tiếp cho hệ thống Web (Status / SQL Query / Config / Pipeline)
+	handleSQLStatus := func(w http.ResponseWriter, r *http.Request) {
 		store := a.pool.GetLibSQLStore()
 		if store == nil {
-			WriteJSONError(w, http.StatusServiceUnavailable, "ERR_LIBSQL_NOT_INITIALIZED")
+			WriteJSONError(w, http.StatusServiceUnavailable, "ERR_SQL_NOT_INITIALIZED")
 			return
 		}
 		WriteJSONResponse(w, http.StatusOK, store.GetStatus())
-	})
+	}
+	mux.HandleFunc("/api/sql/status", handleSQLStatus)
+	mux.HandleFunc("/api/libsql/status", handleSQLStatus)
 
-	mux.HandleFunc("/api/libsql/query", func(w http.ResponseWriter, r *http.Request) {
+	handleSQLQuery := func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			WriteJSONError(w, http.StatusMethodNotAllowed, "ERR_METHOD_NOT_ALLOWED")
 			return
@@ -532,7 +602,7 @@ func (a *ServerApp) Routes() http.Handler {
 		}
 		store := a.pool.GetLibSQLStore()
 		if store == nil {
-			WriteJSONError(w, http.StatusServiceUnavailable, "ERR_LIBSQL_NOT_INITIALIZED")
+			WriteJSONError(w, http.StatusServiceUnavailable, "ERR_SQL_NOT_INITIALIZED")
 			return
 		}
 		qRes, err := store.ExecuteSQL(req.SQL, req.Args)
@@ -541,9 +611,11 @@ func (a *ServerApp) Routes() http.Handler {
 			return
 		}
 		WriteJSONResponse(w, http.StatusOK, qRes)
-	})
+	}
+	mux.HandleFunc("/api/sql/query", handleSQLQuery)
+	mux.HandleFunc("/api/libsql/query", handleSQLQuery)
 
-	mux.HandleFunc("/api/libsql/config", func(w http.ResponseWriter, r *http.Request) {
+	handleSQLConfig := func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			WriteJSONError(w, http.StatusMethodNotAllowed, "ERR_METHOD_NOT_ALLOWED")
 			return
@@ -558,7 +630,7 @@ func (a *ServerApp) Routes() http.Handler {
 		}
 		store := a.pool.GetLibSQLStore()
 		if store == nil {
-			WriteJSONError(w, http.StatusServiceUnavailable, "ERR_LIBSQL_NOT_INITIALIZED")
+			WriteJSONError(w, http.StatusServiceUnavailable, "ERR_SQL_NOT_INITIALIZED")
 			return
 		}
 		if err := store.Reconfigure(req.DatabaseURL, req.AuthToken); err != nil {
@@ -568,7 +640,9 @@ func (a *ServerApp) Routes() http.Handler {
 		_ = a.pool.loadVault()
 		_ = a.pool.loadThreads()
 		WriteJSONResponse(w, http.StatusOK, store.GetStatus())
-	})
+	}
+	mux.HandleFunc("/api/sql/config", handleSQLConfig)
+	mux.HandleFunc("/api/libsql/config", handleSQLConfig)
 
 	handleHranaPipeline := func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -614,18 +688,24 @@ func (a *ServerApp) Routes() http.Handler {
 			WriteJSONError(w, http.StatusServiceUnavailable, "ERR_LIBSQL_NOT_INITIALIZED")
 			return
 		}
-		// Cập nhật trạng thái running
+		actor := a.resolveActor(r)
+		ownerScope := actor.OwnerScope()
+		whereSQL, whereArgs := ownerWhereClause("owner_id", ownerScope)
+
+		// Cập nhật trạng thái running (chỉ cho phép trên task thuộc chủ sở hữu hiện tại)
 		taskID := strings.TrimSpace(req.TaskID)
 		if taskID != "" {
+			args := append([]interface{}{taskID}, whereArgs...)
 			_, _ = store.ExecuteSQL(
-				"UPDATE muse_tasks SET status='running', updated_at=datetime('now') WHERE id=?",
-				[]interface{}{taskID},
+				"UPDATE muse_tasks SET status='running', updated_at=datetime('now') WHERE id=? AND "+whereSQL,
+				args,
 			)
 		}
 		// Thực thi chat thật qua Token Pool
 		idemKey := "task:" + taskID
-		res, err := a.pool.RouteAndExecuteChat(
+		res, err := a.pool.RouteAndExecuteChatForOwner(
 			r.Context(),
+			ownerScope,
 			"", // thread_id rỗng = tạo thread tạm
 			"auto",
 			"",
@@ -637,17 +717,24 @@ func (a *ServerApp) Routes() http.Handler {
 		if err != nil {
 			LogError("tasks/run error: %v", err)
 			if taskID != "" {
+				args := append([]interface{}{err.Error(), taskID}, whereArgs...)
 				_, _ = store.ExecuteSQL(
-					"UPDATE muse_tasks SET status='error', result_summary=?, updated_at=datetime('now') WHERE id=?",
-					[]interface{}{err.Error(), taskID},
+					"UPDATE muse_tasks SET status='error', result_summary=?, updated_at=datetime('now') WHERE id=? AND "+whereSQL,
+					args,
 				)
 			}
 			WriteJSONError(w, http.StatusBadGateway, err.Error())
 			return
 		}
+		var outSummary RouterSummary
+		if actor.Role == "admin" {
+			outSummary = a.pool.GetSummary()
+		} else {
+			outSummary = a.pool.GetPublicSummary()
+		}
 		if isRelay, _ := res["browser_relay"].(bool); isRelay {
 			res["task_id"] = taskID
-			res["summary"] = a.pool.GetSummary()
+			res["summary"] = outSummary
 			WriteJSONResponse(w, http.StatusOK, res)
 			return
 		}
@@ -664,16 +751,17 @@ func (a *ServerApp) Routes() http.Handler {
 			summary = summary[:997] + "..."
 		}
 		if taskID != "" {
+			args := append([]interface{}{summary, taskID}, whereArgs...)
 			_, _ = store.ExecuteSQL(
-				"UPDATE muse_tasks SET status='done', result_summary=?, updated_at=datetime('now') WHERE id=?",
-				[]interface{}{summary, taskID},
+				"UPDATE muse_tasks SET status='done', result_summary=?, updated_at=datetime('now') WHERE id=? AND "+whereSQL,
+				args,
 			)
 		}
 		WriteJSONResponse(w, http.StatusOK, map[string]interface{}{
 			"task_id": taskID,
 			"status":  "done",
 			"reply":   replyText,
-			"summary": a.pool.GetSummary(),
+			"summary": outSummary,
 		})
 	})
 
@@ -704,11 +792,15 @@ func (a *ServerApp) Routes() http.Handler {
 			return
 		}
 
+		actor := a.resolveActor(r)
+		ownerScope := actor.OwnerScope()
+		whereSQL, whereArgs := ownerWhereClause("owner_id", ownerScope)
+
 		type batchResult struct {
-			TaskID  string `json:"task_id"`
-			Status  string `json:"status"`
-			Reply   string `json:"reply"`
-			ErrMsg  string `json:"error,omitempty"`
+			TaskID string `json:"task_id"`
+			Status string `json:"status"`
+			Reply  string `json:"reply"`
+			ErrMsg string `json:"error,omitempty"`
 		}
 
 		results := make([]batchResult, len(req.Tasks))
@@ -732,21 +824,23 @@ func (a *ServerApp) Routes() http.Handler {
 
 				taskID := strings.TrimSpace(t.TaskID)
 				if taskID != "" {
+					args := append([]interface{}{taskID}, whereArgs...)
 					_, _ = store.ExecuteSQL(
-						"UPDATE muse_tasks SET status='running', updated_at=datetime('now') WHERE id=?",
-						[]interface{}{taskID},
+						"UPDATE muse_tasks SET status='running', updated_at=datetime('now') WHERE id=? AND "+whereSQL,
+						args,
 					)
 				}
-				res, err := a.pool.RouteAndExecuteChat(
-					r.Context(), "", "auto", "", "task",
+				res, err := a.pool.RouteAndExecuteChatForOwner(
+					r.Context(), ownerScope, "", "auto", "", "task",
 					t.Prompt, nil, "batch:"+taskID,
 				)
 				if err != nil {
 					LogError("tasks/batch[%d] error: %v", idx, err)
 					if taskID != "" {
+						args := append([]interface{}{err.Error(), taskID}, whereArgs...)
 						_, _ = store.ExecuteSQL(
-							"UPDATE muse_tasks SET status='error', result_summary=?, updated_at=datetime('now') WHERE id=?",
-							[]interface{}{err.Error(), taskID},
+							"UPDATE muse_tasks SET status='error', result_summary=?, updated_at=datetime('now') WHERE id=? AND "+whereSQL,
+							args,
 						)
 					}
 					results[idx] = batchResult{TaskID: taskID, Status: "error", ErrMsg: err.Error()}
@@ -755,7 +849,8 @@ func (a *ServerApp) Routes() http.Handler {
 				if a.pool.CancelIfBrowserRelay(res) {
 					msg := "Cần chạy qua trình duyệt có Tiện ích Chrome Mart AI v1.1"
 					if taskID != "" {
-						_, _ = store.ExecuteSQL("UPDATE muse_tasks SET status='error', result_summary=?, updated_at=datetime('now') WHERE id=?", []interface{}{msg, taskID})
+						args := append([]interface{}{msg, taskID}, whereArgs...)
+						_, _ = store.ExecuteSQL("UPDATE muse_tasks SET status='error', result_summary=?, updated_at=datetime('now') WHERE id=? AND "+whereSQL, args)
 					}
 					results[idx] = batchResult{TaskID: taskID, Status: "error", ErrMsg: msg}
 					return
@@ -771,19 +866,26 @@ func (a *ServerApp) Routes() http.Handler {
 					summary = summary[:997] + "..."
 				}
 				if taskID != "" {
+					args := append([]interface{}{summary, taskID}, whereArgs...)
 					_, _ = store.ExecuteSQL(
-						"UPDATE muse_tasks SET status='done', result_summary=?, updated_at=datetime('now') WHERE id=?",
-						[]interface{}{summary, taskID},
+						"UPDATE muse_tasks SET status='done', result_summary=?, updated_at=datetime('now') WHERE id=? AND "+whereSQL,
+						args,
 					)
 				}
 				results[idx] = batchResult{TaskID: taskID, Status: "done", Reply: replyText}
 			}(i, task)
 		}
 		wg.Wait()
+		var outSummary RouterSummary
+		if actor.Role == "admin" {
+			outSummary = a.pool.GetSummary()
+		} else {
+			outSummary = a.pool.GetPublicSummary()
+		}
 		WriteJSONResponse(w, http.StatusOK, map[string]interface{}{
 			"results": results,
 			"total":   len(results),
-			"summary": a.pool.GetSummary(),
+			"summary": outSummary,
 		})
 	})
 
@@ -826,10 +928,17 @@ func (a *ServerApp) Routes() http.Handler {
 			return
 		}
 
+		actor := a.resolveActor(r)
+		ownerScope := actor.OwnerScope()
+		gwThreadID := "thread_api_gateway"
+		if ownerScope != "" {
+			gwThreadID = "thread_api_gateway_" + ownerScope
+		}
 		idemKey := r.Header.Get("X-Idempotency-Key")
-		res, err := a.pool.RouteAndExecuteChat(
+		res, err := a.pool.RouteAndExecuteChatForOwner(
 			r.Context(),
-			"thread_api_gateway",
+			ownerScope,
+			gwThreadID,
 			"auto",
 			req.Model,
 			"chat",
@@ -898,7 +1007,7 @@ func (a *ServerApp) Routes() http.Handler {
 		fileServer.ServeHTTP(w, r)
 	})
 
-	return SecurityHeadersMiddleware(GzipMiddleware(AdminAuthMiddlewareWithJWT(mux, a.jwtMgr)))
+	return SecurityHeadersMiddleware(GzipMiddleware(a.AuthAndRoleMiddleware(mux)))
 }
 
 func probeAllNodesConcurrently(ctx context.Context, pool *MuseRouterPool) (int, int) {
