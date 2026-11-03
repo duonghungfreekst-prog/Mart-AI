@@ -1158,9 +1158,9 @@
       // Dữ liệu 2 thanh Token chuẩn trang gốc:
       // Thanh 1: Gói miễn phí (Giới hạn hàng tuần)
       const freeLabel = n.free_plan_label || "Gói miễn phí";
-      const freePct = typeof n.free_plan_percent === "number" ? Math.max(0, Math.min(100, n.free_plan_percent)) : 4;
+      const freePct = typeof n.free_plan_percent === "number" ? Math.max(0, Math.min(100, n.free_plan_percent)) : 0;
       const freeValue = n.free_plan_value || ("Đã dùng " + freePct + "%");
-      const freeSub = n.free_plan_subtitle || "Giới hạn hàng tuần sẽ đặt lại vào 10 tháng 11";
+      const freeSub = n.free_plan_subtitle || "Giới hạn hàng tuần được đồng bộ trực tiếp với muse.ai";
 
       // Thanh 2: Token bổ sung (Không bao giờ hết hạn — còn 1 tỷ token)
       const topupLabel = n.topup_label || "Token bổ sung";

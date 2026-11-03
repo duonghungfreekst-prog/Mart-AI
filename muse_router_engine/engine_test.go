@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -410,5 +411,51 @@ func TestGzipAndStaticCaching(t *testing.T) {
 	handler.ServeHTTP(recAdmin, reqAdmin)
 	if !strings.Contains(recAdmin.Header().Get("Cache-Control"), "no-store") {
 		t.Fatalf("Expected no-store on /admin HTML, got %q", recAdmin.Header().Get("Cache-Control"))
+	}
+}
+
+func TestRealSubscriptionSyncAndZeroPctNewAccount(t *testing.T) {
+	t.Setenv("RENDER", "true")
+	mockMuse := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cookie := r.Header.Get("Cookie")
+		if r.URL.Path == "/api/client-version" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"deploymentId":"dpl_test_2026"}`))
+			return
+		}
+		if r.Method == http.MethodPost && r.Header.Get("Next-Action") != "" {
+			w.Header().Set("Content-Type", "text/x-component")
+			if strings.Contains(cookie, "brand_new_sess") {
+				_, _ = w.Write([]byte("0:{\"a\":\"$@1\"}\n1:{\"subscription\":{\"usageRowLabel\":\"Gói miễn phí\",\"usageRowValueLabel\":\"Đã dùng 0%\",\"statusSubtitle\":\"Giới hạn hàng tuần sẽ đặt lại vào 10 tháng 11\",\"usage\":{\"percentUsed\":0},\"topupRowLabel\":\"Token bổ sung\",\"topupRowValueLabel\":\"Đã dùng 0% (còn 1 tỷ token)\",\"billingSubtitle\":\"Không bao giờ hết hạn\"}}\n"))
+			} else {
+				_, _ = w.Write([]byte("1:{\"subscription\":{\"usageRowLabel\":\"Gói miễn phí\",\"usageRowValueLabel\":\"Đã dùng 18%\",\"statusSubtitle\":\"Giới hạn hàng tuần sẽ đặt lại vào 10 tháng 11\",\"usage\":{\"percentUsed\":18}}}\n"))
+			}
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer mockMuse.Close()
+
+	tmpDir := t.TempDir()
+	app, err := NewServerApp(filepath.Join(tmpDir, "data"))
+	if err != nil {
+		t.Fatalf("NewServerApp: %v", err)
+	}
+	defer app.pool.Shutdown()
+
+	nodeNew, err := app.pool.AddAccountNode(context.Background(), "Muse #2", "Muse.ai", "cookie", mockMuse.URL, "hatch_sess=brand_new_sess_1234567890", 0, "")
+	if err != nil {
+		t.Fatalf("AddAccountNode new: %v", err)
+	}
+	if nodeNew.FreePlanPercent != 0 || nodeNew.FreePlanValue != "Đã dùng 0%" {
+		t.Fatalf("Expected brand new account to have 0%% ('Đã dùng 0%%'), got %d%% (%q)", nodeNew.FreePlanPercent, nodeNew.FreePlanValue)
+	}
+
+	nodeUsed, err := app.pool.AddAccountNode(context.Background(), "Muse #1", "Muse.ai", "cookie", mockMuse.URL, "hatch_sess=used_sess_9876543210", 0, "")
+	if err != nil {
+		t.Fatalf("AddAccountNode used: %v", err)
+	}
+	if nodeUsed.FreePlanPercent != 18 || nodeUsed.FreePlanValue != "Đã dùng 18%" {
+		t.Fatalf("Expected used account to have 18%% ('Đã dùng 18%%'), got %d%% (%q)", nodeUsed.FreePlanPercent, nodeUsed.FreePlanValue)
 	}
 }

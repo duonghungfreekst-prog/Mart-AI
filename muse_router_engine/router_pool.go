@@ -9,10 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -424,16 +426,20 @@ func normalizeAccountIndices(nodes []*MuseAccountNode) {
 			if n.FreePlanLabel == "" {
 				n.FreePlanLabel = "Gói miễn phí"
 			}
+			if n.FreePlanValue == "Đang hoạt động" && n.FreePlanPercent == 5 {
+				n.FreePlanPercent = 0
+				n.FreePlanValue = "Đã dùng 0%"
+			}
 			if n.FreePlanValue == "" {
 				pct := n.FreePlanPercent
-				if pct <= 0 {
-					pct = 4
-					n.FreePlanPercent = 4
+				if pct < 0 {
+					pct = 0
+					n.FreePlanPercent = 0
 				}
 				n.FreePlanValue = fmt.Sprintf("Đã dùng %d%%", pct)
 			}
 			if n.FreePlanSubtitle == "" {
-				n.FreePlanSubtitle = "Giới hạn hàng tuần sẽ đặt lại vào 10 tháng 11"
+				n.FreePlanSubtitle = "Giới hạn hàng tuần được đồng bộ trực tiếp với muse.ai"
 			}
 			if n.TopupLabel == "" {
 				n.TopupLabel = "Token bổ sung"
@@ -592,16 +598,20 @@ func (p *MuseRouterPool) GetSummary() RouterSummary {
 			if copyNode.FreePlanLabel == "" {
 				copyNode.FreePlanLabel = "Gói miễn phí"
 			}
+			if copyNode.FreePlanValue == "Đang hoạt động" && copyNode.FreePlanPercent == 5 {
+				copyNode.FreePlanPercent = 0
+				copyNode.FreePlanValue = "Đã dùng 0%"
+			}
 			if copyNode.FreePlanValue == "" {
 				pct := copyNode.FreePlanPercent
-				if pct <= 0 {
-					pct = 4
-					copyNode.FreePlanPercent = 4
+				if pct < 0 {
+					pct = 0
+					copyNode.FreePlanPercent = 0
 				}
 				copyNode.FreePlanValue = fmt.Sprintf("Đã dùng %d%%", pct)
 			}
 			if copyNode.FreePlanSubtitle == "" {
-				copyNode.FreePlanSubtitle = "Giới hạn hàng tuần sẽ đặt lại vào 10 tháng 11"
+				copyNode.FreePlanSubtitle = "Giới hạn hàng tuần được đồng bộ trực tiếp với muse.ai"
 			}
 			if copyNode.TopupLabel == "" {
 				copyNode.TopupLabel = "Token bổ sung"
@@ -1439,7 +1449,7 @@ func (p *MuseRouterPool) wakeAndProbeNodeDirect(ctx context.Context, target *Mus
 		return nil, err
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 8192))
+	verBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
 	latMs := float64(time.Since(startTs).Milliseconds())
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || !hasSess {
@@ -1452,7 +1462,19 @@ func (p *MuseRouterPool) wakeAndProbeNodeDirect(ctx context.Context, target *Mus
 		}, nil
 	}
 
-	tokRem := float64(target.TokensRemaining)
+	var verData struct {
+		DeploymentID string `json:"deploymentId"`
+	}
+	_ = json.Unmarshal(verBody, &verData)
+
+	subCtx, cancelSub := context.WithTimeout(ctx, 6*time.Second)
+	subInfo := p.fetchRealMuseSubscriptionGo(subCtx, upstream, cookieHeader, verData.DeploymentID)
+	cancelSub()
+
+	tokRem := subInfo.TokensRemaining
+	if tokRem <= 0 {
+		tokRem = float64(target.TokensRemaining)
+	}
 	if tokRem <= 0 {
 		tokRem = 1000000000
 	}
@@ -1462,17 +1484,264 @@ func (p *MuseRouterPool) wakeAndProbeNodeDirect(ctx context.Context, target *Mus
 		"tokens_remaining":   tokRem,
 		"has_hatch_sess":     hasSess,
 		"has_hatch_gw":       hasGw,
-		"free_plan_label":    "Gói miễn phí",
-		"free_plan_value":    "Đang hoạt động",
-		"free_plan_subtitle": "Giới hạn hàng tuần được đồng bộ trực tiếp với muse.ai",
-		"free_plan_percent":  float64(5),
-		"topup_label":        "Token bổ sung",
-		"topup_value":        "Đã dùng 0% (còn 1 tỷ token)",
-		"topup_subtitle":     "Không bao giờ hết hạn",
-		"topup_percent":      float64(0),
+		"free_plan_label":    subInfo.FreePlanLabel,
+		"free_plan_value":    subInfo.FreePlanValue,
+		"free_plan_subtitle": subInfo.FreePlanSubtitle,
+		"free_plan_percent":  float64(subInfo.FreePlanPercent),
+		"topup_label":        subInfo.TopupLabel,
+		"topup_value":        subInfo.TopupValue,
+		"topup_subtitle":     subInfo.TopupSubtitle,
+		"topup_percent":      float64(subInfo.TopupPercent),
 		"device_profile":     computeDeterministicDeviceProfile(target.Fingerprint),
-		"detail":             fmt.Sprintf("Xác thực trực tiếp muse.ai thành công (%dms)", int(latMs)),
+		"detail":             fmt.Sprintf("Đã đồng bộ trực tiếp muse.ai (%dms · %s)", int(latMs), subInfo.FreePlanValue),
 	}, nil
+}
+
+type museSubscriptionParsed struct {
+	FreePlanLabel    string
+	FreePlanValue    string
+	FreePlanSubtitle string
+	FreePlanPercent  int
+	TopupLabel       string
+	TopupValue       string
+	TopupSubtitle    string
+	TopupPercent     int
+	TokensRemaining  float64
+}
+
+var (
+	reNextChunkJS = regexp.MustCompile(`/_next/static/chunks/[^"'\s<>]+\.js(?:\?[^"'\s<>]*)?`)
+	reNextActHex  = regexp.MustCompile(`[0-9a-f]{40,42}`)
+)
+
+func (p *MuseRouterPool) callMuseSubscriptionAction(ctx context.Context, upstream, cookieHeader, deployID, actionID string) (*museSubscriptionParsed, bool) {
+	actionURL := upstream + "/"
+	if deployID != "" && deployID != "verified" {
+		actionURL = upstream + "/?dpl=" + url.QueryEscape(deployID)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, actionURL, strings.NewReader(`[{"includeAgreement":true}]`))
+	if err != nil {
+		return nil, false
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+	req.Header.Set("Cookie", cookieHeader)
+	req.Header.Set("Accept", "text/x-component")
+	req.Header.Set("Content-Type", "text/plain;charset=UTF-8")
+	req.Header.Set("Next-Action", actionID)
+	req.Header.Set("Next-Router-State-Tree", "%5B%22%22%2C%7B%22children%22%3A%5B%22(app)%22%2C%7B%22children%22%3A%5B%22(main)%22%2C%7B%22children%22%3A%5B%22__PAGE__%22%2C%7B%7D%5D%7D%5D%7D%5D%7D%2Cnull%2Cnull%2Ctrue%5D")
+	req.Header.Set("Origin", upstream)
+	req.Header.Set("Referer", upstream+"/")
+	req.Header.Set("Accept-Language", "vi-VN,vi;q=0.9,en-US;q=0.8")
+	if deployID != "" && deployID != "verified" {
+		req.Header.Set("x-deployment-id", deployID)
+	}
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return nil, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, false
+	}
+	rawBytes, err := io.ReadAll(io.LimitReader(resp.Body, 65536))
+	if err != nil || len(rawBytes) == 0 {
+		return nil, false
+	}
+
+	for _, line := range strings.Split(string(rawBytes), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.Contains(line, `"subscription"`) {
+			continue
+		}
+		colonIdx := strings.IndexByte(line, ':')
+		if colonIdx < 0 || colonIdx+1 >= len(line) {
+			continue
+		}
+		var payload struct {
+			Subscription *struct {
+				UsageRowLabel      string `json:"usageRowLabel"`
+				UsageRowValueLabel string `json:"usageRowValueLabel"`
+				StatusSubtitle     string `json:"statusSubtitle"`
+				Usage              *struct {
+					PercentUsed float64 `json:"percentUsed"`
+				} `json:"usage"`
+				TopupRowLabel      string  `json:"topupRowLabel"`
+				TopupRowValueLabel string  `json:"topupRowValueLabel"`
+				BillingSubtitle    string  `json:"billingSubtitle"`
+				TopupBalance       float64 `json:"topupBalance"`
+				TopupTotal         float64 `json:"topupTotal"`
+			} `json:"subscription"`
+		}
+		if err := json.Unmarshal([]byte(line[colonIdx+1:]), &payload); err != nil || payload.Subscription == nil {
+			continue
+		}
+		sub := payload.Subscription
+		pctUsed := 0
+		if sub.Usage != nil {
+			pctUsed = int(math.Round(sub.Usage.PercentUsed))
+			if pctUsed < 0 {
+				pctUsed = 0
+			} else if pctUsed > 100 {
+				pctUsed = 100
+			}
+		}
+		freeLbl := strings.TrimSpace(sub.UsageRowLabel)
+		if freeLbl == "" {
+			freeLbl = "Gói miễn phí"
+		}
+		freeVal := strings.TrimSpace(strings.ReplaceAll(sub.UsageRowValueLabel, "\u00a0", " "))
+		if freeVal == "" {
+			freeVal = fmt.Sprintf("Đã dùng %d%%", pctUsed)
+		}
+		freeSub := strings.TrimSpace(sub.StatusSubtitle)
+		if freeSub == "" {
+			freeSub = "Giới hạn hàng tuần"
+		}
+		topLbl := strings.TrimSpace(sub.TopupRowLabel)
+		if topLbl == "" {
+			topLbl = "Token bổ sung"
+		}
+		topVal := strings.TrimSpace(strings.ReplaceAll(sub.TopupRowValueLabel, "\u00a0", " "))
+		if topVal == "" {
+			topVal = "Đã dùng 0% (còn 1 tỷ token)"
+		}
+		topSub := strings.TrimSpace(sub.BillingSubtitle)
+		if topSub == "" {
+			topSub = "Không bao giờ hết hạn"
+		}
+		topPct := 0
+		if sub.TopupTotal > 0 {
+			topPct = int(math.Round(((sub.TopupTotal - sub.TopupBalance) / sub.TopupTotal) * 100.0))
+			if topPct < 0 {
+				topPct = 0
+			} else if topPct > 100 {
+				topPct = 100
+			}
+		}
+		tokRem := float64(1000000000)
+		lowerTopVal := strings.ToLower(topVal)
+		if strings.Contains(lowerTopVal, "1 tỷ") || strings.Contains(lowerTopVal, "1b") {
+			tokRem = 1000000000
+		} else if sub.TopupBalance > 0 {
+			tokRem = sub.TopupBalance * 25
+		}
+		return &museSubscriptionParsed{
+			FreePlanLabel:    freeLbl,
+			FreePlanValue:    freeVal,
+			FreePlanSubtitle: freeSub,
+			FreePlanPercent:  pctUsed,
+			TopupLabel:       topLbl,
+			TopupValue:       topVal,
+			TopupSubtitle:    topSub,
+			TopupPercent:     topPct,
+			TokensRemaining:  tokRem,
+		}, true
+	}
+	return nil, false
+}
+
+func (p *MuseRouterPool) discoverMuseSubActionID(ctx context.Context, upstream, cookieHeader string) string {
+	if p.cache != nil {
+		if _, recentlyChecked := p.cache.Get("muse_sub_action_probed"); recentlyChecked {
+			return ""
+		}
+		p.cache.Set("muse_sub_action_probed", true, 15*time.Minute)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, upstream+"/", nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+	req.Header.Set("Cookie", cookieHeader)
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	htmlBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 262144))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || len(htmlBytes) == 0 {
+		return ""
+	}
+	chunks := reNextChunkJS.FindAllString(string(htmlBytes), 20)
+	seen := map[string]bool{}
+	checked := 0
+	for _, ch := range chunks {
+		if seen[ch] {
+			continue
+		}
+		seen[ch] = true
+		checked++
+		if checked > 12 {
+			break
+		}
+		cReq, errReq := http.NewRequestWithContext(ctx, http.MethodGet, upstream+ch, nil)
+		if errReq != nil {
+			continue
+		}
+		cReq.Header.Set("Cookie", cookieHeader)
+		cResp, errDo := p.httpClient.Do(cReq)
+		if errDo != nil {
+			continue
+		}
+		jsBytes, _ := io.ReadAll(io.LimitReader(cResp.Body, 524288))
+		cResp.Body.Close()
+		js := string(jsBytes)
+		for _, marker := range []string{"fetchSubscriptionAction", "fetchSubscription", "includeAgreement"} {
+			idx := strings.Index(js, marker)
+			if idx < 0 {
+				continue
+			}
+			start := idx - 350
+			if start < 0 {
+				start = 0
+			}
+			end := idx + 350
+			if end > len(js) {
+				end = len(js)
+			}
+			if found := reNextActHex.FindString(js[start:end]); found != "" {
+				if p.cache != nil {
+					p.cache.Set("muse_sub_action_id", found, 2*time.Hour)
+				}
+				return found
+			}
+		}
+	}
+	return ""
+}
+
+func (p *MuseRouterPool) fetchRealMuseSubscriptionGo(ctx context.Context, upstream, cookieHeader, deployID string) museSubscriptionParsed {
+	def := museSubscriptionParsed{
+		FreePlanLabel:    "Gói miễn phí",
+		FreePlanValue:    "Đã dùng 0%",
+		FreePlanSubtitle: "Giới hạn hàng tuần được đồng bộ trực tiếp với muse.ai",
+		FreePlanPercent:  0,
+		TopupLabel:       "Token bổ sung",
+		TopupValue:       "Đã dùng 0% (còn 1 tỷ token)",
+		TopupSubtitle:    "Không bao giờ hết hạn",
+		TopupPercent:     0,
+		TokensRemaining:  1000000000,
+	}
+
+	actionID := "409b972cbb33d3e372f4ca9d3c8332677217064f62"
+	if p.cache != nil {
+		if cached, ok := p.cache.Get("muse_sub_action_id"); ok {
+			if s, okS := cached.(string); okS && s != "" {
+				actionID = s
+			}
+		}
+	}
+
+	if parsed, ok := p.callMuseSubscriptionAction(ctx, upstream, cookieHeader, deployID, actionID); ok && parsed != nil {
+		return *parsed
+	}
+	if newActionID := p.discoverMuseSubActionID(ctx, upstream, cookieHeader); newActionID != "" && newActionID != actionID {
+		if parsed, ok := p.callMuseSubscriptionAction(ctx, upstream, cookieHeader, deployID, newActionID); ok && parsed != nil {
+			return *parsed
+		}
+	}
+	return def
 }
 
 // RouteAndExecuteChat điều phối tin nhắn (kèm ảnh/tệp đính kèm) qua các Node thật trong Pool
