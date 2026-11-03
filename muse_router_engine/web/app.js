@@ -1469,7 +1469,105 @@
     }
   }
 
+  function isLocalHost() {
+    const h = window.location.hostname;
+    return h === "127.0.0.1" || h === "localhost" || h === "::1" || h === "[::1]";
+  }
+
+  function looksLikeOAuthCallback(text) {
+    return /^https:\/\/(muse\.ai\/(api\/)?oidc\/callback|auth\.muse\.ai\/oidc\/muse)/.test(
+      (text || "").trim()
+    );
+  }
+
+  // Luồng 1 nút cho bản chạy trên máy chủ từ xa (Render): không có trình duyệt Playwright,
+  // nên mở trang đăng nhập Meta ở tab mới rồi tự đọc URL callback từ bộ nhớ tạm khi người dùng quay lại.
+  async function cloudOAuthLoginFlow(btnEl) {
+    const origText = btnEl ? btnEl.textContent : "";
+    const popup = window.open("about:blank", "_blank");
+    if (btnEl) {
+      btnEl.disabled = true;
+      btnEl.textContent = "⏳ Đang tạo link đăng nhập...";
+    }
+    const restore = function () {
+      if (btnEl) {
+        btnEl.disabled = false;
+        btnEl.textContent = origText;
+      }
+    };
+
+    const res = await fetchAndShowOAuthLoginLink(null);
+    if (!res || !res.login_url) {
+      if (popup) popup.close();
+      restore();
+      return;
+    }
+    if (popup) {
+      popup.location.href = res.login_url;
+    } else {
+      showToast("Trình duyệt chặn cửa sổ mới — hãy cho phép popup hoặc dán Link Đăng Nhập vào tab khác.");
+    }
+
+    if (btnEl) {
+      btnEl.textContent = "⏳ Đăng nhập Meta xong → copy URL trên thanh địa chỉ → quay lại đây";
+    }
+    showToast(
+      "Sau khi đăng nhập Meta, trang sẽ chuyển tới địa chỉ có chữ 'oidc/callback'. Hãy copy toàn bộ URL đó (Ctrl+L, Ctrl+C) rồi quay lại tab này — hệ thống sẽ tự thêm tài khoản."
+    );
+
+    const labelEl = document.getElementById("accLabelInput");
+    const proxyEl = document.getElementById("accProxyInput") || document.getElementById("quickProxyInput");
+    const deadline = Date.now() + 5 * 60 * 1000;
+    let handled = false;
+
+    const finish = async function (callbackUrl) {
+      if (handled) return;
+      handled = true;
+      window.removeEventListener("focus", onFocus);
+      clearInterval(timer);
+      await submitCookieCredential(
+        labelEl ? labelEl.value.trim() : "",
+        "cookie",
+        "https://muse.ai",
+        callbackUrl.trim(),
+        btnEl,
+        proxyEl ? proxyEl.value.trim() : ""
+      );
+      restore();
+    };
+
+    const tryReadClipboard = async function () {
+      if (handled || !document.hasFocus()) return;
+      if (Date.now() > deadline) {
+        handled = true;
+        window.removeEventListener("focus", onFocus);
+        clearInterval(timer);
+        restore();
+        showToast("Hết thời gian chờ đăng nhập — bấm lại nút để thử lại.");
+        return;
+      }
+      try {
+        const text = await navigator.clipboard.readText();
+        if (looksLikeOAuthCallback(text)) {
+          await finish(text);
+        }
+      } catch (_) {
+        // Chưa cấp quyền đọc clipboard: chờ người dùng cho phép hoặc dán thủ công vào ô Callback.
+      }
+    };
+
+    const onFocus = function () {
+      tryReadClipboard();
+    };
+    window.addEventListener("focus", onFocus);
+    const timer = setInterval(tryReadClipboard, 1500);
+  }
+
   async function triggerInteractiveBrowserLogin(btnEl, sessionIdOverride, proxyUrlOverride) {
+    if (!isLocalHost()) {
+      await cloudOAuthLoginFlow(btnEl);
+      return;
+    }
     const origText = btnEl ? btnEl.textContent : "";
     if (btnEl) {
       btnEl.disabled = true;
