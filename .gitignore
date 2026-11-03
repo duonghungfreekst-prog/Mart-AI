@@ -1,0 +1,30 @@
+# Secrets, Databases & Local Account Vaults (PHAN 3 BAT BUOC)
+.env
+*.env
+*.pem
+*.key
+*.crt
+*.pfx
+data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+accounts_vault.json
+sessions_store.json
+threads.json
+
+# Backup & Temp files (PHAN 1 BAT BUOC)
+*.bak
+*.tmp
+*.log
+
+# Build artifacts & caches
+muse_router.exe
+muse_router_engine/muse_router.exe
+muse_router_engine/test_*/
+muse_router_core/target/
+muse_router_ui/bin/
+muse_router_ui/obj/
+muse_router_ai/__pycache__/
+muse_router_ai/.pytest_cache/

@@ -1,0 +1,18 @@
+# Antigravity Rules - MuseRouter (muse_router)
+# Kien truc: Antigravity Polyglot v2.4
+# App Prefix: muse_router | Assembly: MuseRouter
+
+1. Luong giao tiep 1 chieu: C# UI (muse_router_ui) -> Go Engine (muse_router_engine) -> Python AI (muse_router_ai) -> Rust Core (muse_router_core).
+2. Tat ca file luu tai f:\tools muse ai (TUYET DOI KHONG luu tren o C).
+3. Encoding: 100% UTF-8. Khong empty catch block, khong demo/mock mode.
+4. Bao mat:
+   - JWT RS256 bat doi xung.
+   - Secret/Cookie (hatch_sess, hatch_gw, token) phai duoc Rust Core ma hoa AES-256-GCM truoc khi luu xuong dia.
+   - Constant-time comparison cho moi token/hash.
+   - CORS exact match origin, day du Security Headers.
+   - Chong CRLF Log Injection.
+5. Hieu nang:
+   - Go: WorkerPool (64 workers), bounded channel (1000), context.WithTimeout, sync.Map TTL cache, Mem Alloc monitor > 500MB.
+   - Rust: Export free_rust_string va free_rust_bytes.
+   - Python: Generator/yield streaming, lru_cache, del bien lon.
+   - C#: MemoryCache SizeLimit 1000, StreamReader <= 4096 bytes, using IDisposable.

@@ -1,0 +1,364 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+func TestInputValidationAndSecurityHeaders(t *testing.T) {
+	clean, err := ValidateAndSanitizeInput("Xin chào Muse AI #1", 1024)
+	if err != nil || clean != "Xin chào Muse AI #1" {
+		t.Fatalf("Expected valid input, got err=%v", err)
+	}
+
+	if _, err := ValidateAndSanitizeInput("<script>alert(1)</script>", 1024); err == nil {
+		t.Fatalf("Expected XSS payload to be rejected")
+	}
+
+	if _, err := ValidateAndSanitizeInput("../../etc/passwd", 1024); err == nil {
+		t.Fatalf("Expected path traversal to be rejected")
+	}
+
+	if !ConstantTimeStringEquals("token_abc_123", "token_abc_123") {
+		t.Fatalf("ConstantTimeStringEquals failed for identical strings")
+	}
+	if ConstantTimeStringEquals("token_abc_123", "token_abc_124") {
+		t.Fatalf("ConstantTimeStringEquals failed for different strings")
+	}
+}
+
+func TestJWTRS256SignAndVerify(t *testing.T) {
+	cache := NewTTLCache()
+	jwtMgr, err := NewRS256JWTManager(cache)
+	if err != nil {
+		t.Fatalf("Failed to init RS256JWTManager: %v", err)
+	}
+
+	token, err := jwtMgr.IssueToken("admin_user", 15*time.Minute)
+	if err != nil {
+		t.Fatalf("IssueToken failed: %v", err)
+	}
+
+	claims, err := jwtMgr.VerifyToken(token)
+	if err != nil {
+		t.Fatalf("VerifyToken failed: %v", err)
+	}
+	if claims.Sub != "admin_user" {
+		t.Fatalf("Unexpected subject: %s", claims.Sub)
+	}
+}
+
+func TestZeroFakeNodesAndRealVaultEncryption(t *testing.T) {
+	tempDir := filepath.Join(".", "test_vault_data")
+	t.Cleanup(func() {
+		_ = os.RemoveAll(tempDir)
+	})
+
+	app, err := NewServerApp(tempDir)
+	if err != nil {
+		t.Fatalf("NewServerApp failed: %v", err)
+	}
+	defer app.pool.Shutdown()
+
+	handler := app.Routes()
+
+	// 1. Khi khởi tạo sạch, bắt buộc TotalNodes == 0 (KHÔNG có node giả lập)
+	reqSum := httptest.NewRequest(http.MethodGet, "/api/router/summary", nil)
+	reqSum.Header.Set("Origin", "http://127.0.0.1:8088")
+	recSum := httptest.NewRecorder()
+	handler.ServeHTTP(recSum, reqSum)
+
+	if recSum.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK, got %d", recSum.Code)
+	}
+	var summary RouterSummary
+	if err := json.Unmarshal(recSum.Body.Bytes(), &summary); err != nil {
+		t.Fatalf("Failed to parse summary JSON: %v", err)
+	}
+	if summary.TotalNodes != 0 {
+		t.Fatalf("Expected 0 initial nodes (zero fake data), got %d", summary.TotalNodes)
+	}
+
+	// 2. Khi gửi chat mà chưa cắm tài khoản nào, bắt buộc trả về lỗi thật chứ không trả về câu trả lời giả
+	chatBody, _ := json.Marshal(map[string]interface{}{
+		"thread_id":         "thread_welcome",
+		"preferred_node_id": "auto",
+		"model":             "muse-spark-1.2",
+		"workspace":         "chat",
+		"prompt":            "Test",
+	})
+	reqChat := httptest.NewRequest(http.MethodPost, "/api/chat/send", bytes.NewReader(chatBody))
+	recChat := httptest.NewRecorder()
+	handler.ServeHTTP(recChat, reqChat)
+
+	if recChat.Code == http.StatusOK {
+		t.Fatalf("Expected chat without accounts to fail with error, but got 200 OK")
+	}
+
+	// 3. Kiểm tra trực tiếp cơ sở dữ liệu chuẩn libSQL nhúng (/api/libsql/status & /v2/pipeline Hrana v2)
+	reqLibStatus := httptest.NewRequest(http.MethodGet, "/api/libsql/status", nil)
+	recLibStatus := httptest.NewRecorder()
+	handler.ServeHTTP(recLibStatus, reqLibStatus)
+	if recLibStatus.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK from /api/libsql/status, got %d: %s", recLibStatus.Code, recLibStatus.Body.String())
+	}
+	var libStatus LibSQLStatusResponse
+	if err := json.Unmarshal(recLibStatus.Body.Bytes(), &libStatus); err != nil {
+		t.Fatalf("Failed to parse LibSQLStatusResponse: %v", err)
+	}
+	if !libStatus.Connected || libStatus.JournalMode != "WAL" {
+		t.Fatalf("Expected connected libSQL in WAL mode, got connected=%v mode=%s", libStatus.Connected, libStatus.JournalMode)
+	}
+
+	// Tạo một đoạn chat và truy vấn trực tiếp qua chuẩn giao thức Hrana v2 Pipeline (/v2/pipeline)
+	created := app.pool.CreateNewThread("Kiểm thử LibSQL Trực Tiếp", "Muse", "chat")
+	if created == nil || created.ID == "" {
+		t.Fatalf("Failed to create thread in libSQL")
+	}
+
+	pipelineReq := HranaPipelineRequest{
+		Requests: []HranaStreamRequest{
+			{
+				Type: "execute",
+				Stmt: &HranaStmt{
+					Sql: "SELECT id, title FROM chat_threads WHERE id = ?",
+					Args: []HranaArg{
+						{Type: "text", Value: created.ID},
+					},
+				},
+			},
+			{Type: "close"},
+		},
+	}
+	pipeBytes, _ := json.Marshal(pipelineReq)
+	reqPipe := httptest.NewRequest(http.MethodPost, "/v2/pipeline", bytes.NewReader(pipeBytes))
+	recPipe := httptest.NewRecorder()
+	handler.ServeHTTP(recPipe, reqPipe)
+	if recPipe.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK from /v2/pipeline, got %d: %s", recPipe.Code, recPipe.Body.String())
+	}
+	var pipeResp HranaPipelineResponse
+	if err := json.Unmarshal(recPipe.Body.Bytes(), &pipeResp); err != nil {
+		t.Fatalf("Failed to unmarshal HranaPipelineResponse: %v", err)
+	}
+	if len(pipeResp.Results) < 1 || pipeResp.Results[0].Type != "ok" || len(pipeResp.Results[0].Response.Result.Rows) != 1 {
+		t.Fatalf("Unexpected Hrana pipeline response: %+v", pipeResp)
+	}
+
+	// 4. Đảm bảo cơ sở dữ liệu thật tại f:\tools muse ai\data\muse_router.libsql.db được khởi tạo và đồng bộ tài khoản đã cắm
+	prodDataDir := filepath.Join("..", "data")
+	prodStore, err := NewLibSQLStore(prodDataDir, "", "")
+	if err != nil {
+		t.Fatalf("Failed to initialize production libSQL database: %v", err)
+	}
+	defer prodStore.Close()
+	prodStore.MigrateLegacyJSONIfNeeded(
+		filepath.Join(prodDataDir, "accounts_vault.json"),
+		filepath.Join(prodDataDir, "sessions_store.json"),
+		filepath.Join(prodDataDir, "threads.json"),
+	)
+}
+
+func TestNewEndpoints(t *testing.T) {
+	tempDir := filepath.Join(".", "test_new_endpoints")
+	t.Cleanup(func() { _ = os.RemoveAll(tempDir) })
+	app, err := NewServerApp(tempDir)
+	if err != nil {
+		t.Fatalf("NewServerApp failed: %v", err)
+	}
+	defer app.pool.Shutdown()
+	handler := app.Routes()
+
+	// Test /api/tasks/run không có tài khoản → phải trả lỗi thật (không 200 OK)
+	taskBody, _ := json.Marshal(map[string]interface{}{
+		"task_id": "test-task-001",
+		"prompt":  "Tóm tắt tài liệu này",
+	})
+	reqTask := httptest.NewRequest(http.MethodPost, "/api/tasks/run", bytes.NewReader(taskBody))
+	reqTask.Header.Set("Content-Type", "application/json")
+	recTask := httptest.NewRecorder()
+	handler.ServeHTTP(recTask, reqTask)
+	if recTask.Code == http.StatusOK {
+		t.Fatalf("Expected /api/tasks/run without accounts to fail, got 200 OK")
+	}
+
+	// Test /api/tasks/run với prompt rỗng → phải trả ERR_EMPTY_PROMPT
+	emptyBody, _ := json.Marshal(map[string]interface{}{"task_id": "x", "prompt": ""})
+	reqEmpty := httptest.NewRequest(http.MethodPost, "/api/tasks/run", bytes.NewReader(emptyBody))
+	reqEmpty.Header.Set("Content-Type", "application/json")
+	recEmpty := httptest.NewRecorder()
+	handler.ServeHTTP(recEmpty, reqEmpty)
+	if recEmpty.Code != http.StatusBadRequest {
+		t.Fatalf("Expected 400 for empty prompt, got %d", recEmpty.Code)
+	}
+
+	// Test /api/threads/messages thiếu thread_id → 400
+	reqMsg := httptest.NewRequest(http.MethodGet, "/api/threads/messages", nil)
+	recMsg := httptest.NewRecorder()
+	handler.ServeHTTP(recMsg, reqMsg)
+	if recMsg.Code != http.StatusBadRequest {
+		t.Fatalf("Expected 400 for missing thread_id, got %d: %s", recMsg.Code, recMsg.Body.String())
+	}
+
+	// Test /api/threads/messages với thread_id hợp lệ → 200 + JSON có field messages
+	thread := app.pool.CreateNewThread("Thread Phân Trang Test", "Muse", "chat")
+	if thread == nil || thread.ID == "" {
+		t.Fatalf("Failed to create thread")
+	}
+	reqMsg2 := httptest.NewRequest(http.MethodGet, "/api/threads/messages?thread_id="+thread.ID+"&limit=10&offset=0", nil)
+	recMsg2 := httptest.NewRecorder()
+	handler.ServeHTTP(recMsg2, reqMsg2)
+	if recMsg2.Code != http.StatusOK {
+		t.Fatalf("Expected 200 for /api/threads/messages, got %d: %s", recMsg2.Code, recMsg2.Body.String())
+	}
+	var msgResp map[string]interface{}
+	if err := json.Unmarshal(recMsg2.Body.Bytes(), &msgResp); err != nil {
+		t.Fatalf("Failed to parse messages response: %v", err)
+	}
+	if _, ok := msgResp["messages"]; !ok {
+		t.Fatalf("Expected 'messages' field in response, got: %v", msgResp)
+	}
+}
+
+func TestLibSQLNewTables(t *testing.T) {
+	tempDir := filepath.Join(".", "test_new_tables")
+	t.Cleanup(func() { _ = os.RemoveAll(tempDir) })
+	app, err := NewServerApp(tempDir)
+	if err != nil {
+		t.Fatalf("NewServerApp failed: %v", err)
+	}
+	defer app.pool.Shutdown()
+	handler := app.Routes()
+
+	// Kiểm tra 3 bảng mới qua Hrana v2 pipeline
+	for _, table := range []string{"muse_documents", "muse_memories", "muse_tasks"} {
+		pReq := HranaPipelineRequest{
+			Requests: []HranaStreamRequest{
+				{Type: "execute", Stmt: &HranaStmt{Sql: "SELECT COUNT(1) FROM " + table}},
+				{Type: "close"},
+			},
+		}
+		pBytes, _ := json.Marshal(pReq)
+		req := httptest.NewRequest(http.MethodPost, "/v2/pipeline", bytes.NewReader(pBytes))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("Table %s not found via /v2/pipeline: %d %s", table, rec.Code, rec.Body.String())
+		}
+		var resp HranaPipelineResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("Failed to parse pipeline response for table %s: %v", table, err)
+		}
+		if len(resp.Results) == 0 || resp.Results[0].Type != "ok" {
+			t.Fatalf("Expected ok result for table %s, got: %+v", table, resp.Results)
+		}
+	}
+}
+
+func TestSecurityEdgeCases(t *testing.T) {
+	tempDir := filepath.Join(".", "test_security_edge")
+	t.Cleanup(func() { _ = os.RemoveAll(tempDir) })
+	app, err := NewServerApp(tempDir)
+	if err != nil {
+		t.Fatalf("NewServerApp failed: %v", err)
+	}
+	defer app.pool.Shutdown()
+	handler := app.Routes()
+
+	// 1. Tất cả POST endpoint phải reject GET
+	postOnlyEndpoints := []string{
+		"/api/chat/send",
+		"/api/tasks/run",
+		"/api/accounts/add",
+		"/api/accounts/wake",
+		"/v2/pipeline",
+	}
+	for _, ep := range postOnlyEndpoints {
+		req := httptest.NewRequest(http.MethodGet, ep, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code == http.StatusOK {
+			t.Fatalf("Endpoint %s accepted GET but should only accept POST", ep)
+		}
+	}
+
+	// 2. Security headers phải có trong mọi response
+	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	requiredHeaders := []string{
+		"X-Content-Type-Options",
+		"X-Frame-Options",
+		"X-Xss-Protection",
+	}
+	for _, h := range requiredHeaders {
+		if rec.Header().Get(h) == "" {
+			t.Fatalf("Missing security header: %s", h)
+		}
+	}
+
+	// 3. CRLF injection trong SQL query phải bị sanitize bởi ValidateAndSanitizeInput
+	crlfInput := "select 1\r\nDROP TABLE muse_accounts;--"
+	_, err2 := ValidateAndSanitizeInput(crlfInput, 2048)
+	if err2 == nil {
+		t.Fatalf("Expected CRLF injection to be rejected, but got nil error")
+	}
+}
+
+// TestTasksBatchEndpoint — verify /api/tasks/batch reject đúng các edge cases
+func TestTasksBatchEndpoint(t *testing.T) {
+	tempDir := filepath.Join(".", "test_tasks_batch")
+	t.Cleanup(func() { _ = os.RemoveAll(tempDir) })
+	app, err := NewServerApp(tempDir)
+	if err != nil {
+		t.Fatalf("NewServerApp: %v", err)
+	}
+	defer app.pool.Shutdown()
+	handler := app.Routes()
+
+	// 1. GET thay vì POST → 405
+	req1 := httptest.NewRequest(http.MethodGet, "/api/tasks/batch", nil)
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET /api/tasks/batch: want 405, got %d", rec1.Code)
+	}
+
+	// 2. Body rỗng tasks → 400
+	req2 := httptest.NewRequest(http.MethodPost, "/api/tasks/batch", bytes.NewBufferString(`{}`))
+	req2.Header.Set("Content-Type", "application/json")
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusBadRequest {
+		t.Errorf("Empty tasks: want 400, got %d", rec2.Code)
+	}
+
+	// 3. Quá 10 tasks → 400 ERR_TOO_MANY_TASKS_MAX_10
+	bigTasks := `{"tasks":[` +
+		`{"task_id":"t1","prompt":"a"},{"task_id":"t2","prompt":"b"},` +
+		`{"task_id":"t3","prompt":"c"},{"task_id":"t4","prompt":"d"},` +
+		`{"task_id":"t5","prompt":"e"},{"task_id":"t6","prompt":"f"},` +
+		`{"task_id":"t7","prompt":"g"},{"task_id":"t8","prompt":"h"},` +
+		`{"task_id":"t9","prompt":"i"},{"task_id":"t10","prompt":"j"},` +
+		`{"task_id":"t11","prompt":"k"}` +
+		`]}`
+	req3 := httptest.NewRequest(http.MethodPost, "/api/tasks/batch", bytes.NewBufferString(bigTasks))
+	req3.Header.Set("Content-Type", "application/json")
+	rec3 := httptest.NewRecorder()
+	handler.ServeHTTP(rec3, req3)
+	if rec3.Code != http.StatusBadRequest {
+		t.Errorf("11 tasks: want 400, got %d", rec3.Code)
+	}
+	if !bytes.Contains(rec3.Body.Bytes(), []byte("ERR_TOO_MANY_TASKS_MAX_10")) {
+		t.Errorf("Missing ERR_TOO_MANY_TASKS_MAX_10: %s", rec3.Body.String())
+	}
+
+	t.Log("TestTasksBatchEndpoint: tất cả edge cases PASS")
+}

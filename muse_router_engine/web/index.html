@@ -1,0 +1,1123 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Chat — Mart AI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css?v=4.1">
+</head>
+<body>
+  <!-- Cảnh báo mất kết nối Backend (chỉ hiện khi dịch vụ chưa bật) -->
+  <div class="offline-banner hidden-el" id="offlineBanner" role="alert">
+    <span>⚠️ Chưa kết nối được dịch vụ máy chủ tại <code>127.0.0.1:8088</code>. Hãy chạy file <code>run_muse_router.bat</code> để khởi động.</span>
+  </div>
+
+  <div class="muse-app-shell">
+    <!-- ======================================================================
+         1. THANH ICON DỌC BÊN TRÁI (MART AI)
+         ====================================================================== -->
+    <aside class="muse-left-rail" aria-label="Điều hướng chính">
+      <!-- Logo Xe Hàng Mart AI nhỏ ở đỉnh thanh bên trái -->
+      <button type="button" class="rail-top-avatar-btn" id="railTopAvatarBtn" title="Mart AI">
+        <svg width="28" height="28" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <circle cx="32" cy="32" r="32" fill="#FFF7ED"/>
+          <path d="M14 19H19.5L23.5 38.5H45.5L49.5 24H21" stroke="#EA580C" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M23.5 38.5L22 43.5H46" stroke="#EA580C" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="25.5" cy="48.5" r="3.6" fill="#1E293B"/>
+          <circle cx="42.5" cy="48.5" r="3.6" fill="#1E293B"/>
+          <path d="M35 13L36.5 16.5L40 18L36.5 19.5L35 23L33.5 19.5L30 18L33.5 16.5L35 13Z" fill="#F59E0B"/>
+        </svg>
+      </button>
+
+      <nav class="rail-center-group" aria-label="Công cụ Mart AI">
+        <!-- 1. Chat -->
+        <button type="button" class="rail-icon-btn active" data-view="chat" id="railBtnChat" title="Đoạn chat">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
+          </svg>
+        </button>
+
+        <!-- 2. Tìm kiếm -->
+        <button type="button" class="rail-icon-btn" id="railBtnSearch" title="Tìm kiếm">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="7"/>
+            <line x1="20" y1="20" x2="16.2" y2="16.2"/>
+          </svg>
+        </button>
+
+        <!-- 3. Tài liệu -->
+        <button type="button" class="rail-icon-btn" id="railBtnDocs" title="Tài liệu">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="5" y="3" width="14" height="18" rx="2"/>
+            <line x1="9" y1="8" x2="15" y2="8"/>
+            <line x1="9" y1="12" x2="15" y2="12"/>
+            <line x1="9" y1="16" x2="12" y2="16"/>
+          </svg>
+        </button>
+
+        <!-- 4. Ý tưởng -->
+        <button type="button" class="rail-icon-btn" id="railBtnIdeas" title="Ý tưởng">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 18h6"/>
+            <path d="M10 22h4"/>
+            <path d="M12 2a7 7 0 0 0-4 12.7V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-2.3A7 7 0 0 0 12 2z"/>
+          </svg>
+        </button>
+
+        <!-- 5. Mục tiêu (Giống hệt tooltip ảnh chụp trang chủ) -->
+        <button type="button" class="rail-icon-btn" id="railBtnTasks" title="Mục tiêu">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="4" y="4" width="16" height="16" rx="3"/>
+            <polyline points="9 12 11 14 15 10"/>
+          </svg>
+        </button>
+
+        <!-- 6. Thư viện / Giả liệu (Icon 4 hình học: Tròn - Tam giác - Vuông - Giọt nước giống hệt https://muse.ai/library/artifacts) -->
+        <button type="button" class="rail-icon-btn" data-view="library" id="railBtnAccounts" title="Giả liệu">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="7.5" cy="7.5" r="3.2"/>
+            <polygon points="16.5,4.2 20,10.8 13,10.8"/>
+            <rect x="4.3" y="13.5" width="6.4" height="6.4" rx="1"/>
+            <path d="M16.5 13.3C18.5 15.3 19.7 16.8 19.7 18.2a3.2 3.2 0 1 1-6.4 0c0-1.4 1.2-2.9 3.2-4.9z"/>
+          </svg>
+          <span class="rail-count-dot hidden-el" id="railNodeCount" style="display:none !important;">0</span>
+        </button>
+      </nav>
+
+      <div class="rail-bottom-group">
+        <!-- Tải xuống -->
+        <button type="button" class="rail-icon-btn" id="railBtnQuickLogin" title="Tải xuống">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+        </button>
+
+        <!-- Ẩn / Hiện bảng Muse bên phải -->
+        <button type="button" class="rail-icon-btn" id="railBtnToggleSide" title="Bảng bên">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="4" width="18" height="16" rx="2"/>
+            <line x1="9" y1="4" x2="9" y2="20"/>
+          </svg>
+        </button>
+      </div>
+    </aside>
+
+    <!-- ======================================================================
+         2. VÙNG CHÍNH: CHAT — MUSE + BẢNG PHẢI MUSE (GIỐNG 100% HTTPS://MUSE.AI)
+         ====================================================================== -->
+    <main class="muse-main-area">
+      <!-- MÀN HÌNH 1: CHAT — MUSE CHÍNH GỐC -->
+      <section class="muse-chat-workspace" id="panelChat" aria-label="Chat — Muse">
+        <!-- Khung Chat ở giữa -->
+        <div class="muse-center-pane">
+          <!-- Nút nổi Góc Trái: ☰ Đoạn chat -->
+          <div class="floating-top-left">
+            <button type="button" class="floating-pill-btn" id="btnToggleThreadsDrawer">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <line x1="4" y1="7" x2="20" y2="7"/>
+                <line x1="4" y1="12" x2="16" y2="12"/>
+                <line x1="4" y1="17" x2="12" y2="17"/>
+              </svg>
+              <span>Đoạn chat</span>
+            </button>
+
+            <!-- Menu danh sách đoạn chat khi bấm ☰ Đoạn chat -->
+            <div class="threads-popover hidden-el" id="threadsPopover">
+              <div class="popover-header">
+                <span>Đoạn chat</span>
+                <button
+                  type="button"
+                  class="muse-outline-btn hidden-el"
+                  id="btnSyncAccountsPool"
+                  style="min-height:28px;padding:0 10px;font-size:12px;"
+                >
+                  🔄 Đồng bộ
+                </button>
+              </div>
+              <div class="popover-threads-list" id="popoverThreadsList"></div>
+            </div>
+          </div>
+
+          <!-- Nút nổi Góc Phải: 📝 Mới (Kèm chấm xanh nhỏ ở góc trên phải giống ảnh gốc) -->
+          <div class="floating-top-right">
+            <button type="button" class="floating-pill-btn" id="btnNewThread" title="Mới">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+              </svg>
+              <span>Mới</span>
+              <span class="new-pill-blue-dot" aria-hidden="true"></span>
+            </button>
+          </div>
+
+          <!-- Vùng trống chính giữa giống hệt https://muse.ai gốc khi chưa mở đoạn chat -->
+          <div id="chatWelcomeScreen" style="display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;padding:40px 24px;"></div>
+
+          <!-- Luồng tin nhắn ở giữa -->
+          <div class="muse-chat-scroll hidden-el" id="chatMessagesViewport" aria-live="polite"></div>
+
+          <!-- Thanh nhập tin nhắn nổi ở đáy: + Nhắn tin 🎤 -->
+          <div class="muse-bottom-composer-area">
+            <div class="attachment-preview-strip hidden-el" id="attachmentPreviewBar"></div>
+
+            <form class="muse-composer-bar" id="chatComposerForm">
+              <input
+                type="file"
+                id="chatFileInput"
+                multiple
+                accept="image/*,.xml,.txt,.csv,.json,.pdf,.md"
+                class="sr-only"
+              >
+              <button
+                type="button"
+                class="composer-icon-left"
+                id="btnAttachFile"
+                title="Đính kèm ảnh hoặc tệp (Hoặc nhấn Ctrl+V để dán ảnh chụp màn hình)"
+                aria-label="Đính kèm ảnh hoặc tệp"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                  <line x1="12" y1="5" x2="12" y2="19"/>
+                  <line x1="5" y1="12" x2="19" y2="12"/>
+                </svg>
+              </button>
+
+              <label for="chatPromptInput" class="sr-only">Nhắn tin</label>
+              <textarea
+                id="chatPromptInput"
+                class="composer-text-input"
+                placeholder="Nhắn tin"
+                rows="1"
+              ></textarea>
+
+              <button type="submit" class="composer-icon-right" id="btnSendPrompt" title="Gửi tin nhắn (hoặc giữ để nói)">
+                <!-- Icon Micro — hiện khi ô nhập trống -->
+                <svg id="iconMicDefault" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                  <line x1="12" y1="19" x2="12" y2="22"/>
+                </svg>
+                <!-- Icon Send Arrow — hiện khi ô nhập có nội dung -->
+                <svg id="iconSendArrow" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none;">
+                  <line x1="12" y1="19" x2="12" y2="5"/>
+                  <polyline points="5 12 12 5 19 12"/>
+                </svg>
+                <!-- Chấm đỏ nhỏ khi đang ghi âm -->
+                <span id="micRecordingDot" style="display:none;position:absolute;top:6px;right:6px;width:7px;height:7px;background:#ef4444;border-radius:50%;"></span>
+              </button>
+
+              <!-- Nút tròn đen có hình vuông trắng ■ khi Muse đang phản hồi (giống 100% ảnh gốc https://muse.ai) -->
+              <button type="button" class="composer-stop-btn hidden-el" id="btnStopGenerating" title="Dừng phản hồi" aria-label="Dừng phản hồi">
+                <span class="stop-square-icon"></span>
+              </button>
+            </form>
+          </div>
+        </div>
+
+        <!-- Cột Phải: Hồ sơ Mart AI & Hôm nay -->
+        <aside class="muse-right-panel" id="museRightSidebar" aria-label="Thông tin Mart AI">
+          <button type="button" class="right-panel-close" id="btnCloseRightSidebar" title="Đóng bảng bên" aria-label="Đóng">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+
+          <!-- Logo Xe Hàng Mart AI (Idle) & Con Mèo Đẩy Xe Hàng Đầy Dần Theo Tiến Độ (Active) -->
+          <div class="muse-character-header">
+            <div class="muse-avatar-wrap">
+              <div class="muse-avatar-circle-bg" id="museAvatarCircle" style="overflow:hidden;position:relative;">
+                <img id="museLiveAvatarImg" class="hidden-el" style="width:100%;height:100%;object-fit:cover;border-radius:50%;display:block;" alt="Mart AI">
+
+                <!-- TRẠNG THÁI 1 (IDLE): LOGO HÌNH XE HÀNG MART AI -->
+                <svg id="museSvgIdle" width="96" height="96" viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                  <defs>
+                    <linearGradient id="martIdleBg" x1="0%" y1="0%" x2="100%" y2="100%">
+                      <stop offset="0%" stop-color="#FFFBEB"/>
+                      <stop offset="100%" stop-color="#FEF3C7"/>
+                    </linearGradient>
+                    <linearGradient id="martBasketGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                      <stop offset="0%" stop-color="#3B82F6"/>
+                      <stop offset="100%" stop-color="#1D4ED8"/>
+                    </linearGradient>
+                  </defs>
+                  <circle cx="60" cy="60" r="58" fill="url(#martIdleBg)"/>
+                  <!-- Bóng đổ dưới bánh xe -->
+                  <ellipse cx="63" cy="94" rx="28" ry="4.5" fill="#E2E8F0"/>
+                  <!-- Tay đẩy xe màu cam nổi bật -->
+                  <path d="M22 34H33L42 72H84L92 43H36" stroke="#EA580C" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+                  <!-- Thân giỏ xe hàng có lưới kim loại -->
+                  <path d="M36 43H92L84 72H42L36 43Z" fill="#EFF6FF" fill-opacity="0.7" stroke="url(#martBasketGrad)" stroke-width="3.6" stroke-linejoin="round"/>
+                  <line x1="49" y1="43" x2="52" y2="72" stroke="#60A5FA" stroke-width="2.2" stroke-linecap="round"/>
+                  <line x1="63" y1="43" x2="63" y2="72" stroke="#60A5FA" stroke-width="2.2" stroke-linecap="round"/>
+                  <line x1="77" y1="43" x2="74" y2="72" stroke="#60A5FA" stroke-width="2.2" stroke-linecap="round"/>
+                  <line x1="39" y1="57" x2="88" y2="57" stroke="#60A5FA" stroke-width="2.2" stroke-linecap="round"/>
+                  <!-- Thanh gầm nối bánh xe -->
+                  <path d="M42 72L39 81H85" stroke="#475569" stroke-width="3.8" stroke-linecap="round" stroke-linejoin="round"/>
+                  <!-- 2 Bánh xe siêu thị -->
+                  <circle cx="46" cy="88" r="6.5" fill="#1E293B"/>
+                  <circle cx="46" cy="88" r="2.6" fill="#F8FAFC"/>
+                  <circle cx="78" cy="88" r="6.5" fill="#1E293B"/>
+                  <circle cx="78" cy="88" r="2.6" fill="#F8FAFC"/>
+                  <!-- Ngôi sao AI lấp lánh phía trên xe hàng -->
+                  <path d="M65 20L67.4 26.2L73.6 28.6L67.4 31L65 37.2L62.6 31L56.4 28.6L62.6 26.2L65 20Z" fill="#F59E0B"/>
+                  <circle cx="82" cy="26" r="2.2" fill="#FB923C"/>
+                </svg>
+
+                <!-- TRẠNG THÁI 2 (ACTIVE): CHÚ MÈO CHIBI MOCHI ĐẨY XE HÀNG — LÀM ĐƯỢC ĐẾN ĐÂU XE ĐẦY ĐỒ ĐẾN ĐẤY -->
+                <svg id="museSvgActive" class="hidden-el" width="96" height="96" viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                  <defs>
+                    <linearGradient id="martActiveBg" x1="0%" y1="0%" x2="100%" y2="100%">
+                      <stop offset="0%" stop-color="#FFFBEB"/>
+                      <stop offset="100%" stop-color="#FFEDD5"/>
+                    </linearGradient>
+                    <linearGradient id="cartFrameGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                      <stop offset="0%" stop-color="#3B82F6"/>
+                      <stop offset="100%" stop-color="#1D4ED8"/>
+                    </linearGradient>
+                  </defs>
+                  <circle cx="60" cy="60" r="58" fill="url(#martActiveBg)"/>
+
+                  <!-- Bóng đổ mềm dưới đất & Mặt đường chuyển động -->
+                  <ellipse cx="60" cy="94.5" rx="41" ry="4" fill="#FED7AA" opacity="0.65"/>
+                  <line x1="15" y1="94.5" x2="105" y2="94.5" stroke="#CBD5E1" stroke-width="2.2" stroke-linecap="round"/>
+                  <g class="mart-road-lines">
+                    <line x1="22" y1="98.5" x2="34" y2="98.5" stroke="#94A3B8" stroke-width="1.8" stroke-linecap="round"/>
+                    <line x1="54" y1="98.5" x2="68" y2="98.5" stroke="#94A3B8" stroke-width="1.8" stroke-linecap="round"/>
+                    <line x1="86" y1="98.5" x2="98" y2="98.5" stroke="#94A3B8" stroke-width="1.8" stroke-linecap="round"/>
+                  </g>
+
+                  <!-- NHÓM ĐỒ VẬT TRONG GIỎ XE HÀNG (6 TẦNG ĐẦY DẦN THEO TIẾN ĐỘ 0% -> 100%) -->
+                  <g id="martCartItemsGroup">
+                    <!-- Tầng 1 (>= 12%): Hộp sữa tươi xanh & bánh mì baguette ở đáy giỏ -->
+                    <g id="martItem1" class="mart-cart-item" style="opacity:0">
+                      <rect x="61" y="61" width="11.5" height="14.5" rx="2.5" fill="#38BDF8" stroke="#0284C7" stroke-width="1.2"/>
+                      <path d="M61 65H72.5" stroke="#FFFFFF" stroke-width="2.2"/>
+                      <ellipse cx="80" cy="68.5" rx="7.2" ry="4.5" transform="rotate(-14 80 68.5)" fill="#FBBF24" stroke="#D97706" stroke-width="1.2"/>
+                      <line x1="77" y1="67" x2="79" y2="69" stroke="#B45309" stroke-width="1.1" stroke-linecap="round"/>
+                      <line x1="80.5" y1="66" x2="82.5" y2="68" stroke="#B45309" stroke-width="1.1" stroke-linecap="round"/>
+                    </g>
+                    <!-- Tầng 2 (>= 28%): Hộp bánh cam & lon nước dâu đỏ -->
+                    <g id="martItem2" class="mart-cart-item" style="opacity:0">
+                      <rect x="83" y="57.5" width="11.5" height="16.5" rx="2.5" fill="#FB923C" stroke="#EA580C" stroke-width="1.2"/>
+                      <circle cx="88.7" cy="65" r="3" fill="#FEF08A"/>
+                      <rect x="72" y="59" width="8.5" height="12.5" rx="2.2" fill="#F87171" stroke="#DC2626" stroke-width="1.2"/>
+                      <line x1="74" y1="63" x2="78.5" y2="63" stroke="#FEE2E2" stroke-width="1.5" stroke-linecap="round"/>
+                    </g>
+                    <!-- Tầng 3 (>= 45%): Quả táo đỏ mọng & bó rau xanh tươi -->
+                    <g id="martItem3" class="mart-cart-item" style="opacity:0">
+                      <circle cx="65.5" cy="55" r="5.6" fill="#EF4444" stroke="#B91C1C" stroke-width="1.1"/>
+                      <circle cx="63.8" cy="53.3" r="1.3" fill="#FCA5A5"/>
+                      <path d="M65.5 49.2Q67.5 46.8 69.5 48.5" stroke="#15803D" stroke-width="1.6" stroke-linecap="round"/>
+                      <path d="M74.5 56C72.5 50 77.5 46 80.5 51C83.5 46 88.5 50 85.5 56Z" fill="#22C55E" stroke="#15803D" stroke-width="1.1"/>
+                    </g>
+                    <!-- Tầng 4 (>= 62%): Hộp quà tím thắt nơ vàng & túi hàng hồng -->
+                    <g id="martItem4" class="mart-cart-item" style="opacity:0">
+                      <rect x="68" y="44" width="13" height="12" rx="2.5" fill="#A855F7" stroke="#7E22CE" stroke-width="1.2"/>
+                      <line x1="74.5" y1="44" x2="74.5" y2="56" stroke="#FDE047" stroke-width="2.2"/>
+                      <line x1="68" y1="50" x2="81" y2="50" stroke="#FDE047" stroke-width="2.2"/>
+                      <rect x="82" y="45" width="12" height="13" rx="2.5" fill="#F43F5E" stroke="#BE123C" stroke-width="1.2"/>
+                      <path d="M85 45V43C85 41.5 91 41.5 91 43V45" stroke="#BE123C" stroke-width="1.2" fill="none"/>
+                    </g>
+                    <!-- Tầng 5 (>= 78%): Hộp quà xanh ngọc & bóng tròn tím nhô trên miệng giỏ -->
+                    <g id="martItem5" class="mart-cart-item" style="opacity:0">
+                      <rect x="59.5" y="38.5" width="11" height="11" rx="2.8" fill="#10B981" stroke="#047857" stroke-width="1.2"/>
+                      <circle cx="78" cy="39.5" r="5.8" fill="#6366F1" stroke="#4338CA" stroke-width="1.2"/>
+                      <circle cx="76.3" cy="37.8" r="1.8" fill="#E0E7FF"/>
+                    </g>
+                    <!-- Tầng 6 (>= 92%): Đầy ắp giỏ hàng + Ngôi sao vàng lấp lánh ✨ -->
+                    <g id="martItem6" class="mart-cart-item" style="opacity:0">
+                      <polygon points="89,33.5 94.5,43.5 83.5,43.5" fill="#FBBF24" stroke="#D97706" stroke-width="1.1" stroke-linejoin="round"/>
+                      <path d="M68 22L69.8 26.5L74.3 28.3L69.8 30.1L68 34.6L66.2 30.1L61.7 28.3L66.2 26.5L68 22Z" fill="#F59E0B"/>
+                      <path d="M89 20.5L90.2 23.6L93.3 24.8L90.2 26L89 29.1L87.8 26L84.7 24.8L87.8 23.6L89 20.5Z" fill="#EC4899"/>
+                    </g>
+                  </g>
+
+                  <!-- KHUNG XE HÀNG SIÊU THỊ (BÊN PHẢI) -->
+                  <g class="mart-active-cart">
+                    <!-- Thanh đẩy nối từ tay mèo sang giỏ xe -->
+                    <path d="M48 56H55.5L60.5 76H95L101.5 50H56.5" stroke="#EA580C" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <!-- Giỏ lưới trong suốt viền xanh dương sáng -->
+                    <path d="M56.5 50H101.5L95 76H60.5L56.5 50Z" fill="#FFFFFF" fill-opacity="0.22" stroke="url(#cartFrameGrad)" stroke-width="2.6" stroke-linejoin="round"/>
+                    <line x1="68.5" y1="50" x2="70" y2="76" stroke="#3B82F6" stroke-width="1.5" stroke-opacity="0.7"/>
+                    <line x1="80" y1="50" x2="80" y2="76" stroke="#3B82F6" stroke-width="1.5" stroke-opacity="0.7"/>
+                    <line x1="91" y1="50" x2="89" y2="76" stroke="#3B82F6" stroke-width="1.5" stroke-opacity="0.7"/>
+                    <line x1="58.5" y1="63" x2="98" y2="63" stroke="#3B82F6" stroke-width="1.5" stroke-opacity="0.7"/>
+                    <!-- Gầm xe -->
+                    <path d="M60.5 76L58.5 83H96" stroke="#475569" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+                    <!-- Bánh xe trái quay tròn -->
+                    <g class="mart-wheel-l">
+                      <circle cx="64" cy="89" r="5.3" fill="#1E293B"/>
+                      <circle cx="64" cy="89" r="2" fill="#F8FAFC"/>
+                      <line x1="64" y1="84.2" x2="64" y2="93.8" stroke="#94A3B8" stroke-width="1.2"/>
+                      <line x1="59.2" y1="89" x2="68.8" y2="89" stroke="#94A3B8" stroke-width="1.2"/>
+                    </g>
+                    <!-- Bánh xe phải quay tròn -->
+                    <g class="mart-wheel-r">
+                      <circle cx="90" cy="89" r="5.3" fill="#1E293B"/>
+                      <circle cx="90" cy="89" r="2" fill="#F8FAFC"/>
+                      <line x1="90" y1="84.2" x2="90" y2="93.8" stroke="#94A3B8" stroke-width="1.2"/>
+                      <line x1="85.2" y1="89" x2="94.8" y2="89" stroke="#94A3B8" stroke-width="1.2"/>
+                    </g>
+                  </g>
+
+                  <!-- MEO THAT (anh chup, da tach nen) DANG DAY XE HANG - tay bam vao can day xe -->
+                  <g class="mart-cat-character">
+                    <image class="mart-cat-photo" href="/avatars/mart_cat.png" x="4" y="35" width="54" height="60" preserveAspectRatio="xMidYMax meet"/>
+                  </g>
+
+                  <!-- Thanh tiến độ nhỏ dưới đáy vòng tròn hiển thị % đầy xe hàng -->
+                  <rect x="28" y="105" width="64" height="5" rx="2.5" fill="#E2E8F0"/>
+                  <rect id="martCartProgressFill" x="28" y="105" width="8" height="5" rx="2.5" fill="#EA580C"/>
+                </svg>
+              </div>
+              <button type="button" class="muse-avatar-edit-btn" id="btnAvatarManageAccounts" title="Chỉnh sửa">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>
+                </svg>
+              </button>
+            </div>
+
+            <h2 class="muse-character-title">Mart AI</h2>
+
+            <button type="button" class="muse-connection-line" id="museConnStatusBadge" title="Trạng thái kết nối">
+              <span class="muse-status-badge-icon connected" id="museConnDot">
+                <svg width="8" height="8" viewBox="0 0 24 24" fill="currentColor">
+                  <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+                </svg>
+              </span>
+              <span id="museActionIcon" class="hidden-el" style="font-size:13px;line-height:1;">🛒</span>
+              <span id="museConnText">Đã kết nối</span>
+            </button>
+          </div>
+
+          <!-- Thanh 4 Tab hình viên thuốc giống hệt 100% ảnh gốc https://muse.ai -->
+          <div class="muse-four-tabs" role="tablist">
+            <!-- Tab 1: Hôm nay -->
+            <button type="button" class="four-tab-btn active" data-side-tab="history" title="Hôm nay">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <line x1="8" y1="6" x2="21" y2="6"/>
+                <line x1="8" y1="12" x2="21" y2="12"/>
+                <line x1="8" y1="18" x2="21" y2="18"/>
+                <line x1="3" y1="6" x2="3.01" y2="6"/>
+                <line x1="3" y1="12" x2="3.01" y2="12"/>
+                <line x1="3" y1="18" x2="3.01" y2="18"/>
+              </svg>
+            </button>
+
+            <!-- Tab 2: Phê duyệt (Icon Khiên tích) -->
+            <button type="button" class="four-tab-btn" data-side-tab="nodes" title="Phê duyệt">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                <polyline points="9 12 11 14 15 10"/>
+              </svg>
+            </button>
+
+            <!-- Tab 3: Hàng ngày (Icon Đồng hồ) -->
+            <button type="button" class="four-tab-btn" data-side-tab="clock" title="Hàng ngày">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="9"/>
+                <polyline points="12 7 12 12 15 15"/>
+              </svg>
+            </button>
+
+            <!-- Tab 4: Hồ sơ & Tâm hồn / Bộ nhớ (Icon Vân tay giống 100% ảnh gốc) -->
+            <button type="button" class="four-tab-btn" data-side-tab="plug" title="Tâm hồn &amp; Bộ nhớ">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M2 12C2 6.5 6.5 2 12 2a10 10 0 0 1 8 4"/>
+                <path d="M5 19.5C5.5 18 6 15 6 12c0-.7.12-1.37.34-2"/>
+                <path d="M17.29 21.02c.12-.6.43-2.3.5-3.02"/>
+                <path d="M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4"/>
+                <path d="M8.65 22c.21-.66.45-1.32.57-2"/>
+                <path d="M14 13.12c0 2.38 0 6.38-1 8.88"/>
+                <path d="M2 16h.01"/>
+                <path d="M21.8 16c.2-2 .131-5.354 0-6"/>
+                <path d="M9 6.8a6 6 0 0 1 9 5.2c0 .47 0 1.17-.02 2"/>
+              </svg>
+            </button>
+          </div>
+
+          <!-- Nội dung Tab 1: Hôm nay (Giống 100% ảnh gốc) -->
+          <div class="right-tab-content" id="sidePaneHistory">
+            <div class="today-heading">Hôm nay</div>
+            <div class="today-items-list" id="threadsList" role="list"></div>
+          </div>
+
+          <!-- Nội dung Tab 2: Phê duyệt (Giống hệt 100% ảnh chụp https://muse.ai: căn giữa icon khiên + Phê duyệt + Chưa có lượt phê duyệt nào) -->
+          <div class="right-tab-content hidden-el" id="sidePaneNodes">
+            <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:42px 12px 24px 12px;text-align:center;">
+              <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#404040" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom:8px;">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                <polyline points="9 12 11 14 15 10"/>
+              </svg>
+              <div style="font-size:13px;font-weight:600;color:#171717;line-height:1.3;">Phê duyệt</div>
+              <div style="font-size:12px;color:#737373;margin-top:3px;">Chưa có lượt phê duyệt nào</div>
+            </div>
+            <!-- Giữ phần tử DOM ẩn để tương thích ngầm -->
+            <div class="hidden-el">
+              <span id="sideNodeCount">0</span>
+              <button type="button" id="btnSideWakeAll"></button>
+              <div id="sideNodesList"></div>
+            </div>
+          </div>
+
+          <!-- Nội dung Tab 3: Hàng ngày (Giống 100% ảnh chụp https://muse.ai: Agentic feature tour & Heartbeat) -->
+          <div class="right-tab-content hidden-el" id="sidePaneClock">
+            <div class="today-heading" style="font-size:14px;font-weight:600;color:#171717;margin-bottom:8px;">Hàng ngày</div>
+            <div style="display:flex;flex-direction:column;gap:14px;padding-top:2px;">
+              <!-- Mục 1: Agentic feature tour -->
+              <div style="display:flex;align-items:center;gap:12px;cursor:pointer;" onclick="switchMainView('tasks')">
+                <div style="position:relative;width:36px;height:36px;border-radius:10px;background:#f3f4f6;border:1px solid #e5e7eb;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="3" y="4" width="18" height="18" rx="3"/>
+                    <line x1="3" y1="9" x2="21" y2="9"/>
+                    <circle cx="8" cy="14" r="1" fill="#9ca3af"/>
+                    <circle cx="12" cy="14" r="1" fill="#9ca3af"/>
+                    <circle cx="16" cy="14" r="1" fill="#9ca3af"/>
+                    <circle cx="8" cy="18" r="1" fill="#9ca3af"/>
+                    <circle cx="12" cy="18" r="1" fill="#9ca3af"/>
+                  </svg>
+                  <!-- Huy hiệu đồng hồ cam góc dưới phải giống hệt ảnh gốc -->
+                  <span style="position:absolute;bottom:-3px;right:-3px;width:16px;height:16px;border-radius:50%;background:#f59e0b;color:#171717;display:flex;align-items:center;justify-content:center;border:1.5px solid #ffffff;">
+                    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                      <polyline points="12 6 12 12 16 12"/>
+                    </svg>
+                  </span>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:1px;">
+                  <div style="font-size:13.5px;font-weight:500;color:#171717;">Agentic feature tour</div>
+                  <div style="font-size:12px;color:#737373;">4 thg 11, 15:29</div>
+                </div>
+              </div>
+
+              <!-- Mục 2: Heartbeat -->
+              <div style="display:flex;align-items:center;gap:12px;cursor:pointer;" onclick="switchMainView('tasks')">
+                <div style="width:36px;height:36px;border-radius:50%;background:#fafafa;border:1px solid #efefef;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#e11d48" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+                  </svg>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:1px;">
+                  <div style="font-size:13.5px;font-weight:500;color:#171717;">Heartbeat</div>
+                  <div style="font-size:12px;color:#737373;">30 phút một lần</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Giữ phần tử DOM ẩn để tương thích ngầm -->
+            <div class="hidden-el">
+              <button type="button" id="btnOpenPinnedNative"></button>
+              <button type="button" id="btnGoFullAccounts"></button>
+              <div id="sideLibsqlBadge"></div>
+            </div>
+          </div>
+
+          <!-- Nội dung Tab 4: Vân tay — Khung Mart AI Chỉnh sửa + 2 thẻ TÂM HỒN & BỘ NHỚ -->
+          <div class="right-tab-content hidden-el" id="sidePanePlug">
+            <!-- Hộp xám Mart AI + nút ✎ Chỉnh sửa -->
+            <div style="background:#f5f5f5;border-radius:16px;padding:14px;margin-bottom:6px;">
+              <div style="font-size:13.5px;font-weight:500;color:#171717;margin-bottom:10px;">Mart AI</div>
+              <button
+                type="button"
+                onclick="switchMainView('ideas')"
+                style="width:100%;height:34px;border-radius:999px;background:#eaeaea;border:none;color:#171717;font-family:var(--font-sans);font-size:12.5px;font-weight:500;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>
+                </svg>
+                <span>Chỉnh sửa</span>
+              </button>
+            </div>
+
+            <!-- Hai thẻ TÂM HỒN (Đỏ) & BỘ NHỚ (Xanh tím đậm) giống 100% ảnh gốc -->
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+              <!-- Thẻ TÂM HỒN -->
+              <div
+                onclick="switchMainView('ideas')"
+                style="background:#d91b38;color:#ffffff;border-radius:18px;padding:16px 14px;min-height:132px;display:flex;flex-direction:column;justify-content:space-between;cursor:pointer;user-select:none;"
+              >
+                <div>
+                  <div style="font-size:13.5px;font-weight:700;letter-spacing:0.01em;text-transform:uppercase;">TÂM HỒN</div>
+                  <div style="font-size:9.5px;font-weight:500;opacity:0.9;margin-top:3px;line-height:1.35;text-transform:uppercase;">CẨN TRỌNG KHI TRUY CẬP</div>
+                </div>
+                <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;opacity:0.92;">
+                  <span>11.01.26</span>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="#fda4af" stroke="none">
+                    <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+                  </svg>
+                </div>
+              </div>
+
+              <!-- Thẻ BỘ NHỚ -->
+              <div
+                onclick="switchMainView('ideas')"
+                style="background:#191094;color:#ffffff;border-radius:18px;padding:16px 14px;min-height:132px;display:flex;flex-direction:column;justify-content:space-between;cursor:pointer;user-select:none;"
+              >
+                <div>
+                  <div style="font-size:13.5px;font-weight:700;letter-spacing:0.01em;text-transform:uppercase;">BỘ NHỚ</div>
+                  <div style="font-size:9.5px;font-weight:500;opacity:0.9;margin-top:3px;line-height:1.35;text-transform:uppercase;">CẨN TRỌNG KHI TRUY CẬP</div>
+                </div>
+                <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;opacity:0.92;">
+                  <span>11.01.26</span>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="#a5b4fc" stroke="none">
+                    <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+                  </svg>
+                </div>
+              </div>
+            </div>
+
+            <!-- Giữ form cắm nhanh ở trạng thái ẩn để tương thích ngầm -->
+            <div class="hidden-el">
+              <button type="button" id="btnSideBrowserLogin"></button>
+              <button type="button" id="btnSideGetOAuthLink"></button>
+              <div id="sideOauthLinkBox">
+                <input type="text" id="sideOauthLinkInput">
+                <button type="button" id="btnSideCopyOAuthLink"></button>
+                <button type="button" id="btnSideOpenOAuthWindow"></button>
+              </div>
+              <form id="quickPlugForm">
+                <input type="text" id="quickLabelInput">
+                <input type="text" id="quickProxyInput">
+                <textarea id="quickCookieInput"></textarea>
+                <button type="submit" id="btnQuickPlugSubmit"></button>
+              </form>
+            </div>
+          </div>
+        </aside>
+      </section>
+
+      <!-- MÀN HÌNH 2: CÀI ĐẶT & MỨC SỬ DỤNG TOKEN (CHUẨN GIAO DIỆN GỐC TRANG CHỦ) -->
+      <section class="accounts-modal-view hidden-el" id="panelAccounts" aria-label="Cài đặt và Mức sử dụng Mart AI">
+        <div class="admin-settings-layout">
+          <!-- Cột Menu Trái giống hệt hộp thoại Cài đặt trang chủ -->
+          <aside class="admin-settings-sidebar">
+            <div class="admin-sidebar-top">
+              <h1 class="admin-sidebar-heading">Cài đặt</h1>
+
+              <button type="button" class="admin-nav-pill active" onclick="document.getElementById('adminUsageSection').scrollIntoView({behavior:'smooth'})">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="3"/>
+                  <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                </svg>
+                <span>Chung</span>
+              </button>
+
+              <button type="button" class="admin-nav-pill" id="btnWakeAllNodes">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="23 4 23 10 17 10"/>
+                  <polyline points="1 20 1 14 7 14"/>
+                  <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                </svg>
+                <span>Đồng bộ mức sử dụng</span>
+              </button>
+
+              <button type="button" class="admin-nav-pill" id="btnBrowserInteractiveLogin">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="3" y="3" width="7" height="7" rx="1.5"/>
+                  <rect x="14" y="3" width="7" height="7" rx="1.5"/>
+                  <rect x="14" y="14" width="7" height="7" rx="1.5"/>
+                  <rect x="3" y="14" width="7" height="7" rx="1.5"/>
+                </svg>
+                <span>Công cụ kết nối (Tự bắt)</span>
+              </button>
+
+              <button type="button" class="admin-nav-pill" id="btnGetOAuthLink">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+                  <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+                </svg>
+                <span>Lấy Link Đăng Nhập</span>
+              </button>
+
+              <button type="button" class="admin-nav-pill" onclick="document.getElementById('addAccountForm').scrollIntoView({behavior:'smooth'})">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="2" y="5" width="20" height="14" rx="2"/>
+                  <line x1="2" y1="10" x2="22" y2="10"/>
+                </svg>
+                <span>Thêm tài khoản vào Ví</span>
+              </button>
+
+              <div class="admin-nav-pill" style="cursor:default;color:#15803d;">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                </svg>
+                <span>Kho lưu trữ an toàn (Bật)</span>
+              </div>
+            </div>
+
+            <div class="admin-sidebar-bottom">
+              <button type="button" class="admin-nav-pill" id="btnBackToChatView" style="color:#171717;font-weight:500;">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                  <polyline points="16 17 21 12 16 7"/>
+                  <line x1="21" y1="12" x2="9" y2="12"/>
+                </svg>
+                <span>Quay lại Chat — Mart AI</span>
+              </button>
+            </div>
+          </aside>
+
+          <!-- Vùng Nội Dung Chính Bên Phải: CHUNG & MỨC SỬ DỤNG -->
+          <div class="admin-settings-content">
+            <div class="admin-content-header" id="adminUsageSection">
+              <h2 class="admin-content-title">Chung</h2>
+              <button type="button" class="admin-close-circle-btn" onclick="document.getElementById('btnBackToChatView').click()" title="Đóng cài đặt">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                  <line x1="18" y1="6" x2="6" y2="18"/>
+                  <line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+              </button>
+            </div>
+
+            <!-- Khung hiển thị Link Đăng Nhập OAuth khi bấm Tự động lấy Link -->
+            <div class="admin-gray-block hidden-el" id="oauthLinkBox" style="border:1px solid #bfdbfe;background:#f0f7ff;margin-bottom:18px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
+                <div>
+                  <strong style="font-size:14px;color:#1e3a8a;">🔗 Link Đăng Nhập OAuth Chính Thức (Meta / Muse.ai)</strong>
+                  <p style="font-size:12.5px;color:#475569;margin-top:2px;">
+                    Bấm <strong>"🚀 Mở Link &amp; Tự Động Bắt Tài Khoản"</strong> hoặc sao chép link dán vào trình duyệt bất kỳ.
+                  </p>
+                </div>
+                <div style="display:flex;gap:8px;">
+                  <button type="button" class="muse-outline-btn" id="btnCopyOAuthLink" style="min-height:34px;font-size:12.5px;background:#fff;">
+                    📋 Copy Link
+                  </button>
+                  <button type="button" class="muse-solid-btn" id="btnOpenOAuthLinkWindow" style="min-height:34px;font-size:12.5px;">
+                    🚀 Mở Link &amp; Tự Động Bắt
+                  </button>
+                </div>
+              </div>
+              <input type="text" id="oauthLinkInput" class="clean-input" readonly style="font-family:var(--font-mono);font-size:12px;background:#ffffff;">
+            </div>
+
+            <!-- 4 chỉ số Pool Token tổng hợp gọn gàng -->
+            <div class="admin-stats-strip" id="adminTokenStatsGrid">
+              <div class="admin-stat-pill">
+                <div class="admin-stat-label">Trạng thái Tài khoản</div>
+                <div class="admin-stat-value" id="adminStatAccounts">0 / 0 sẵn sàng</div>
+                <div class="admin-stat-sub" id="adminStatAccountsSub">Chưa có tài khoản</div>
+              </div>
+              <div class="admin-stat-pill">
+                <div class="admin-stat-label">Token bổ sung (Pool)</div>
+                <div class="admin-stat-value" style="color:#0066ff;" id="adminStatTokensRemain">0</div>
+                <div class="admin-stat-sub" id="adminStatTokensQuotaSub">Không bao giờ hết hạn</div>
+              </div>
+              <div class="admin-stat-pill">
+                <div class="admin-stat-label">Đã tiêu thụ qua Router</div>
+                <div class="admin-stat-value" id="adminStatTokensUsed">0 tokens</div>
+                <div class="admin-stat-sub" id="adminStatRequestsSub">Tổng lượt gọi: 0</div>
+              </div>
+              <div class="admin-stat-pill">
+                <div class="admin-stat-label">Sức khỏe Phiên &amp; IP</div>
+                <div class="admin-stat-value" style="color:#16a34a;" id="adminStatTokenHealth">100% Hợp lệ</div>
+                <div class="admin-stat-sub" id="adminStatTokenHealthSub">Chống trùng IP đang bật</div>
+              </div>
+            </div>
+
+            <!-- DANH SÁCH TÀI KHOẢN & KHỐI "MỨC SỬ DỤNG" (2 THANH TOKEN GIỐNG HỆT 100% TRANG GỐC) -->
+            <div style="display:flex;justify-content:space-between;align-items:center;margin:8px 2px 10px;">
+              <span class="admin-section-label">Tài khoản &amp; Mức sử dụng (<span id="tableSummaryLabel">0 tài khoản</span>)</span>
+            </div>
+
+            <div id="accountsTableBody" class="admin-accounts-stack"></div>
+
+            <!-- KHỐI THÊM TÀI KHOẢN MỚI (ĐẶT GỌN GÀNG BÊN DƯỚI THEO PHONG CÁCH CÀI ĐẶT) -->
+            <div style="margin-top:26px;">
+              <div class="admin-section-label" style="margin-bottom:10px;">Thêm tài khoản mới vào Pool Token</div>
+              <form id="addAccountForm" class="admin-gray-block">
+                <div class="grid-2-cols" style="margin-bottom:12px;">
+                  <div class="input-block">
+                    <label for="accLabelInput">Tên hiển thị (tùy chọn)</label>
+                    <input type="text" id="accLabelInput" class="clean-input" style="background:#ffffff;" placeholder="Để trống sẽ tự đánh số Muse #1, Muse #2...">
+                  </div>
+                  <div class="input-block">
+                    <label for="accAuthTypeSelect">Phương thức kết nối</label>
+                    <select id="accAuthTypeSelect" class="clean-input" style="background:#ffffff;">
+                      <option value="cookie">OAuth Link / Cookie phiên (hatch_sess)</option>
+                      <option value="api_key">Bearer API Key / Proxy Endpoint</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div class="grid-2-cols" style="margin-bottom:12px;">
+                  <div class="input-block">
+                    <label for="accUpstreamInput">Địa chỉ máy chủ</label>
+                    <input type="url" id="accUpstreamInput" class="clean-input" style="background:#ffffff;" value="https://muse.ai" required>
+                  </div>
+                  <div class="input-block">
+                    <label for="accProxyInput">Proxy riêng (tùy chọn — để trống tự bật Chống Trùng IP)</label>
+                    <input type="text" id="accProxyInput" class="clean-input" style="background:#ffffff;" placeholder="Để trống hoặc http://user:pass@ip:port">
+                  </div>
+                </div>
+
+                <div class="input-block" style="margin-bottom:14px;">
+                  <label for="accCredentialInput">Dán Link Callback (<code>https://muse.ai/oidc/callback?code=...</code>) hoặc Cookie (<code>hatch_sess=...</code>)</label>
+                  <textarea
+                    id="accCredentialInput"
+                    class="clean-textarea"
+                    rows="3"
+                    style="background:#ffffff;"
+                    placeholder="Dán Link Callback / Cookie hatch_sess=... hoặc để trống rồi bấm nút bên dưới để mở trình duyệt đăng nhập"
+                  ></textarea>
+                </div>
+
+                <div style="display:flex;gap:10px;flex-wrap:wrap;">
+                  <button type="submit" class="muse-solid-btn" id="btnSubmitAddAccount">
+                    🔌 Xác thực &amp; Thêm tài khoản
+                  </button>
+                  <button type="button" class="muse-outline-btn" id="btnFormGetOAuthLink" style="background:#ffffff;">
+                    🔗 Tự lấy Link Đăng Nhập
+                  </button>
+                </div>
+              </form>
+            </div>
+
+          <!-- BẢNG ĐIỀU KHIỂN & TRUY VẤN TRỰC TIẾP CƠ SỞ DỮ LIỆU CHUẨN LIBSQL (ĐÃ ẨN TRÊN UI, CHẠY NGẦM) -->
+          <div class="clean-card hidden-el" id="libsqlStudioCard">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+              <div>
+                <h2 style="font-size:0.98rem;font-weight:700;color:#171717;">
+                  🗄️ Cơ Sở Dữ Liệu Chuẩn LibSQL Trực Tiếp (Embedded WAL &amp; Giao Thức Hrana v2 Pipeline)
+                </h2>
+                <p style="font-size:0.82rem;color:#737373;margin-top:2px;" id="libsqlStatusSubtext">
+                  Toàn bộ tài khoản, đoạn chat, tin nhắn, phiên OAuth và nhật ký điều phối của hệ thống Web được lưu &amp; truy vấn trực tiếp qua chuẩn <code>libsql</code>.
+                </p>
+              </div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;" id="libsqlTablePills">
+                <button type="button" class="muse-outline-btn btn-libsql-preset" style="min-height:30px;font-size:12px;" data-sql="SELECT id, node_index, label, status, device_profile, proxy_url, fingerprint, total_requests, latency_ms, last_used_at, status_detail FROM muse_accounts ORDER BY node_index ASC;">
+                  📋 Bảng muse_accounts
+                </button>
+                <button type="button" class="muse-outline-btn btn-libsql-preset" style="min-height:30px;font-size:12px;" data-sql="SELECT id, title, model, workspace, created_at, updated_at FROM chat_threads ORDER BY updated_at DESC LIMIT 30;">
+                  💬 Bảng chat_threads
+                </button>
+                <button type="button" class="muse-outline-btn btn-libsql-preset" style="min-height:30px;font-size:12px;" data-sql="SELECT id, thread_id, seq_num, role, substr(content, 1, 80) AS content_preview, node_label, latency_ms, timestamp FROM chat_messages ORDER BY thread_id DESC, seq_num ASC LIMIT 50;">
+                  📨 Bảng chat_messages
+                </button>
+                <button type="button" class="muse-outline-btn btn-libsql-preset" style="min-height:30px;font-size:12px;" data-sql="SELECT session_id, substr(login_url, 1, 65) AS oauth_url, app_id, created_at FROM oauth_sessions ORDER BY created_at DESC LIMIT 20;">
+                  🔑 Bảng oauth_sessions
+                </button>
+                <button type="button" class="muse-outline-btn btn-libsql-preset" style="min-height:30px;font-size:12px;" data-sql="SELECT id, thread_id, node_label, model, latency_ms, status, created_at FROM routing_telemetry ORDER BY id DESC LIMIT 30;">
+                  ⚡ Bảng routing_telemetry
+                </button>
+              </div>
+            </div>
+
+            <!-- Cấu hình URL kết nối libSQL (file:... hoặc libsql://...) -->
+            <form id="libsqlConfigForm" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px;">
+              <div style="flex:2;min-width:240px;">
+                <label for="libsqlUrlInput" style="display:block;font-size:11.5px;font-weight:600;color:#475569;margin-bottom:4px;">
+                  Chuỗi kết nối LibSQL (<code>file:...</code> nhúng trực tiếp hoặc <code>libsql://...</code> / <code>http://...</code>)
+                </label>
+                <input type="text" id="libsqlUrlInput" class="clean-input" style="font-family:var(--font-mono);font-size:12px;" placeholder="file:f:/tools muse ai/data/muse_router.libsql.db">
+              </div>
+              <div style="flex:1;min-width:160px;">
+                <label for="libsqlTokenInput" style="display:block;font-size:11.5px;font-weight:600;color:#475569;margin-bottom:4px;">
+                  Auth Token (nếu dùng Turso / sqld từ xa)
+                </label>
+                <input type="password" id="libsqlTokenInput" class="clean-input" style="font-family:var(--font-mono);font-size:12px;" placeholder="Để trống với chế độ file nhúng">
+              </div>
+              <button type="submit" class="muse-outline-btn" id="btnApplyLibsqlConfig" style="min-height:36px;">
+                🔄 Kết nối LibSQL
+              </button>
+            </form>
+
+            <!-- Ô chạy truy vấn SQL trực tiếp qua chuẩn Hrana v2 Pipeline (/v2/pipeline) -->
+            <form id="libsqlQueryForm" style="display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap;">
+              <textarea
+                id="libsqlSqlInput"
+                class="clean-textarea"
+                rows="2"
+                style="flex:1;min-width:260px;font-family:var(--font-mono);font-size:12.5px;"
+              >SELECT id, node_index, label, status, fingerprint, total_requests, latency_ms, last_used_at, status_detail FROM muse_accounts ORDER BY node_index ASC;</textarea>
+              <button type="submit" class="muse-solid-btn" id="btnRunLibsqlQuery" style="min-height:42px;">
+                ▶️ Thực thi qua LibSQL Pipeline
+              </button>
+            </form>
+
+            <div id="libsqlQueryMeta" style="font-size:12px;color:#525252;font-family:var(--font-mono);"></div>
+
+            <div class="table-wrap" style="max-height:280px;overflow:auto;">
+              <table class="clean-table" id="libsqlResultTable">
+                <thead id="libsqlResultHead"></thead>
+                <tbody id="libsqlResultBody">
+                  <tr>
+                    <td style="text-align:center;color:#737373;padding:14px;">
+                      Bấm một bảng phía trên hoặc nhấn "▶️ Thực thi qua LibSQL Pipeline" để truy vấn trực tiếp.
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================
+           PANEL: 🔍 TÌM KIẾM — Full-text search qua libSQL
+           ============================================================ -->
+      <section class="fullpage-panel hidden-el" id="panelSearch" aria-label="Tìm kiếm đoạn chat">
+        <div class="panel-page-inner">
+          <div class="panel-page-header">
+            <div>
+              <h1 class="panel-page-title">🔍 Tìm kiếm</h1>
+              <p class="panel-page-subtitle">Tìm toàn văn trong tất cả đoạn chat và tin nhắn đã lưu trong libSQL</p>
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;">
+            <input type="text" id="searchInput" class="clean-input" placeholder="Nhập từ khóa tìm kiếm..." style="flex:1;font-size:14px;">
+            <button type="button" class="muse-solid-btn" id="btnRunSearch" style="min-height:38px;padding:0 18px;">🔍 Tìm</button>
+          </div>
+          <div id="searchResultsCount" style="font-size:12px;color:#737373;margin-bottom:10px;"></div>
+          <div id="searchResultsList" style="display:flex;flex-direction:column;gap:8px;"></div>
+        </div>
+      </section>
+
+      <!-- ============================================================
+           PANEL: 📄 TÀI LIỆU — muse_documents trong libSQL
+           ============================================================ -->
+      <section class="fullpage-panel hidden-el" id="panelDocs" aria-label="Tài liệu và Artifacts">
+        <div class="panel-page-inner">
+          <div class="panel-page-header">
+            <div>
+              <h1 class="panel-page-title">📄 Tài liệu</h1>
+              <p class="panel-page-subtitle">Tài liệu và artifacts được trích xuất từ cuộc hội thoại, lưu trực tiếp trong libSQL</p>
+            </div>
+            <button type="button" class="muse-solid-btn" id="btnNewDoc" style="min-height:36px;padding:0 16px;">+ Tạo tài liệu mới</button>
+          </div>
+          <!-- Form tạo / sửa tài liệu -->
+          <div id="docEditorCard" class="clean-card hidden-el" style="margin-bottom:16px;">
+            <input type="hidden" id="docEditingId" value="">
+            <div style="display:flex;flex-direction:column;gap:10px;">
+              <input type="text" id="docTitleInput" class="clean-input" placeholder="Tiêu đề tài liệu..." style="font-size:14px;font-weight:600;">
+              <textarea id="docContentInput" class="clean-textarea" rows="10" placeholder="Nội dung tài liệu (hỗ trợ Markdown)..."></textarea>
+              <div style="display:flex;gap:8px;">
+                <button type="button" class="muse-solid-btn" id="btnSaveDoc" style="min-height:34px;">💾 Lưu vào libSQL</button>
+                <button type="button" class="muse-outline-btn" id="btnCancelDoc" style="min-height:34px;">Hủy</button>
+              </div>
+            </div>
+          </div>
+          <!-- Danh sách tài liệu -->
+          <div id="docsListContainer">
+            <p id="docsEmptyState" style="text-align:center;color:#737373;padding:40px 0;">Chưa có tài liệu nào. Nhấn "+ Tạo tài liệu mới" hoặc trả lời Mart AI để tự động trích xuất.</p>
+            <div id="docsList" style="display:flex;flex-direction:column;gap:10px;"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================
+           PANEL: 💡 Ý TƯỞNG & BỘ NHỚ — muse_memories trong libSQL
+           ============================================================ -->
+      <section class="fullpage-panel hidden-el" id="panelIdeas" aria-label="Ý tưởng và Bộ nhớ">
+        <div class="panel-page-inner">
+          <div class="panel-page-header">
+            <div>
+              <h1 class="panel-page-title">💡 Ý tưởng & Bộ nhớ</h1>
+              <p class="panel-page-subtitle">Lưu hướng dẫn tùy chỉnh và mẫu prompt — tự động chèn vào mỗi cuộc trò chuyện với Mart AI</p>
+            </div>
+            <button type="button" class="muse-solid-btn" id="btnNewMemory" style="min-height:36px;padding:0 16px;">+ Thêm bộ nhớ mới</button>
+          </div>
+          <!-- Form thêm bộ nhớ -->
+          <div id="memoryEditorCard" class="clean-card hidden-el" style="margin-bottom:16px;">
+            <input type="hidden" id="memoryEditingId" value="">
+            <div style="display:flex;flex-direction:column;gap:10px;">
+              <input type="text" id="memoryTitleInput" class="clean-input" placeholder="Tiêu đề (ví dụ: Phong cách trả lời)..." style="font-size:14px;font-weight:600;">
+              <textarea id="memoryContentInput" class="clean-textarea" rows="5" placeholder="Nội dung hướng dẫn (ví dụ: Trả lời bằng tiếng Việt, súc tích, dùng bullet points)..."></textarea>
+              <div style="display:flex;gap:8px;">
+                <button type="button" class="muse-solid-btn" id="btnSaveMemory" style="min-height:34px;">💾 Lưu bộ nhớ</button>
+                <button type="button" class="muse-outline-btn" id="btnCancelMemory" style="min-height:34px;">Hủy</button>
+              </div>
+            </div>
+          </div>
+          <!-- Danh sách bộ nhớ -->
+          <p id="memoriesEmptyState" style="text-align:center;color:#737373;padding:40px 0;">Chưa có bộ nhớ nào. Nhấn "+ Thêm bộ nhớ mới" để bắt đầu.</p>
+          <div id="memoriesList" style="display:flex;flex-direction:column;gap:10px;"></div>
+        </div>
+      </section>
+
+      <!-- ============================================================
+           PANEL: ☑️ NHIỆM VỤ — muse_tasks trong libSQL
+           ============================================================ -->
+      <section class="fullpage-panel hidden-el" id="panelTasks" aria-label="Nhiệm vụ và Hàng đợi lệnh">
+        <div class="panel-page-inner">
+          <div class="panel-page-header">
+            <div>
+              <h1 class="panel-page-title">☑️ Nhiệm vụ</h1>
+              <p class="panel-page-subtitle">Lưu lệnh yêu cầu, xếp hàng đợi và đẩy sang Mart AI để tự động xử lý qua Token Pool</p>
+            </div>
+            <button type="button" class="muse-solid-btn" id="btnNewTask" style="min-height:36px;padding:0 16px;">+ Tạo nhiệm vụ mới</button>
+            <button type="button" class="muse-outline-btn" id="btnRunAllPending" style="min-height:36px;padding:0 14px;font-size:13px;" title="Chạy tất cả nhiệm vụ đang chờ — song song qua Token Pool">⚡ Chạy tất cả</button>
+          </div>
+          <!-- Form tạo nhiệm vụ -->
+          <div id="taskEditorCard" class="clean-card hidden-el" style="margin-bottom:16px;">
+            <input type="hidden" id="taskEditingId" value="">
+            <div style="display:flex;flex-direction:column;gap:10px;">
+              <input type="text" id="taskTitleInput" class="clean-input" placeholder="Tên nhiệm vụ (ví dụ: Tóm tắt hợp đồng Q4)..." style="font-size:14px;font-weight:600;">
+              <textarea id="taskPromptInput" class="clean-textarea" rows="5" placeholder="Nội dung lệnh yêu cầu gửi cho Mart AI..."></textarea>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                <button type="button" class="muse-solid-btn" id="btnSaveTask" style="min-height:34px;">💾 Lưu nhiệm vụ</button>
+                <button type="button" class="muse-outline-btn" id="btnCancelTask" style="min-height:34px;">Hủy</button>
+              </div>
+            </div>
+          </div>
+          <!-- Bộ lọc trạng thái -->
+          <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
+            <button type="button" class="muse-outline-btn task-filter-btn active" data-filter="all" style="min-height:30px;font-size:12px;">📋 Tất cả</button>
+            <button type="button" class="muse-outline-btn task-filter-btn" data-filter="pending" style="min-height:30px;font-size:12px;">⏳ Chờ xử lý</button>
+            <button type="button" class="muse-outline-btn task-filter-btn" data-filter="running" style="min-height:30px;font-size:12px;">🔄 Đang chạy</button>
+            <button type="button" class="muse-outline-btn task-filter-btn" data-filter="done" style="min-height:30px;font-size:12px;">✅ Hoàn thành</button>
+            <button type="button" class="muse-outline-btn task-filter-btn" data-filter="error" style="min-height:30px;font-size:12px;">❌ Lỗi</button>
+          </div>
+          <!-- Danh sách nhiệm vụ -->
+          <p id="tasksEmptyState" style="text-align:center;color:#737373;padding:40px 0;">Chưa có nhiệm vụ nào. Nhấn "+ Tạo nhiệm vụ mới" để bắt đầu.</p>
+          <div id="tasksList" style="display:flex;flex-direction:column;gap:10px;"></div>
+        </div>
+      </section>
+
+      <!-- ============================================================
+           PANEL: THƯ VIỆN / GIẢ LIỆU (GIỐNG 100% HTTPS://MUSE.AI/LIBRARY/ARTIFACTS)
+           ============================================================ -->
+      <section class="muse-library-workspace hidden-el" id="panelLibrary" aria-label="Thư viện Giả liệu">
+        <!-- Cột menu bên trái của Thư viện -->
+        <aside class="muse-library-sidebar">
+          <div class="lib-side-top">
+            <!-- Ô tìm kiếm viên thuốc -->
+            <div class="lib-search-pill">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8c8c8c" stroke-width="2" stroke-linecap="round">
+                <circle cx="11" cy="11" r="7"/>
+                <line x1="20" y1="20" x2="16.2" y2="16.2"/>
+              </svg>
+              <input type="text" id="libSearchInput" placeholder="Tìm kiếm" aria-label="Tìm kiếm giả liệu">
+            </div>
+
+            <!-- Nhóm 1: Giả liệu -->
+            <div class="lib-nav-group-label">Giả liệu</div>
+            <button type="button" class="lib-nav-item active" data-lib-cat="all" data-lib-title="Tất cả các artifact">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="7.5" cy="7.5" r="3.2"/>
+                <polygon points="16.5,4.2 20,10.8 13,10.8"/>
+                <rect x="4.3" y="13.5" width="6.4" height="6.4" rx="1"/>
+                <path d="M16.5 13.3C18.5 15.3 19.7 16.8 19.7 18.2a3.2 3.2 0 1 1-6.4 0c0-1.4 1.2-2.9 3.2-4.9z"/>
+              </svg>
+              <span>Tất cả giả liệu</span>
+            </button>
+
+            <button type="button" class="lib-nav-item" data-lib-cat="doc" data-lib-title="Tài liệu">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="5" y="3" width="14" height="18" rx="2"/>
+                <line x1="9" y1="8" x2="15" y2="8"/>
+                <line x1="9" y1="12" x2="15" y2="12"/>
+                <line x1="9" y1="16" x2="12" y2="16"/>
+              </svg>
+              <span>Tài liệu</span>
+            </button>
+
+            <button type="button" class="lib-nav-item" data-lib-cat="web" data-lib-title="Giả liệu web">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="9"/>
+                <line x1="3" y1="12" x2="21" y2="12"/>
+                <path d="M12 3a15.3 15.3 0 0 1 4 9 15.3 15.3 0 0 1-4 9 15.3 15.3 0 0 1-4-9 15.3 15.3 0 0 1 4-9z"/>
+              </svg>
+              <span>Giả liệu web</span>
+            </button>
+
+            <!-- Nhóm 2: File phương tiện -->
+            <div class="lib-nav-group-label" style="margin-top:12px;">File phương tiện</div>
+            <button type="button" class="lib-nav-item" data-lib-cat="image" data-lib-title="Hình ảnh">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="4" width="18" height="16" rx="2"/>
+                <circle cx="8.5" cy="9.5" r="1.5"/>
+                <polyline points="21 15 16 10 5 20"/>
+              </svg>
+              <span>Hình ảnh</span>
+            </button>
+
+            <button type="button" class="lib-nav-item" data-lib-cat="video" data-lib-title="Video">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="4" width="18" height="16" rx="2"/>
+                <line x1="3" y1="9" x2="21" y2="9"/>
+                <line x1="8" y1="4" x2="10" y2="9"/>
+                <line x1="14" y1="4" x2="16" y2="9"/>
+                <polygon points="10,12 15,14.5 10,17"/>
+              </svg>
+              <span>Video</span>
+            </button>
+
+            <button type="button" class="lib-nav-item" data-lib-cat="podcast" data-lib-title="Podcast">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+                <line x1="4" y1="10" x2="4" y2="14"/>
+                <line x1="8" y1="7" x2="8" y2="17"/>
+                <line x1="12" y1="4" x2="12" y2="20"/>
+                <line x1="16" y1="8" x2="16" y2="16"/>
+                <line x1="20" y1="11" x2="20" y2="13"/>
+              </svg>
+              <span>Podcast</span>
+            </button>
+          </div>
+
+          <div class="lib-side-bottom">
+            <button type="button" class="lib-nav-item" id="btnLibSystemFiles" data-lib-cat="system" data-lib-title="File hệ thống">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+              </svg>
+              <span>File hệ thống</span>
+            </button>
+          </div>
+        </aside>
+
+        <!-- Vùng nội dung chính của Thư viện -->
+        <div class="muse-library-main">
+          <div class="lib-main-header">
+            <h1 class="lib-main-title" id="libMainHeading">Tất cả các artifact</h1>
+            <div class="lib-header-actions">
+              <button type="button" class="lib-pill-gray-btn" id="btnLibSelectMode">Chọn</button>
+              <button type="button" class="lib-circle-gray-btn" id="btnLibSortOrder" title="Sắp xếp">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                  <line x1="4" y1="7" x2="20" y2="7"/>
+                  <line x1="4" y1="12" x2="15" y2="12"/>
+                  <line x1="4" y1="17" x2="10" y2="17"/>
+                </svg>
+              </button>
+              <button type="button" class="lib-pill-blue-btn" id="btnLibCreateArtifact">+ Tạo đối tượng</button>
+            </div>
+          </div>
+
+          <!-- Hộp tạo đối tượng nhanh khi bấm "+ Tạo đối tượng" -->
+          <div id="libCreatorCard" class="clean-card hidden-el" style="max-width:960px;width:100%;margin:16px auto 0;">
+            <div style="display:flex;flex-direction:column;gap:10px;">
+              <input type="text" id="libNewTitleInput" class="clean-input" placeholder="Tên đối tượng / giả liệu..." style="font-size:14px;font-weight:600;">
+              <textarea id="libNewContentInput" class="clean-textarea" rows="6" placeholder="Nội dung đối tượng (Markdown, mã nguồn, liên kết)..."></textarea>
+              <div style="display:flex;gap:8px;">
+                <button type="button" class="lib-pill-blue-btn" id="btnLibSaveArtifact">Lưu đối tượng</button>
+                <button type="button" class="lib-pill-gray-btn" id="btnLibCancelArtifact">Hủy</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Trạng thái trống ở chính giữa giống hệt 100% ảnh gốc https://muse.ai/library/artifacts -->
+          <div class="lib-empty-center" id="libEmptyState">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#737373" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="7.5" cy="7.5" r="3.2"/>
+              <polygon points="16.5,4.2 20,10.8 13,10.8"/>
+              <rect x="4.3" y="13.5" width="6.4" height="6.4" rx="1"/>
+              <path d="M16.5 13.3C18.5 15.3 19.7 16.8 19.7 18.2a3.2 3.2 0 1 1-6.4 0c0-1.4 1.2-2.9 3.2-4.9z"/>
+            </svg>
+            <div class="lib-empty-text">Chưa có giả liệu nào</div>
+          </div>
+
+          <!-- Danh sách giả liệu khi có dữ liệu -->
+          <div class="lib-artifacts-grid hidden-el" id="libArtifactsGrid"></div>
+        </div>
+      </section>
+
+    </main>
+
+    <div class="toast-region" id="toastRegion" aria-live="polite"></div>
+  </div>
+
+  <script src="/app.js?v=4.1"></script>
+</body>
+</html>
