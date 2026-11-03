@@ -805,3 +805,119 @@ func TestAdminAccountLoginSettingsAndChatFlow(t *testing.T) {
 		t.Fatalf("POST /api/threads for Admin failed: status=%d body=%s", recThread.Code, recThread.Body.String())
 	}
 }
+
+func TestResponseSpeedBenchmark(t *testing.T) {
+	tmpDir := t.TempDir()
+	app, err := NewServerApp(tmpDir)
+	if err != nil {
+		t.Fatalf("NewServerApp failed: %v", err)
+	}
+	defer func() {
+		if st := app.pool.GetLibSQLStore(); st != nil {
+			_ = st.Close()
+		}
+	}()
+
+	handler := app.Routes()
+
+	// Lấy JWT Admin
+	loginStart := time.Now()
+	loginBody := `{"username":"admin","password":"` + DefaultAdminPassword + `"}`
+	reqLogin := httptest.NewRequest(http.MethodPost, "/api/users/login", strings.NewReader(loginBody))
+	reqLogin.Header.Set("Content-Type", "application/json")
+	reqLogin.Header.Set("X-Mart-Client", "web")
+	recLogin := httptest.NewRecorder()
+	handler.ServeHTTP(recLogin, reqLogin)
+	loginDur := time.Since(loginStart)
+	if recLogin.Code != http.StatusOK {
+		t.Fatalf("Admin login failed: %d", recLogin.Code)
+	}
+	var loginResp struct {
+		Token string `json:"token"`
+	}
+	_ = json.Unmarshal(recLogin.Body.Bytes(), &loginResp)
+	token := loginResp.Token
+
+	type benchCase struct {
+		name   string
+		method string
+		path   string
+		body   string
+		gzip   bool
+	}
+	cases := []benchCase{
+		{name: "GET / (HTML Shell)", method: http.MethodGet, path: "/", gzip: true},
+		{name: "GET /app.js (Gzip Static Cache)", method: http.MethodGet, path: "/app.js", gzip: true},
+		{name: "GET /styles.css (Gzip Static Cache)", method: http.MethodGet, path: "/styles.css", gzip: true},
+		{name: "GET /api/health", method: http.MethodGet, path: "/api/health"},
+		{name: "GET /api/users/me (JWT RS256 Verify)", method: http.MethodGet, path: "/api/users/me"},
+		{name: "GET /api/router/summary", method: http.MethodGet, path: "/api/router/summary"},
+		{name: "GET /api/threads (Chat History)", method: http.MethodGet, path: "/api/threads"},
+		{name: "GET /api/workspace/docs", method: http.MethodGet, path: "/api/workspace/docs"},
+		{name: "GET /api/workspace/memories", method: http.MethodGet, path: "/api/workspace/memories"},
+		{name: "GET /api/workspace/tasks", method: http.MethodGet, path: "/api/workspace/tasks"},
+		{name: "GET /api/admin/users", method: http.MethodGet, path: "/api/admin/users"},
+		{name: "GET /api/libsql/status (Cold 1-Query)", method: http.MethodGet, path: "/api/libsql/status"},
+		{name: "GET /api/libsql/status (Warm L1 Cache)", method: http.MethodGet, path: "/api/libsql/status"},
+	}
+
+	t.Logf("=== BENCHMARK TOC DO PHAN HOI (SQL40 LOCAL + L1 RAM CACHE) ===")
+	t.Logf("%-42s | %10s | %6s", "Endpoint", "Latency", "Status")
+	t.Logf("%-42s | %10s | %6d", "POST /api/users/login (PBKDF2+RS256)", loginDur.Round(time.Microsecond), recLogin.Code)
+
+	for _, tc := range cases {
+		start := time.Now()
+		var bodyReader *strings.Reader
+		if tc.body != "" {
+			bodyReader = strings.NewReader(tc.body)
+		} else {
+			bodyReader = strings.NewReader("")
+		}
+		req := httptest.NewRequest(tc.method, tc.path, bodyReader)
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("X-Mart-Client", "web")
+		if tc.gzip {
+			req.Header.Set("Accept-Encoding", "gzip")
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		dur := time.Since(start)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s returned status %d: %s", tc.name, rec.Code, rec.Body.String())
+		}
+		t.Logf("%-42s | %10s | %6d", tc.name, dur.Round(time.Microsecond), rec.Code)
+	}
+
+	// Kiểm tra tốc độ thực tế trên Aiven MySQL Cloud TLS nếu có cấu hình mã hóa sql40_cloud.enc
+	cloudURL := LoadEncryptedCloudSQLConfig(`f:\tools muse ai\data`)
+	if strings.HasPrefix(strings.ToLower(cloudURL), "mysql://") {
+		connStart := time.Now()
+		cloudStore, errCloud := NewLibSQLStore(t.TempDir(), cloudURL, "")
+		connDur := time.Since(connStart)
+		if errCloud == nil {
+			defer cloudStore.Close()
+
+			q1Start := time.Now()
+			stCold := cloudStore.GetStatus()
+			q1Dur := time.Since(q1Start)
+
+			q2Start := time.Now()
+			_ = cloudStore.GetStatus()
+			q2Dur := time.Since(q2Start)
+
+			selStart := time.Now()
+			_, errSel := cloudStore.ExecuteSQL("SELECT id, username, role FROM mart_users WHERE username = 'admin' LIMIT 1", nil)
+			selDur := time.Since(selStart)
+			if errSel != nil {
+				t.Fatalf("Cloud SQL select admin failed: %v", errSel)
+			}
+
+			t.Logf("=== BENCHMARK KET NOI AIVEN MYSQL CLOUD TLS 1.2+ ===")
+			t.Logf("Engine Version                         : %s", stCold.EngineVersion)
+			t.Logf("MySQL TLS Connect + Fast Schema Check  : %s", connDur.Round(time.Millisecond))
+			t.Logf("MySQL Point Query (SELECT admin)       : %s", selDur.Round(time.Microsecond))
+			t.Logf("MySQL GetStatus (Cold 1-Query 9 Tables): %s", q1Dur.Round(time.Microsecond))
+			t.Logf("MySQL GetStatus (Warm L1 RAM Cache)    : %s", q2Dur.Round(time.Microsecond))
+		}
+	}
+}

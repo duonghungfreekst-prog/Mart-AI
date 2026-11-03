@@ -119,6 +119,11 @@ func (a *ServerApp) EnsureDefaultAdminAccount() {
 	if a == nil || a.pool == nil {
 		return
 	}
+	if a.cache != nil {
+		if _, ok := a.cache.Get("default_admin_ensured"); ok {
+			return
+		}
+	}
 	store := a.pool.GetLibSQLStore()
 	if store == nil {
 		return
@@ -136,7 +141,10 @@ func (a *ServerApp) EnsureDefaultAdminAccount() {
 				[]interface{}{row["id"]},
 			)
 		}
-		a.cache.Set("usr_active:admin", true, 5*time.Minute)
+		if a.cache != nil {
+			a.cache.Set("usr_active:admin", true, 5*time.Minute)
+			a.cache.Set("default_admin_ensured", true, 5*time.Minute)
+		}
 		return
 	}
 
@@ -159,7 +167,10 @@ func (a *ServerApp) EnsureDefaultAdminAccount() {
 		return
 	}
 
-	a.cache.Set("usr_active:admin", true, 5*time.Minute)
+	if a.cache != nil {
+		a.cache.Set("usr_active:admin", true, 5*time.Minute)
+		a.cache.Set("default_admin_ensured", true, 5*time.Minute)
+	}
 	LogInfo("Initialized default Admin account in SQL40/MySQL: username=admin")
 }
 
@@ -526,7 +537,9 @@ func (a *ServerApp) handleUserLogin(w http.ResponseWriter, r *http.Request) {
 	displayName := nonEmptyStr(row["display_name"], username)
 
 	nowStr := time.Now().Format("2006-01-02 15:04:05")
-	_, _ = store.ExecuteSQL("UPDATE mart_users SET last_login_at = ? WHERE id = ?", []interface{}{nowStr, userID})
+	go func(st *LibSQLStore, ts, uid string) {
+		_, _ = st.ExecuteSQL("UPDATE mart_users SET last_login_at = ? WHERE id = ?", []interface{}{ts, uid})
+	}(store, nowStr, userID)
 	a.cache.Set("usr_active:"+userID, true, 60*time.Second)
 
 	token, err := a.jwtMgr.IssueUserToken(userID, username, displayName, role, 168*time.Hour)
@@ -596,7 +609,9 @@ func (a *ServerApp) handleAdminUnlockLogin(w http.ResponseWriter, r *http.Reques
 
 	if store := a.pool.GetLibSQLStore(); store != nil {
 		nowStr := time.Now().Format("2006-01-02 15:04:05")
-		_, _ = store.ExecuteSQL("UPDATE mart_users SET last_login_at = ? WHERE id = 'admin' OR username = 'admin'", []interface{}{nowStr})
+		go func(st *LibSQLStore, ts string) {
+			_, _ = st.ExecuteSQL("UPDATE mart_users SET last_login_at = ? WHERE id = 'admin' OR username = 'admin'", []interface{}{ts})
+		}(store, nowStr)
 	}
 
 	token, err := a.jwtMgr.IssueUserToken("admin", "admin", adminDisplayName, "admin", 168*time.Hour)

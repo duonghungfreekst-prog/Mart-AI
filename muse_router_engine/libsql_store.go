@@ -20,14 +20,27 @@ import (
 // LibSQLStore quản lý kết nối trực tiếp tới cơ sở dữ liệu chuẩn SQL40 / MySQL / libSQL
 // (hỗ trợ cả MySQL 8.0 TLS Aiven Cloud mysql://..., nhúng trực tiếp file:... WAL lẫn libsql://).
 type LibSQLStore struct {
-	mu        sync.RWMutex
-	db        *sql.DB
-	dataDir   string
-	dbURL     string
-	dbFile    string
-	authToken string
-	isRemote  bool
-	isMySQL   bool
+	mu              sync.RWMutex
+	db              *sql.DB
+	dataDir         string
+	dbURL           string
+	dbFile          string
+	authToken       string
+	isRemote        bool
+	isMySQL         bool
+	statusMu        sync.RWMutex
+	cachedStatus    *LibSQLStatusResponse
+	cachedStatusExp time.Time
+}
+
+func (s *LibSQLStore) invalidateStatusCache() {
+	if s == nil {
+		return
+	}
+	s.statusMu.Lock()
+	s.cachedStatus = nil
+	s.cachedStatusExp = time.Time{}
+	s.statusMu.Unlock()
 }
 
 // LibSQLTableStat thống kê số bản ghi thực tế của từng bảng trong libSQL.
@@ -314,8 +327,9 @@ func (s *LibSQLStore) connectInternal(targetURL string, authToken string) error 
 		}
 	}
 
-	db.SetMaxOpenConns(8)
-	db.SetMaxIdleConns(4)
+	db.SetMaxOpenConns(16)
+	db.SetMaxIdleConns(8)
+	db.SetConnMaxIdleTime(5 * time.Minute)
 	db.SetConnMaxLifetime(15 * time.Minute)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -396,6 +410,17 @@ func (s *LibSQLStore) initSchema() error {
 	defer cancel()
 
 	if isMySQL {
+		var existingTables, existingOwnerCols int
+		errFastCheck := db.QueryRowContext(ctx, `
+			SELECT
+				(SELECT COUNT(1) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name IN ('muse_accounts','mart_users','chat_threads','chat_messages','oauth_sessions','routing_telemetry','muse_documents','muse_memories','muse_tasks')),
+				(SELECT COUNT(1) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name IN ('chat_threads','muse_documents','muse_memories','muse_tasks') AND column_name = 'owner_id')
+		`).Scan(&existingTables, &existingOwnerCols)
+		if errFastCheck == nil && existingTables == 9 && existingOwnerCols == 4 {
+			s.invalidateStatusCache()
+			return nil
+		}
+
 		mysqlDDLs := []string{
 			`CREATE TABLE IF NOT EXISTS muse_accounts (
 				id VARCHAR(191) PRIMARY KEY,
@@ -871,6 +896,9 @@ func (s *LibSQLStore) UpsertAccount(n *MuseAccountNode) error {
 		n.LastUsedAt,
 		n.StatusDetail,
 	)
+	if err == nil {
+		s.invalidateStatusCache()
+	}
 	return err
 }
 
@@ -887,6 +915,9 @@ func (s *LibSQLStore) DeleteAccount(nodeID string) error {
 	defer cancel()
 
 	_, err := db.ExecContext(ctx, `DELETE FROM muse_accounts WHERE id = ?`, nodeID)
+	if err == nil {
+		s.invalidateStatusCache()
+	}
 	return err
 }
 
@@ -1047,7 +1078,11 @@ func (s *LibSQLStore) SaveThreadWithMessages(t *ChatThread) error {
 		}
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.invalidateStatusCache()
+	return nil
 }
 
 // DeleteThread xóa luồng hội thoại và toàn bộ tin nhắn liên quan khỏi libSQL.
@@ -1064,6 +1099,9 @@ func (s *LibSQLStore) DeleteThread(threadID string) error {
 
 	_, _ = db.ExecContext(ctx, `DELETE FROM chat_messages WHERE thread_id = ?`, threadID)
 	_, err := db.ExecContext(ctx, `DELETE FROM chat_threads WHERE id = ?`, threadID)
+	if err == nil {
+		s.invalidateStatusCache()
+	}
 	return err
 }
 
@@ -1113,7 +1151,7 @@ func (s *LibSQLStore) RecordRoutingTelemetry(threadID, nodeID, nodeLabel, model 
 	`, threadID, nodeID, nodeLabel, model, latencyMs, tokensUsed, status)
 }
 
-// GetStatus trả về thông tin chi tiết của Engine SQL40 / MySQL đang chạy.
+// GetStatus trả về thông tin chi tiết của Engine SQL40 / MySQL đang chạy (tối ưu gộp 1 round-trip + L1 Cache 3s).
 func (s *LibSQLStore) GetStatus() LibSQLStatusResponse {
 	s.mu.RLock()
 	db := s.db
@@ -1128,39 +1166,116 @@ func (s *LibSQLStore) GetStatus() LibSQLStatusResponse {
 		driverName = "sql40-mysql (database/sql + Aiven MySQL TLS 1.2+)"
 	}
 
+	if db == nil {
+		return LibSQLStatusResponse{
+			Connected:    false,
+			Driver:       driverName,
+			DatabaseURL:  maskDatabaseURL(dbURL),
+			DatabaseFile: dbFile,
+			IsRemote:     isRemote,
+			Tables:       []LibSQLTableStat{},
+			CheckedAt:    time.Now().Format("15:04:05 02/01/2006"),
+		}
+	}
+
+	s.statusMu.RLock()
+	if s.cachedStatus != nil && time.Now().Before(s.cachedStatusExp) {
+		cachedCopy := *s.cachedStatus
+		s.statusMu.RUnlock()
+		return cachedCopy
+	}
+	s.statusMu.RUnlock()
+
 	resp := LibSQLStatusResponse{
-		Connected:    db != nil,
+		Connected:    true,
 		Driver:       driverName,
 		DatabaseURL:  maskDatabaseURL(dbURL),
 		DatabaseFile: dbFile,
 		IsRemote:     isRemote,
-		Tables:       []LibSQLTableStat{},
+		Tables:       make([]LibSQLTableStat, 0, 9),
 		CheckedAt:    time.Now().Format("15:04:05 02/01/2006"),
-	}
-	if db == nil {
-		return resp
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
 	var dbVer string
-	if err := db.QueryRowContext(ctx, `SELECT sqlite_version()`).Scan(&dbVer); err == nil {
+	var cUsers, cAccounts, cThreads, cMessages, cDocs, cMemories, cTasks, cOAuth, cTelemetry int64
+
+	// Gộp toàn bộ phiên bản Engine và số lượng bản ghi của 9 bảng vào 1 câu truy vấn duy nhất (1 round-trip mạng)
+	batchStatusSQL := `
+		SELECT sqlite_version(),
+		       (SELECT COUNT(1) FROM mart_users),
+		       (SELECT COUNT(1) FROM muse_accounts),
+		       (SELECT COUNT(1) FROM chat_threads),
+		       (SELECT COUNT(1) FROM chat_messages),
+		       (SELECT COUNT(1) FROM muse_documents),
+		       (SELECT COUNT(1) FROM muse_memories),
+		       (SELECT COUNT(1) FROM muse_tasks),
+		       (SELECT COUNT(1) FROM oauth_sessions),
+		       (SELECT COUNT(1) FROM routing_telemetry)
+	`
+	if err := db.QueryRowContext(ctx, batchStatusSQL).Scan(
+		&dbVer,
+		&cUsers,
+		&cAccounts,
+		&cThreads,
+		&cMessages,
+		&cDocs,
+		&cMemories,
+		&cTasks,
+		&cOAuth,
+		&cTelemetry,
+	); err == nil {
 		if isMySQL {
 			resp.EngineVersion = "SQL40 Standard (MySQL " + dbVer + " TLS)"
 		} else {
 			resp.EngineVersion = "SQL40 Standard (SQLite " + dbVer + ")"
 		}
+		resp.Tables = []LibSQLTableStat{
+			{TableName: "mart_users", RowCount: cUsers},
+			{TableName: "muse_accounts", RowCount: cAccounts},
+			{TableName: "chat_threads", RowCount: cThreads},
+			{TableName: "chat_messages", RowCount: cMessages},
+			{TableName: "muse_documents", RowCount: cDocs},
+			{TableName: "muse_memories", RowCount: cMemories},
+			{TableName: "muse_tasks", RowCount: cTasks},
+			{TableName: "oauth_sessions", RowCount: cOAuth},
+			{TableName: "routing_telemetry", RowCount: cTelemetry},
+		}
 	} else {
 		resp.EngineVersion = "SQL40 Standard Embedded"
+		tableNames := []string{
+			"mart_users",
+			"muse_accounts",
+			"chat_threads",
+			"chat_messages",
+			"muse_documents",
+			"muse_memories",
+			"muse_tasks",
+			"oauth_sessions",
+			"routing_telemetry",
+		}
+		for _, tbl := range tableNames {
+			var cnt int64
+			_ = db.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(1) FROM %s", tbl)).Scan(&cnt)
+			resp.Tables = append(resp.Tables, LibSQLTableStat{
+				TableName: tbl,
+				RowCount:  cnt,
+			})
+		}
 	}
 
-	var journalMode string
-	if err := db.QueryRowContext(ctx, `PRAGMA journal_mode`).Scan(&journalMode); err == nil {
-		resp.JournalMode = strings.ToUpper(journalMode)
-	}
-	if resp.JournalMode == "" {
+	if isMySQL {
 		resp.JournalMode = "WAL"
+	} else {
+		var journalMode string
+		if err := db.QueryRowContext(ctx, `PRAGMA journal_mode`).Scan(&journalMode); err == nil {
+			resp.JournalMode = strings.ToUpper(journalMode)
+		}
+		if resp.JournalMode == "" {
+			resp.JournalMode = "WAL"
+		}
 	}
 
 	if !isRemote && dbFile != "" {
@@ -1169,25 +1284,11 @@ func (s *LibSQLStore) GetStatus() LibSQLStatusResponse {
 		}
 	}
 
-	tableNames := []string{
-		"mart_users",
-		"muse_accounts",
-		"chat_threads",
-		"chat_messages",
-		"muse_documents",
-		"muse_memories",
-		"muse_tasks",
-		"oauth_sessions",
-		"routing_telemetry",
-	}
-	for _, tbl := range tableNames {
-		var cnt int64
-		_ = db.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(1) FROM %s", tbl)).Scan(&cnt)
-		resp.Tables = append(resp.Tables, LibSQLTableStat{
-			TableName: tbl,
-			RowCount:  cnt,
-		})
-	}
+	s.statusMu.Lock()
+	s.cachedStatus = &resp
+	s.cachedStatusExp = time.Now().Add(3 * time.Second)
+	s.statusMu.Unlock()
+
 	return resp
 }
 
@@ -1293,6 +1394,7 @@ func (s *LibSQLStore) ExecuteSQL(rawSQL string, args []interface{}) (*LibSQLQuer
 	res.RowsAffected, _ = execRes.RowsAffected()
 	res.LastInsertRowID, _ = execRes.LastInsertId()
 	res.ExecutionTimeMs = time.Since(start).Milliseconds()
+	s.invalidateStatusCache()
 	return res, nil
 }
 

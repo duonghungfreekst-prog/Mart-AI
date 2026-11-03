@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"embed"
@@ -982,12 +983,14 @@ func (a *ServerApp) Routes() http.Handler {
 		})
 	})
 
-	// 6. Phục vụ giao diện Web UI chính gốc (chống cache trình duyệt cũ)
+	// 6. Phục vụ giao diện Web UI chính gốc (L1 RAM Pre-compressed Static Cache + chống cache trình duyệt cũ)
 	webRoot, err := fs.Sub(embeddedWebFS, "web")
 	if err != nil {
 		LogError("Failed to mount embedded web directory: %v", err)
 	}
 	fileServer := http.FileServer(http.FS(webRoot))
+	initPrecompressedWebAssets(webRoot)
+
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
 		if r.URL.Query().Get("v") != "" && (strings.HasSuffix(p, ".js") || strings.HasSuffix(p, ".css") || strings.HasSuffix(p, ".svg") || strings.HasSuffix(p, ".png") || strings.HasSuffix(p, ".ico")) {
@@ -996,7 +999,13 @@ func (a *ServerApp) Routes() http.Handler {
 			w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
 			w.Header().Set("Pragma", "no-cache")
 		}
-		// Hỗ trợ SPA route cho trang cài đặt riêng (/cai-dat, /admin) và thư viện (/library/artifacts)
+		targetAsset := strings.TrimPrefix(p, "/")
+		if p == "/" || p == "/cai-dat" || p == "/admin" || p == "/library/artifacts" {
+			targetAsset = "index.html"
+		}
+		if r.Method == http.MethodGet && servePrecompressedWebAsset(w, r, targetAsset) {
+			return
+		}
 		if p == "/cai-dat" || p == "/admin" || p == "/library/artifacts" {
 			r2 := new(http.Request)
 			*r2 = *r
@@ -1103,7 +1112,71 @@ func (g *gzipResponseWriter) Close() {
 	}
 }
 
+type precompressedAsset struct {
+	rawBytes    []byte
+	gzipBytes   []byte
+	contentType string
+}
+
+var (
+	precompressedWebOnce   sync.Once
+	precompressedWebAssets = make(map[string]precompressedAsset)
+)
+
+func initPrecompressedWebAssets(webRoot fs.FS) {
+	if webRoot == nil {
+		return
+	}
+	precompressedWebOnce.Do(func() {
+		targets := map[string]string{
+			"index.html":  "text/html; charset=utf-8",
+			"app.js":      "application/javascript; charset=utf-8",
+			"styles.css":  "text/css; charset=utf-8",
+			"favicon.svg": "image/svg+xml",
+		}
+		for name, ctype := range targets {
+			raw, err := fs.ReadFile(webRoot, name)
+			if err != nil || len(raw) == 0 {
+				continue
+			}
+			var buf bytes.Buffer
+			gw, _ := gzip.NewWriterLevel(&buf, gzip.BestCompression)
+			_, _ = gw.Write(raw)
+			_ = gw.Close()
+			precompressedWebAssets[name] = precompressedAsset{
+				rawBytes:    raw,
+				gzipBytes:   buf.Bytes(),
+				contentType: ctype,
+			}
+		}
+	})
+}
+
+func servePrecompressedWebAsset(w http.ResponseWriter, r *http.Request, assetName string) bool {
+	asset, ok := precompressedWebAssets[assetName]
+	if !ok {
+		return false
+	}
+	w.Header().Set("Content-Type", asset.contentType)
+	if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") && len(asset.gzipBytes) > 0 {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Add("Vary", "Accept-Encoding")
+		w.Header().Set("Content-Length", strconv.Itoa(len(asset.gzipBytes)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(asset.gzipBytes)
+		return true
+	}
+	w.Header().Set("Content-Length", strconv.Itoa(len(asset.rawBytes)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(asset.rawBytes)
+	return true
+}
+
 func shouldSkipGzip(path string) bool {
+	switch path {
+	case "/", "/index.html", "/cai-dat", "/admin", "/library/artifacts", "/app.js", "/styles.css", "/favicon.svg":
+		return true
+	}
 	if path == "/api/accounts/extension.zip" ||
 		path == "/api/accounts/remote-login/state" ||
 		path == "/api/accounts/remote-login/input" {

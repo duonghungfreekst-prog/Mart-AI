@@ -560,18 +560,16 @@ var (
 	reExcludedCol = regexp.MustCompile(`(?i)\bexcluded\.([a-zA-Z0-9_]+)`)
 	reOnConflict  = regexp.MustCompile(`(?i)\bON\s+CONFLICT\s*\([^)]+\)\s*DO\s+UPDATE\s+SET\b`)
 	reDatetimeNow = regexp.MustCompile(`(?i)\bdatetime\s*\(\s*'now'\s*\)`)
-	reSqliteVer   = regexp.MustCompile(`(?i)SELECT\s+sqlite_version\s*\(\s*\)`)
+	reSqliteVer   = regexp.MustCompile(`(?i)\bsqlite_version\s*\(\s*\)`)
 )
 
 // rewriteSQLForMySQL tự động chuyển đổi cú pháp SQLite/SQL40 sang MySQL 8.0 chuẩn.
 func rewriteSQLForMySQL(rawSQL string) string {
 	s := strings.TrimSpace(rawSQL)
-	if reSqliteVer.MatchString(s) {
-		return "SELECT VERSION()"
-	}
 	if strings.EqualFold(s, "PRAGMA journal_mode") || strings.EqualFold(s, "PRAGMA journal_mode;") {
 		return "SELECT 'WAL'"
 	}
+	s = reSqliteVer.ReplaceAllString(s, "VERSION()")
 	s = reDatetimeNow.ReplaceAllString(s, "DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%d %H:%i:%s')")
 	if reOnConflict.MatchString(s) {
 		s = reOnConflict.ReplaceAllString(s, "ON DUPLICATE KEY UPDATE")
