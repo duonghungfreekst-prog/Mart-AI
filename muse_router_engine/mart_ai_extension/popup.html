@@ -2,23 +2,17 @@
 <html lang="vi">
 <head>
   <meta charset="utf-8">
-  <title>Mart AI — Đồng bộ tài khoản Muse</title>
+  <title>Mart AI — Tự Động Bắt Muse.ai</title>
   <style>
-    body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; width: 360px; margin: 0; padding: 14px; color: #1f2937; }
-    body.file-mode { width: auto; max-width: 620px; margin: 36px auto; padding: 24px; background: #f8fafc; }
+    body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; width: 320px; margin: 0; padding: 16px; color: #1f2937; }
+    body.file-mode { width: auto; max-width: 600px; margin: 36px auto; padding: 24px; background: #f8fafc; }
     h1 { font-size: 15px; margin: 0 0 6px; }
-    .sub { font-size: 12px; color: #4b5563; margin-bottom: 10px; line-height: 1.45; }
-    label { display: block; font-size: 12px; font-weight: 600; margin: 10px 0 4px; }
-    input[type=text], input[type=password] { width: 100%; box-sizing: border-box; padding: 7px 9px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 13px; }
-    .row { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 12px; }
-    button { width: 100%; margin-top: 10px; padding: 9px 12px; border: 0; border-radius: 8px; background: #111827; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; }
-    button.green-btn { background: #15803d; }
-    button.outline-btn { background: #ffffff; color: #111827; border: 1px solid #cbd5e1; }
+    .sub { font-size: 12.5px; color: #4b5563; margin-bottom: 12px; line-height: 1.45; }
+    button { width: 100%; margin-top: 8px; padding: 10px 12px; border: 0; border-radius: 8px; background: #15803d; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; }
     button:disabled { opacity: .6; cursor: default; }
-    #status { margin-top: 10px; font-size: 12px; min-height: 16px; line-height: 1.45; }
+    #status { margin-top: 10px; font-size: 12.5px; min-height: 16px; line-height: 1.45; }
     #status.ok { color: #15803d; font-weight: 600; }
     #status.err { color: #b91c1c; font-weight: 600; }
-    .hint { font-size: 11px; color: #6b7280; margin-top: 8px; line-height: 1.4; }
     .warn-card { background: #fff7ed; border: 2px solid #f97316; border-radius: 14px; padding: 20px 22px; box-shadow: 0 10px 30px rgba(0,0,0,0.08); }
     .warn-title { font-size: 17px; font-weight: 700; color: #9a3412; margin-bottom: 10px; }
     .warn-step { font-size: 14px; line-height: 1.65; color: #1e293b; margin-bottom: 8px; }
@@ -27,41 +21,19 @@
 </head>
 <body>
   <div id="notInstalledWarning" style="display:none;" class="warn-card">
-    <div class="warn-title">⚠️ Bạn đang bấm đúp mở file trong WinRAR — Chrome chưa nạp tiện ích!</div>
-    <div class="warn-step"><b>Bước 1:</b> Trong WinRAR, bấm nút <b>Extract To (Giải nén)</b> để giải nén thư mục <code>mart_ai_extension</code> ra ngoài <b>Desktop</b> (không bấm đúp vào file bên trong WinRAR).</div>
-    <div class="warn-step"><b>Bước 2:</b> Bấm nút bên dưới để copy địa chỉ quản lý tiện ích, mở Tab mới trên Chrome, dán vào thanh địa chỉ và nhấn <b>Enter</b>:</div>
-    <button type="button" id="btnCopyExtUrl" class="green-btn" style="font-size:14px;padding:11px;">📋 Copy địa chỉ: chrome://extensions</button>
-    <div class="warn-step" style="margin-top:12px;"><b>Bước 3:</b> Ở góc trên bên phải trang <code>chrome://extensions</code>, bật công tắc <b>Chế độ nhà phát triển (Developer mode)</b> → bấm nút <b>Tải tiện ích đã giải nén (Load unpacked)</b> ở góc trên bên trái → chọn thư mục <code>mart_ai_extension</code> ngoài Desktop.</div>
-    <div class="warn-step" style="color:#15803d;font-weight:600;margin-top:10px;">✅ Ngay khi chọn xong, tab Mart AI đang mở sẽ tự động bắt tài khoản Muse.ai của bạn ngay lập tức mà không cần bấm thêm gì!</div>
+    <div class="warn-title">⚠️ Đừng mở file popup.html trong WinRAR!</div>
+    <div class="warn-step">Tiện ích Chrome không chạy bằng cách bấm đúp vào file này. Bạn chỉ cần làm <b>3 bước duy nhất</b> dưới đây (không cần điền bất kỳ ô nào):</div>
+    <div class="warn-step"><b>1.</b> Bấm nút dưới đây để copy địa chỉ quản lý tiện ích, dán lên thanh địa chỉ Chrome rồi nhấn <b>Enter</b>:</div>
+    <button type="button" id="btnCopyExtUrl" style="font-size:14px;padding:11px;">📋 Copy địa chỉ: chrome://extensions</button>
+    <div class="warn-step" style="margin-top:12px;"><b>2.</b> Bật công tắc <b>Chế độ nhà phát triển</b> ở góc trên bên phải.</div>
+    <div class="warn-step"><b>3.</b> Bấm <b>Tải tiện ích đã giải nén</b> (góc trên bên trái) → chọn thư mục <code>F:\tools muse ai\muse_router_engine\mart_ai_extension</code> (hoặc thư mục đã giải nén ngoài Desktop).</div>
   </div>
 
   <div id="installedPanel">
-    <h1>Mart AI v1.2 — Tự Bắt &amp; Chat Muse.ai</h1>
-    <div class="sub">Tiện ích đã cài thành công! Tab <b>Mart AI</b> đang mở sẽ tự động nhận tài khoản <code>muse.ai</code> của bạn.</div>
-
-    <button type="button" id="btnPushOpenTab" class="green-btn">🚀 Đồng bộ ngay vào tab Mart AI đang mở</button>
-
-    <details style="margin-top:12px;">
-      <summary style="font-size:12px;color:#4b5563;cursor:pointer;font-weight:600;">Tùy chọn nâng cao (Gửi trực tiếp qua API)</summary>
-      <label for="server">Địa chỉ Mart AI</label>
-      <input type="text" id="server" placeholder="https://mart-ai.onrender.com" autocomplete="off">
-
-      <label for="password">Mật khẩu Admin (MART_ADMIN_PASSWORD)</label>
-      <input type="password" id="password" placeholder="Nhập mật khẩu admin đã đặt trên Render" autocomplete="off">
-
-      <label for="label">Tên hiển thị (tùy chọn)</label>
-      <input type="text" id="label" placeholder="Để trống tự đánh số Muse #1, #2…" autocomplete="off">
-
-      <div class="row">
-        <input type="checkbox" id="auto">
-        <label for="auto" style="margin:0;font-weight:400">Tự động đẩy lên server mỗi khi đăng nhập muse.ai</label>
-      </div>
-
-      <button type="button" id="send">⚡ Gửi trực tiếp qua mật khẩu Admin</button>
-    </details>
-
+    <h1>🟢 Mart AI — Cầu Nối Tự Động</h1>
+    <div class="sub">Tiện ích đang hoạt động ngầm tự động 100% (không cần nhập địa chỉ hay mật khẩu).</div>
+    <button type="button" id="btnPushOpenTab">⚡ Đồng bộ tài khoản Muse.ai ngay</button>
     <div id="status" role="status"></div>
-    <div class="hint">Đọc trực tiếp cookie <code>hatch_sess</code> (HttpOnly) của <code>muse.ai</code> và thực thi Chat thật qua IP trình duyệt của bạn.</div>
   </div>
 
   <script src="common.js"></script>
