@@ -1434,6 +1434,11 @@
       if (!res || !res.login_url) {
         throw new Error(res.error || "Không nhận được link đăng nhập.");
       }
+      if (!isLocalHost()) {
+        // Trên máy chủ từ xa: link do server tạo mang cookie PKCE của server nên trình duyệt người dùng
+        // đăng nhập sẽ bị Meta từ chối. Dùng điểm bắt đầu chính thức để trình duyệt tự giữ phiên của nó.
+        res.login_url = "https://muse.ai/api/oidc/start?return_to=%2F";
+      }
       state.lastOAuthSessionId = res.session_id || "";
       state.lastOAuthLoginUrl = res.login_url || "";
 
@@ -1517,7 +1522,7 @@
       btnEl.textContent = "📋 Đã đăng nhập xong? Copy hatch_sess (F12 → Application → Cookies → muse.ai) rồi bấm vào đây";
     }
     showToast(
-      "Đăng nhập Meta xong, mở tab muse.ai → F12 → Application → Cookies → muse.ai → bấm đúp vào giá trị của hatch_sess → Ctrl+C. Rồi quay lại đây bấm nút đen."
+      "Đăng nhập Meta ở tab vừa mở cho tới khi vào được giao diện muse.ai → F12 → Application → Cookies → muse.ai → bấm đúp giá trị hatch_sess → Ctrl+C. Rồi quay lại đây bấm nút đen."
     );
   }
 
