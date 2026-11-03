@@ -818,6 +818,13 @@ func (p *MuseRouterPool) generateOAuthLoginLinkDirect(ctx context.Context) (map[
 			redirectVal = r
 		}
 	}
+	pkceCookies := map[string]string{}
+	for _, c := range resp.Cookies() {
+		if c.Name != "" && c.Value != "" {
+			pkceCookies[c.Name] = c.Value
+		}
+	}
+	storeOAuthNativeSession(stateVal, pkceCookies)
 	sessID := fmt.Sprintf("oauth-%d", time.Now().UnixMilli())
 	return map[string]interface{}{
 		"session_id":   sessID,
@@ -1309,6 +1316,35 @@ func (p *MuseRouterPool) wakeAndProbeNodeDirect(ctx context.Context, target *Mus
 	trimmed := strings.TrimSpace(rawCred)
 	if trimmed == "" {
 		return nil, errors.New("ERR_EMPTY_CREDENTIAL")
+	}
+
+	if resolved, ok := resolveOAuthCallbackNative(ctx, trimmed); ok {
+		trimmed = resolved
+		if enc, errEnc := p.rustBridge.EncryptSecret(resolved); errEnc == nil {
+			newFP := p.rustBridge.ComputeFingerprint(resolved)
+			p.mu.Lock()
+			for _, n := range p.nodes {
+				if n.ID == target.ID {
+					n.EncryptedCredential = enc
+					n.Fingerprint = newFP
+					n.DeviceProfile = computeDeterministicDeviceProfile(newFP)
+					_ = p.saveVaultLocked()
+					break
+				}
+			}
+			p.mu.Unlock()
+			target.Fingerprint = newFP
+		} else {
+			LogWarn("Không mã hóa lại được cookie sau khi đổi callback: %v", errEnc)
+		}
+	} else if isOAuthCallbackURL(trimmed) {
+		return map[string]interface{}{
+			"status":         "unavailable",
+			"latency_ms":     float64(0),
+			"has_hatch_sess": false,
+			"has_hatch_gw":   false,
+			"detail":         "Link Callback không đổi được sang phiên đăng nhập — hãy bấm 'Tự Lấy Link Đăng Nhập' tạo link mới rồi đăng nhập lại",
+		}, nil
 	}
 
 	cookieHeader := trimmed
