@@ -1,0 +1,7 @@
+.gitattributes
+*.bat linguist-detectable=false
+*.exe binary
+data/ export-ignore
+*.db binary
+accounts_vault.json export-ignore
+sessions_store.json export-ignore

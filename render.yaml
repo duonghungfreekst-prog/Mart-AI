@@ -3,13 +3,10 @@ services:
     name: Mart-AI
     runtime: go
     plan: free
-    rootDir: muse_router_engine
-    buildCommand: CGO_ENABLED=0 go build -ldflags="-s -w" -o muse_router_srv .
+    buildCommand: bash build.sh
     startCommand: ./muse_router_srv
     envVars:
       - key: CGO_ENABLED
         value: "0"
       - key: RENDER
         value: "true"
-      - key: GOFLAGS
-        value: ""
