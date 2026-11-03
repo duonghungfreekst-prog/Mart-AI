@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "Mart AI — Tự Động Bắt Tài Khoản Muse",
+  "version": "1.0.0",
+  "description": "Tự động bắt phiên đăng nhập muse.ai (kể cả HttpOnly hatch_sess) và đồng bộ 1 chạm về Mart AI.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzdnZ42w63SHYXzXVE30Gh9PDKGfObZ3YfrotH7jzGd1XSBUUNmC/Ury0fXCh/hihAgSQ4COJAgzotmmxqFtc/S2ogrQ1PdGBsgQBqVoVm4vX0uWYfputg/z9bXDCoWDT5UdqCJAP9kFtN5tvP2qmaPERrK85Z+pykIw8nCOQ6qrAYaHOnQhs0u821/j8hFeR0+BS29TaE0hNIVkcJsWqNQIImfyaDnOFmlp+pxmMt/uWUvbaoIgK5qriaFl+TLpHrpSQGlMkiRXKyXrY9i0dfzfPGOzmVxjQ+6fy5SRtsOh4hW4gSnebLboL4X/WnNSHnogJNV9RGYh2RiaZk1/KQwIDAQAB",
+  "permissions": [
+    "cookies",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://muse.ai/*",
+    "https://*.muse.ai/*",
+    "https://mart-ai.onrender.com/*",
+    "http://127.0.0.1:8088/*",
+    "http://localhost:8088/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*"
+  ],
+  "externally_connectable": {
+    "matches": [
+      "https://mart-ai.onrender.com/*",
+      "http://127.0.0.1:8088/*",
+      "http://localhost:8088/*"
+    ]
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Mart AI — Tự Động Bắt Tài Khoản Muse"
+  }
+}

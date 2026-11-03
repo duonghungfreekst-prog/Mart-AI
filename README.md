@@ -103,6 +103,7 @@ copy target\release\muse_router_core.dll ..\muse_router_core\
 - **Security headers** — HSTS, CSP, X-Frame-Options, nosniff
 - **CRLF injection** — sanitize trước khi log
 - **Parameterized SQL** — chống SQLi 100%
+- **Mật khẩu Admin (`MART_ADMIN_PASSWORD`)** — đặt biến môi trường `MART_ADMIN_PASSWORD` trên Render để bảo vệ web bằng mật khẩu (Basic Auth / Bearer) và bật API `/api/accounts/ingest` cho Tiện ích Chrome tự động bắt `hatch_sess` 1 chạm (tải trực tiếp tại `/api/accounts/extension.zip`).
 
 ---
 

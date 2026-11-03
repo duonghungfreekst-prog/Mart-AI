@@ -164,6 +164,10 @@ func (a *ServerApp) Routes() http.Handler {
 		WriteJSONResponse(w, http.StatusOK, node)
 	})
 
+	// Nhận cookie muse.ai từ extension trình duyệt (bắt buộc mật khẩu admin)
+	mux.HandleFunc("/api/accounts/ingest", a.handleIngestAccount)
+	mux.HandleFunc("/api/accounts/extension.zip", a.handleDownloadExtensionZip)
+
 	mux.HandleFunc("/api/accounts/batch", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			WriteJSONError(w, http.StatusMethodNotAllowed, "ERR_METHOD_NOT_ALLOWED")
@@ -878,7 +882,7 @@ func (a *ServerApp) Routes() http.Handler {
 		fileServer.ServeHTTP(w, r)
 	})
 
-	return SecurityHeadersMiddleware(mux)
+	return SecurityHeadersMiddleware(AdminAuthMiddlewareWithJWT(mux, a.jwtMgr))
 }
 
 func tryStartLocalPythonBridge(rootDir string) {
@@ -949,6 +953,9 @@ func main() {
 	defer app.pool.Shutdown()
 
 	addr := host + ":" + port
+	if adminPassword() == "" && (os.Getenv("PORT") != "" || os.Getenv("RENDER") != "") {
+		LogWarn("MART_ADMIN_PASSWORD chưa được đặt: web đang mở công khai và API /api/accounts/ingest bị tắt")
+	}
 	LogInfo("MuseRouter Engine & Web Studio started at http://%s", addr)
 
 	srv := &http.Server{

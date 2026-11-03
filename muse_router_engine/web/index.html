@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css?v=4.4">
+  <link rel="stylesheet" href="/styles.css?v=4.5">
 </head>
 <body>
   <!-- Cảnh báo mất kết nối Backend (chỉ hiện khi dịch vụ chưa bật) -->
@@ -728,6 +728,29 @@
             <!-- KHỐI THÊM TÀI KHOẢN MỚI (ĐẶT GỌN GÀNG BÊN DƯỚI THEO PHONG CÁCH CÀI ĐẶT) -->
             <div style="margin-top:26px;">
               <div class="admin-section-label" style="margin-bottom:10px;">Thêm tài khoản mới vào Pool Token</div>
+              <div class="admin-gray-block hidden-el" id="cloudExtBanner" style="border:1px solid #bbf7d0;background:#f0fdf4;margin-bottom:14px;">
+                <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;">
+                  <div style="flex:1;min-width:240px;">
+                    <strong id="cloudExtTitle" style="font-size:13.5px;color:#14532d;display:block;margin-bottom:4px;">
+                      🧩 Tự Động Bắt Tài Khoản Muse.ai 1 Chạm (Không cần F12 / Copy-Paste)
+                    </strong>
+                    <div id="cloudExtDesc" style="font-size:12.5px;color:#166534;line-height:1.45;">
+                      Cài tiện ích 1 lần duy nhất (30 giây): Tải file <code>.zip</code> → giải nén → mở <code>chrome://extensions</code> → bật <b>Chế độ nhà phát triển</b> → bấm <b>Tải tiện ích đã giải nén</b> chọn thư mục vừa giải nén.
+                    </div>
+                  </div>
+                  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+                    <a href="/api/accounts/extension.zip" class="muse-outline-btn" id="btnDownloadExtZip" style="min-height:36px;font-size:12.5px;background:#ffffff;text-decoration:none;display:inline-flex;align-items:center;">
+                      ⬇️ Tải Tiện Ích (.zip)
+                    </a>
+                    <button type="button" class="muse-outline-btn hidden-el" id="btnCaptureExistingMuse" style="min-height:36px;font-size:12.5px;background:#ffffff;">
+                      ⚡ Bắt ngay tab Muse đang mở
+                    </button>
+                    <button type="button" class="muse-solid-btn" id="btnExtAutoLoginNew" style="min-height:36px;font-size:12.5px;">
+                      🚀 Đăng nhập Muse.ai &amp; Tự Bắt
+                    </button>
+                  </div>
+                </div>
+              </div>
               <form id="addAccountForm" class="admin-gray-block">
                 <div class="grid-2-cols" style="margin-bottom:12px;">
                   <div class="input-block">
@@ -1118,6 +1141,6 @@
     <div class="toast-region" id="toastRegion" aria-live="polite"></div>
   </div>
 
-  <script src="/app.js?v=4.4"></script>
+  <script src="/app.js?v=4.5"></script>
 </body>
 </html>

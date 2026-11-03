@@ -359,10 +359,12 @@ func computeFingerprintNative(secret string) string {
 // ============================================================================
 
 var allowedOrigins = map[string]bool{
-	"http://127.0.0.1:8088":         true,
-	"http://localhost:8088":         true,
-	"https://mart-ai.onrender.com":  true,
-	"http://mart-ai.onrender.com":   true,
+	"http://127.0.0.1:8088":        true,
+	"http://localhost:8088":        true,
+	"https://mart-ai.onrender.com": true,
+	"http://mart-ai.onrender.com":  true,
+	// Extension Chrome "Mart AI" (ID cố định nhờ trường "key" trong manifest.json)
+	"chrome-extension://mjlkhmjhbhkjfccffeoimoindodmglaj": true,
 }
 
 func isAllowedCORSOrigin(origin string, host string) bool {

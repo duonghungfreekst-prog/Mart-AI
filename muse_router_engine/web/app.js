@@ -1558,11 +1558,133 @@
     }
   }
 
+  const MART_EXTENSION_ID = "mjlkhmjhbhkjfccffeoimoindodmglaj";
+
+  function sendExtensionMessage(payload) {
+    return new Promise(function (resolve) {
+      try {
+        if (
+          typeof window.chrome === "undefined" ||
+          !window.chrome.runtime ||
+          typeof window.chrome.runtime.sendMessage !== "function"
+        ) {
+          resolve(null);
+          return;
+        }
+        window.chrome.runtime.sendMessage(MART_EXTENSION_ID, payload, function (resp) {
+          if (window.chrome.runtime.lastError) {
+            resolve(null);
+            return;
+          }
+          resolve(resp || null);
+        });
+      } catch (_) {
+        resolve(null);
+      }
+    });
+  }
+
+  async function refreshCloudExtensionBanner() {
+    const banner = document.getElementById("cloudExtBanner");
+    if (!banner) return false;
+    if (isLocalHost()) {
+      banner.classList.add("hidden-el");
+      return false;
+    }
+    banner.classList.remove("hidden-el");
+    const titleEl = document.getElementById("cloudExtTitle");
+    const descEl = document.getElementById("cloudExtDesc");
+    const btnDl = document.getElementById("btnDownloadExtZip");
+    const btnExisting = document.getElementById("btnCaptureExistingMuse");
+
+    const ping = await sendExtensionMessage({ action: "ping" });
+    if (ping && ping.ok) {
+      state.hasMartExtension = true;
+      if (titleEl) {
+        titleEl.textContent = "🟢 Tiện ích Tự Động Bắt Tài Khoản Muse.ai đã kết nối sẵn sàng!";
+      }
+      if (descEl) {
+        descEl.textContent = ping.hasExistingSession
+          ? "Đã phát hiện phiên muse.ai đang đăng nhập trên trình duyệt này! Bấm '⚡ Bắt ngay tab Muse đang mở' để thêm trong 1 giây, hoặc bấm '🚀 Đăng nhập Muse.ai & Tự Bắt' để đăng nhập tài khoản khác."
+          : "Chỉ cần bấm '🚀 Đăng nhập Muse.ai & Tự Bắt' — tiện ích sẽ mở trang đăng nhập chính chủ và tự động đưa tài khoản vào Pool ngay khi đăng nhập xong.";
+      }
+      if (btnDl) btnDl.classList.add("hidden-el");
+      if (btnExisting) {
+        btnExisting.classList.toggle("hidden-el", !ping.hasExistingSession);
+      }
+      return true;
+    }
+
+    state.hasMartExtension = false;
+    if (btnDl) btnDl.classList.remove("hidden-el");
+    if (btnExisting) btnExisting.classList.add("hidden-el");
+    return false;
+  }
+
+  async function runExtensionCaptureFlow(btnEl, onlyExisting) {
+    const origText = btnEl ? btnEl.textContent : "";
+    if (btnEl) {
+      btnEl.disabled = true;
+      btnEl.textContent = onlyExisting
+        ? "⏳ Đang tự động bắt phiên Muse..."
+        : "⏳ Đang đợi bạn đăng nhập Muse.ai...";
+    }
+    try {
+      const hasAccounts = Array.isArray(state.nodes) && state.nodes.length > 0;
+      const resp = await sendExtensionMessage(
+        onlyExisting
+          ? { action: "capture_existing" }
+          : {
+              action: "login_and_capture",
+              loginUrl: "https://muse.ai/api/oidc/start?return_to=%2F",
+              clearExistingSession: hasAccounts,
+              requireNewSess: hasAccounts,
+            }
+      );
+      if (!resp || !resp.ok || !resp.cookie) {
+        showToast("Tự động bắt chưa hoàn tất: " + ((resp && resp.error) || "Không nhận được cookie."));
+        return;
+      }
+      const labelEl = document.getElementById("accLabelInput");
+      const proxyEl = document.getElementById("accProxyInput") || document.getElementById("quickProxyInput");
+      await submitCookieCredential(
+        labelEl ? labelEl.value.trim() : "",
+        "cookie",
+        "https://muse.ai",
+        resp.cookie,
+        btnEl,
+        proxyEl ? proxyEl.value.trim() : ""
+      );
+      await refreshCloudExtensionBanner();
+    } finally {
+      if (btnEl) {
+        btnEl.disabled = false;
+        btnEl.textContent = origText;
+      }
+    }
+  }
+
   async function triggerInteractiveBrowserLogin(btnEl, sessionIdOverride, proxyUrlOverride) {
     if (!isLocalHost()) {
+      const extReady = await refreshCloudExtensionBanner();
+      if (extReady) {
+        const ping = await sendExtensionMessage({ action: "ping" });
+        const hasAccounts = Array.isArray(state.nodes) && state.nodes.length > 0;
+        if (ping && ping.hasExistingSession && !hasAccounts) {
+          await runExtensionCaptureFlow(btnEl, true);
+        } else {
+          await runExtensionCaptureFlow(btnEl, false);
+        }
+        return;
+      }
+      const banner = document.getElementById("cloudExtBanner");
+      if (banner) {
+        banner.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
       if (state.cloudLoginWaiting) {
         await submitCloudLoginFromClipboard(btnEl);
       } else {
+        showToast("💡 Để tự động bắt 100% không cần F12, hãy tải & bật Tiện Ích (.zip) ở khung màu xanh lá!");
         await cloudOAuthLoginFlow(btnEl);
       }
       return;
@@ -1834,6 +1956,30 @@
           triggerInteractiveBrowserLogin(el.tagName === "BUTTON" ? el : null);
         });
       }
+    });
+
+    const btnExtAutoLoginNew = document.getElementById("btnExtAutoLoginNew");
+    if (btnExtAutoLoginNew) {
+      btnExtAutoLoginNew.addEventListener("click", async function () {
+        const extReady = await refreshCloudExtensionBanner();
+        if (extReady) {
+          await runExtensionCaptureFlow(btnExtAutoLoginNew, false);
+        } else {
+          await triggerInteractiveBrowserLogin(btnExtAutoLoginNew);
+        }
+      });
+    }
+
+    const btnCaptureExistingMuse = document.getElementById("btnCaptureExistingMuse");
+    if (btnCaptureExistingMuse) {
+      btnCaptureExistingMuse.addEventListener("click", async function () {
+        await runExtensionCaptureFlow(btnCaptureExistingMuse, true);
+      });
+    }
+
+    refreshCloudExtensionBanner();
+    window.addEventListener("focus", function () {
+      refreshCloudExtensionBanner();
     });
 
     ["btnGetOAuthLink", "btnFormGetOAuthLink", "btnSideGetOAuthLink"].forEach(function (id) {
