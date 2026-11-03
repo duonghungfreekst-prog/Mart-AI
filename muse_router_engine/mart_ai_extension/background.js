@@ -8,6 +8,14 @@ importScripts("common.js");
 
 var pendingTimer = null;
 var chatLockPromise = Promise.resolve();
+var isApplyingRelayCookie = false;
+
+var MART_TAB_PATTERNS = [
+  "https://mart-ai.onrender.com/*",
+  "https://*.onrender.com/*",
+  "http://127.0.0.1/*",
+  "http://localhost/*",
+];
 
 function setBadge(text, color) {
   chrome.action.setBadgeText({ text: text });
@@ -20,7 +28,54 @@ function sleepMs(ms) {
   });
 }
 
+async function broadcastSessionReadyToOpenTabs(injectIfMissing) {
+  var cookies = await martCollectMuseCookies();
+  if (cookies.sess) {
+    setBadge("OK", "#16a34a");
+  }
+  chrome.tabs.query({ url: MART_TAB_PATTERNS }, function (tabs) {
+    (tabs || []).forEach(function (t) {
+      if (!t || !t.id) return;
+      if (injectIfMissing) {
+        try {
+          chrome.scripting.executeScript({ target: { tabId: t.id }, files: ["content.js"] }, function () {
+            void chrome.runtime.lastError;
+            chrome.tabs.sendMessage(
+              t.id,
+              {
+                __mart_bg_event: true,
+                event: "MART_EXT_SESSION_READY",
+                cookie: cookies.sess ? cookies.header : "",
+                hasExistingSession: !!cookies.sess,
+                version: "1.2.0",
+              },
+              function () {
+                void chrome.runtime.lastError;
+              }
+            );
+          });
+        } catch (_) {}
+      } else {
+        chrome.tabs.sendMessage(
+          t.id,
+          {
+            __mart_bg_event: true,
+            event: "MART_EXT_SESSION_READY",
+            cookie: cookies.sess ? cookies.header : "",
+            hasExistingSession: !!cookies.sess,
+            version: "1.2.0",
+          },
+          function () {
+            void chrome.runtime.lastError;
+          }
+        );
+      }
+    });
+  });
+}
+
 async function autoSendIfNeeded() {
+  await broadcastSessionReadyToOpenTabs(false);
   var cfg = await martLoadConfig();
   if (!cfg.auto || !cfg.password) return;
 
@@ -36,7 +91,15 @@ async function autoSendIfNeeded() {
   }
 }
 
+chrome.runtime.onInstalled.addListener(function () {
+  broadcastSessionReadyToOpenTabs(true);
+});
+
+// Khi Service Worker thức dậy, tự tiêm cầu nối vào các tab Mart AI đang mở sẵn
+broadcastSessionReadyToOpenTabs(true);
+
 chrome.cookies.onChanged.addListener(function (change) {
+  if (isApplyingRelayCookie) return;
   var c = change.cookie;
   if (!c || change.removed) return;
   if (c.name !== "hatch_sess" || !/(^|\.)muse\.ai$/.test(c.domain.replace(/^\./, ""))) return;
@@ -44,7 +107,7 @@ chrome.cookies.onChanged.addListener(function (change) {
   pendingTimer = setTimeout(function () {
     pendingTimer = null;
     autoSendIfNeeded();
-  }, 3500);
+  }, 1500);
 });
 
 // Mở tab đăng nhập chính thức của muse.ai, chờ hatch_sess xuất hiện và trả thẳng về trang Mart AI
@@ -164,26 +227,33 @@ async function applyRelayAccountCookies(cookieHeader) {
   }
 
   var names = Object.keys(desired);
-  for (var i = 0; i < names.length; i++) {
-    var name = names[i];
-    var val = desired[name];
-    await new Promise(function (resolve) {
-      chrome.cookies.set(
-        {
-          url: "https://muse.ai/",
-          domain: ".muse.ai",
-          path: "/",
-          name: name,
-          value: val,
-          secure: true,
-          httpOnly: name === "hatch_sess" || name === "datr",
-          sameSite: "lax",
-        },
-        function () {
-          resolve();
-        }
-      );
-    });
+  isApplyingRelayCookie = true;
+  try {
+    for (var i = 0; i < names.length; i++) {
+      var name = names[i];
+      var val = desired[name];
+      await new Promise(function (resolve) {
+        chrome.cookies.set(
+          {
+            url: "https://muse.ai/",
+            domain: ".muse.ai",
+            path: "/",
+            name: name,
+            value: val,
+            secure: true,
+            httpOnly: name === "hatch_sess" || name === "datr",
+            sameSite: "lax",
+          },
+          function () {
+            resolve();
+          }
+        );
+      });
+    }
+  } finally {
+    setTimeout(function () {
+      isApplyingRelayCookie = false;
+    }, 300);
   }
   return true;
 }
@@ -460,11 +530,23 @@ function enqueueMuseChat(prompt, cookieHeader) {
   return next;
 }
 
-chrome.runtime.onMessageExternal.addListener(function (msg, _sender, sendResponse) {
+function handleBridgeAction(msg, sendResponse) {
   var action = (msg && msg.action) || "";
   if (action === "ping") {
     martCollectMuseCookies().then(function (c) {
-      sendResponse({ ok: true, version: "1.1.0", hasExistingSession: !!c.sess, supportsChatRelay: true });
+      sendResponse({ ok: true, version: "1.2.0", hasExistingSession: !!c.sess, supportsChatRelay: true });
+    });
+    return true;
+  }
+  if (action === "ping_with_cookie") {
+    martCollectMuseCookies().then(function (c) {
+      sendResponse({
+        ok: true,
+        version: "1.2.0",
+        hasExistingSession: !!c.sess,
+        supportsChatRelay: true,
+        cookie: c.sess ? c.header : "",
+      });
     });
     return true;
   }
@@ -486,6 +568,23 @@ chrome.runtime.onMessageExternal.addListener(function (msg, _sender, sendRespons
       .catch(function (err) {
         sendResponse({ ok: false, error: (err && err.message) || "Lỗi thực thi trên tab muse.ai" });
       });
+    return true;
+  }
+  if (action === "broadcast_now") {
+    broadcastSessionReadyToOpenTabs(true).then(function () {
+      sendResponse({ ok: true });
+    });
+    return true;
+  }
+  return false;
+}
+
+chrome.runtime.onMessage.addListener(function (msg, _sender, sendResponse) {
+  return handleBridgeAction(msg, sendResponse);
+});
+
+chrome.runtime.onMessageExternal.addListener(function (msg, _sender, sendResponse) {
+  if (handleBridgeAction(msg, sendResponse)) {
     return true;
   }
   sendResponse({ ok: false, error: "UNKNOWN_ACTION" });

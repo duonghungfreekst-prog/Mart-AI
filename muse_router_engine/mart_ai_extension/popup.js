@@ -1,13 +1,40 @@
-/* Mart AI Extension — Popup UI */
+/* Mart AI Extension v1.2 — Popup UI */
 "use strict";
 
 (function () {
+  var isExtensionContext =
+    typeof chrome !== "undefined" &&
+    !!chrome.cookies &&
+    !!chrome.runtime &&
+    window.location.protocol === "chrome-extension:";
+
+  if (!isExtensionContext) {
+    document.body.classList.add("file-mode");
+    var warnEl = document.getElementById("notInstalledWarning");
+    var panelEl = document.getElementById("installedPanel");
+    if (warnEl) warnEl.style.display = "block";
+    if (panelEl) panelEl.style.display = "none";
+
+    var copyBtn = document.getElementById("btnCopyExtUrl");
+    if (copyBtn) {
+      copyBtn.addEventListener("click", function () {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText("chrome://extensions").then(function () {
+            copyBtn.textContent = "✅ Đã copy! Mở Tab mới → nhấn Ctrl+V → Enter";
+          });
+        }
+      });
+    }
+    return;
+  }
+
   var el = {
     server: document.getElementById("server"),
     password: document.getElementById("password"),
     label: document.getElementById("label"),
     auto: document.getElementById("auto"),
     send: document.getElementById("send"),
+    pushTab: document.getElementById("btnPushOpenTab"),
     status: document.getElementById("status"),
   };
 
@@ -46,8 +73,30 @@
 
     var cookies = await martCollectMuseCookies();
     if (cookies.sess) {
-      showStatus("🟢 Đã phát hiện phiên muse.ai đang đăng nhập trên trình duyệt này.", "ok");
+      showStatus("🟢 Đã phát hiện phiên muse.ai đang đăng nhập! Đang tự đồng bộ sang tab Mart AI...", "ok");
+      chrome.runtime.sendMessage({ action: "broadcast_now" }, function () {
+        void chrome.runtime.lastError;
+      });
+    } else {
+      showStatus("⚠️ Chưa đăng nhập muse.ai trên trình duyệt này. Hãy đăng nhập tại muse.ai trước.", "err");
     }
+  }
+
+  if (el.pushTab) {
+    el.pushTab.addEventListener("click", async function () {
+      var cookies = await martCollectMuseCookies();
+      if (!cookies.sess) {
+        chrome.tabs.create({ url: "https://muse.ai/api/oidc/start?return_to=%2F", active: true });
+        showStatus("Đã mở trang đăng nhập muse.ai — đăng nhập xong sẽ tự bắt ngay!", "ok");
+        return;
+      }
+      el.pushTab.disabled = true;
+      chrome.runtime.sendMessage({ action: "broadcast_now" }, function () {
+        void chrome.runtime.lastError;
+        el.pushTab.disabled = false;
+        showStatus("✅ Đã đẩy phiên đăng nhập sang tab Mart AI đang mở!", "ok");
+      });
+    });
   }
 
   el.auto.addEventListener("change", function () {

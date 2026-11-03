@@ -94,15 +94,25 @@
   function showToast(message) {
     const region = document.getElementById("toastRegion");
     if (!region) return;
+    const text = String(message || "");
+    const existingCards = Array.from(region.querySelectorAll(".toast-card"));
+    for (let i = 0; i < existingCards.length; i++) {
+      if (existingCards[i].textContent === text) {
+        return;
+      }
+    }
+    while (region.children.length >= 2) {
+      region.removeChild(region.firstElementChild);
+    }
     const card = document.createElement("div");
     card.className = "toast-card";
-    card.textContent = message;
+    card.textContent = text;
     region.appendChild(card);
     setTimeout(function () {
       if (card.parentNode) {
         card.parentNode.removeChild(card);
       }
-    }, 4200);
+    }, 3800);
   }
 
   function escapeHtml(raw) {
@@ -1559,8 +1569,11 @@
   }
 
   const MART_EXTENSION_ID = "mjlkhmjhbhkjfccffeoimoindodmglaj";
+  var extReqCounter = 0;
+  var pendingExtResolvers = {};
+  var autoSyncCookieInFlight = false;
 
-  function sendExtensionMessage(payload) {
+  function sendViaDirectExternal(payload) {
     return new Promise(function (resolve) {
       try {
         if (
@@ -1584,6 +1597,111 @@
     });
   }
 
+  function sendExtensionMessage(payload) {
+    var act = (payload && payload.action) || "";
+    var timeoutMs = act === "ping" || act === "ping_with_cookie" ? 450 : 95000;
+
+    return new Promise(function (resolve) {
+      var reqId = "mext_" + Date.now() + "_" + ++extReqCounter;
+      var settled = false;
+      var timer = setTimeout(function () {
+        if (settled) return;
+        delete pendingExtResolvers[reqId];
+        // Dự phòng qua externally_connectable nếu tab chưa nạp content.js
+        sendViaDirectExternal(payload).then(function (fallbackResp) {
+          if (!settled) {
+            settled = true;
+            resolve(fallbackResp);
+          }
+        });
+      }, timeoutMs);
+
+      pendingExtResolvers[reqId] = function (resp) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        delete pendingExtResolvers[reqId];
+        if (resp) {
+          resolve(resp);
+        } else {
+          sendViaDirectExternal(payload).then(resolve);
+        }
+      };
+
+      try {
+        window.postMessage(
+          {
+            __mart_ext_req: true,
+            reqId: reqId,
+            payload: payload,
+          },
+          window.location.origin || "*"
+        );
+      } catch (_) {
+        clearTimeout(timer);
+        delete pendingExtResolvers[reqId];
+        sendViaDirectExternal(payload).then(resolve);
+      }
+    });
+  }
+
+  async function autoIngestCookieFromExtension(cookieHeader) {
+    if (!cookieHeader || cookieHeader.indexOf("hatch_sess=") < 0) return;
+    if (autoSyncCookieInFlight) return;
+    if (state.lastAutoSyncedCookie === cookieHeader) return;
+
+    // Tránh tự ghi đè nếu đã có tài khoản hoạt động, trừ khi Pool đang trống (0 tài khoản)
+    var curNodes = (state.summary && state.summary.nodes) || [];
+    if (curNodes.length > 0 && state.lastAutoSyncedOnce) {
+      return;
+    }
+
+    autoSyncCookieInFlight = true;
+    state.lastAutoSyncedCookie = cookieHeader;
+    try {
+      const node = await apiRequest("/api/accounts/add", {
+        method: "POST",
+        body: {
+          label: "",
+          plan_tier: "Muse.ai",
+          auth_type: "cookie",
+          upstream_url: "https://muse.ai",
+          proxy_url: "",
+          credential: cookieHeader,
+          tokens_remaining: 0,
+        },
+      });
+      state.lastAutoSyncedOnce = true;
+      showToast("✅ Đã tự động bắt & kết nối " + (node.label || "tài khoản Muse.ai") + " thành công!");
+      await refreshRouterState(true);
+      renderActiveThreadMessages();
+    } catch (_) {
+      state.lastAutoSyncedCookie = "";
+    } finally {
+      autoSyncCookieInFlight = false;
+    }
+  }
+
+  window.addEventListener("message", function (ev) {
+    if (ev.source !== window || !ev.data) return;
+    if (ev.data.__mart_ext_resp === true && ev.data.reqId) {
+      var fn = pendingExtResolvers[ev.data.reqId];
+      if (typeof fn === "function") {
+        fn(ev.data.result || null);
+      }
+      return;
+    }
+    if (ev.data.__mart_ext_push === true && ev.data.event === "MART_EXT_SESSION_READY") {
+      state.hasMartExtension = true;
+      var modal = document.getElementById("martCloudExtModal");
+      if (modal && modal.parentNode) modal.remove();
+      refreshCloudExtensionBanner();
+      if (ev.data.cookie && ev.data.cookie.indexOf("hatch_sess=") >= 0) {
+        autoIngestCookieFromExtension(ev.data.cookie);
+      }
+    }
+  });
+
   async function refreshCloudExtensionBanner() {
     const banner = document.getElementById("cloudExtBanner");
     if (!banner) return false;
@@ -1597,28 +1715,28 @@
     const btnDl = document.getElementById("btnDownloadExtZip");
     const btnExisting = document.getElementById("btnCaptureExistingMuse");
 
-    const ping = await sendExtensionMessage({ action: "ping" });
+    const ping = await sendExtensionMessage({ action: "ping_with_cookie" });
     if (ping && ping.ok) {
       state.hasMartExtension = true;
       if (!ping.supportsChatRelay) {
         if (titleEl) {
-          titleEl.textContent = "🟡 Cần cập nhật Tiện ích Mart AI lên bản v1.1 để Chat trực tiếp trên Render!";
+          titleEl.textContent = "🟡 Cần cập nhật Tiện ích Mart AI lên bản v1.2 để Chat trực tiếp trên Render!";
         }
         if (descEl) {
           descEl.textContent =
-            "Bấm '⬇️ Tải bản v1.1 (.zip)' → giải nén đè lên thư mục tiện ích cũ → mở chrome://extensions bấm nút Tải lại (🔄).";
+            "Bấm '⬇️ Tải bản v1.2 (.zip)' → giải nén đè lên thư mục tiện ích cũ → mở chrome://extensions bấm nút Tải lại (🔄).";
         }
         if (btnDl) {
-          btnDl.textContent = "⬇️ Tải bản v1.1 (.zip)";
+          btnDl.textContent = "⬇️ Tải bản v1.2 (.zip)";
           btnDl.classList.remove("hidden-el");
         }
       } else {
         if (titleEl) {
-          titleEl.textContent = "🟢 Tiện ích Mart AI (v1.1) đã kết nối — Sẵn sàng Tự Bắt & Chat thật trên Cloud!";
+          titleEl.textContent = "🟢 Tiện ích Mart AI (v1.2) đã kết nối — Sẵn sàng Tự Bắt 0 Chạm & Chat thật trên Cloud!";
         }
         if (descEl) {
           descEl.textContent = ping.hasExistingSession
-            ? "Đã phát hiện phiên muse.ai đang đăng nhập trên trình duyệt này! Bấm '⚡ Bắt ngay tab Muse đang mở' để thêm trong 1 giây, hoặc bấm '🚀 Đăng nhập Muse.ai & Tự Bắt' để đăng nhập tài khoản khác."
+            ? "Đã phát hiện phiên muse.ai đang đăng nhập trên trình duyệt này! Bấm '⚡ Bắt ngay tab Muse đang mở' hoặc bấm '🚀 Đăng nhập Muse.ai & Tự Bắt' để thêm tài khoản mới."
             : "Chỉ cần bấm '🚀 Đăng nhập Muse.ai & Tự Bắt' — tiện ích sẽ mở trang đăng nhập chính chủ và tự động đưa tài khoản vào Pool ngay khi đăng nhập xong.";
         }
         if (btnDl) btnDl.classList.add("hidden-el");
@@ -1626,12 +1744,20 @@
       if (btnExisting) {
         btnExisting.classList.toggle("hidden-el", !ping.hasExistingSession);
       }
+      if (
+        ping.cookie &&
+        ping.cookie.indexOf("hatch_sess=") >= 0 &&
+        state.summary &&
+        (state.summary.total_nodes || 0) === 0
+      ) {
+        autoIngestCookieFromExtension(ping.cookie);
+      }
       return true;
     }
 
     state.hasMartExtension = false;
     if (btnDl) {
-      btnDl.textContent = "⬇️ Tải Tiện Ích v1.1 (.zip)";
+      btnDl.textContent = "⬇️ Tải Tiện Ích v1.2 (.zip)";
       btnDl.classList.remove("hidden-el");
     }
     if (btnExisting) btnExisting.classList.add("hidden-el");
@@ -1645,36 +1771,51 @@
     var overlay = document.createElement("div");
     overlay.id = "martCloudExtModal";
     overlay.style.cssText =
-      "position:fixed;inset:0;z-index:9999;background:rgba(15,23,42,0.45);display:flex;align-items:center;justify-content:center;padding:16px;";
+      "position:fixed;inset:0;z-index:9999;background:rgba(15,23,42,0.5);display:flex;align-items:center;justify-content:center;padding:16px;";
 
     var box = document.createElement("div");
     box.style.cssText =
-      "background:#ffffff;border-radius:16px;max-width:480px;width:100%;padding:22px 24px;box-shadow:0 20px 50px rgba(0,0,0,0.18);font-family:inherit;color:#171717;";
+      "background:#ffffff;border-radius:16px;max-width:520px;width:100%;padding:22px 24px;box-shadow:0 20px 50px rgba(0,0,0,0.22);font-family:inherit;color:#171717;";
 
     var titleText = isOutdated
-      ? "🔄 Cập nhật Tiện ích Chrome Mart AI lên v1.1"
-      : "🧩 Cài Tiện ích Chrome Mart AI (v1.1) để Chat trên Cloud";
+      ? "🔄 Cập nhật Tiện ích Chrome Mart AI lên v1.2"
+      : "🧩 Cài Tiện ích Chrome 1 Lần Để Tự Bắt Muse.ai (Không cần F12)";
     var stepText = isOutdated
-      ? "Bạn đang cài tiện ích bản cũ (v1.0). Hãy tải bản <b>v1.1</b> bên dưới → giải nén đè lên thư mục cũ → mở <code>chrome://extensions</code> bấm nút <b>Tải lại (🔄)</b> rồi gửi lại tin nhắn."
-      : "Trên máy chủ Render không chạy trình duyệt ngầm nên cần Tiện ích Chrome <b>Mart AI v1.1</b> để gửi/nhận tin nhắn thật với <code>muse.ai</code> bằng chính IP trình duyệt của bạn (chống khóa tài khoản &amp; không lỗi 502):<br><br>" +
-        "1️⃣ Bấm <b>⬇️ Tải Tiện Ích v1.1 (.zip)</b> và giải nén ra thư mục.<br>" +
-        "2️⃣ Mở <code>chrome://extensions</code> → bật <b>Chế độ nhà phát triển</b> (góc phải trên).<br>" +
-        "3️⃣ Bấm <b>Tải tiện ích đã giải nén</b> → chọn thư mục vừa giải nén → quay lại đây bấm Gửi!";
+      ? "Bạn đang dùng bản cũ. Hãy tải bản <b>v1.2</b> bên dưới → giải nén đè lên thư mục cũ → mở <code>chrome://extensions</code> bấm nút <b>Tải lại (🔄)</b>."
+      : '<div style="background:#fff7ed;border:1px solid #fdba74;border-radius:10px;padding:9px 12px;margin-bottom:12px;color:#9a3412;font-size:12.5px;">' +
+        "⚠️ <b>Lưu ý:</b> Sau khi tải file <code>.zip</code>, hãy <b>Giải nén (Extract)</b> thư mục <code>mart_ai_extension</code> ra ngoài <b>Desktop</b> — <b>không</b> bấm đúp mở <code>popup.html</code> trong WinRAR!" +
+        "</div>" +
+        "<b>Bước 1:</b> Bấm <b>⬇️ Tải Tiện Ích v1.2 (.zip)</b> bên dưới và giải nén ra Desktop.<br>" +
+        "<b>Bước 2:</b> Bấm <b>📋 Copy chrome://extensions</b> → mở Tab mới dán vào thanh địa chỉ Chrome → nhấn Enter → bật <b>Chế độ nhà phát triển</b> (góc trên bên phải).<br>" +
+        "<b>Bước 3:</b> Bấm <b>Tải tiện ích đã giải nén</b> (góc trên bên trái) → chọn thư mục <code>mart_ai_extension</code> ngoài Desktop.<br>" +
+        '<span style="color:#15803d;font-weight:600;display:block;margin-top:8px;">✨ Ngay khi chọn xong, tab Muse.ai bạn đang mở sẽ TỰ ĐỘNG nhảy vào Pool không cần bấm thêm nút nào!</span>';
 
     box.innerHTML =
       '<div style="font-size:16px;font-weight:700;margin-bottom:10px;color:#14532d;">' +
       titleText +
       "</div>" +
-      '<div style="font-size:13.5px;line-height:1.55;color:#334155;margin-bottom:18px;">' +
+      '<div style="font-size:13.5px;line-height:1.58;color:#334155;margin-bottom:18px;">' +
       stepText +
       "</div>" +
-      '<div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end;">' +
-      '<a href="/api/accounts/extension.zip" class="muse-solid-btn" style="text-decoration:none;display:inline-flex;align-items:center;padding:8px 14px;font-size:13px;">⬇️ Tải Tiện Ích v1.1 (.zip)</a>' +
-      '<button type="button" id="btnCloseCloudExtModal" class="muse-outline-btn" style="padding:8px 14px;font-size:13px;">Đã cài xong — Đóng</button>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">' +
+      '<a href="/api/accounts/extension.zip" class="muse-solid-btn" style="text-decoration:none;display:inline-flex;align-items:center;padding:8px 13px;font-size:13px;">⬇️ 1. Tải Tiện Ích (.zip)</a>' +
+      '<button type="button" id="btnCopyChromeExtLink" class="muse-outline-btn" style="padding:8px 13px;font-size:13px;border-color:#15803d;color:#15803d;font-weight:600;">📋 2. Copy chrome://extensions</button>' +
+      '<button type="button" id="btnCloseCloudExtModal" class="muse-outline-btn" style="padding:8px 13px;font-size:13px;">Đóng</button>' +
       "</div>";
 
     overlay.appendChild(box);
     document.body.appendChild(overlay);
+
+    var copyExtBtn = document.getElementById("btnCopyChromeExtLink");
+    if (copyExtBtn) {
+      copyExtBtn.onclick = function () {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText("chrome://extensions").then(function () {
+            copyExtBtn.textContent = "✅ Đã copy! Mở Tab mới nhấn Ctrl+V";
+          });
+        }
+      };
+    }
 
     var closeBtn = document.getElementById("btnCloseCloudExtModal");
     if (closeBtn) {
@@ -1776,7 +1917,8 @@
         : "⏳ Đang đợi bạn đăng nhập Muse.ai...";
     }
     try {
-      const hasAccounts = Array.isArray(state.nodes) && state.nodes.length > 0;
+      const curNodes = (state.summary && state.summary.nodes) || [];
+      const hasAccounts = Array.isArray(curNodes) && curNodes.length > 0;
       const resp = await sendExtensionMessage(
         onlyExisting
           ? { action: "capture_existing" }
@@ -1814,8 +1956,9 @@
     if (!isLocalHost()) {
       const extReady = await refreshCloudExtensionBanner();
       if (extReady) {
-        const ping = await sendExtensionMessage({ action: "ping" });
-        const hasAccounts = Array.isArray(state.nodes) && state.nodes.length > 0;
+        const ping = await sendExtensionMessage({ action: "ping_with_cookie" });
+        const curNodes = (state.summary && state.summary.nodes) || [];
+        const hasAccounts = Array.isArray(curNodes) && curNodes.length > 0;
         if (ping && ping.hasExistingSession && !hasAccounts) {
           await runExtensionCaptureFlow(btnEl, true);
         } else {
@@ -1823,16 +1966,7 @@
         }
         return;
       }
-      const banner = document.getElementById("cloudExtBanner");
-      if (banner) {
-        banner.scrollIntoView({ behavior: "smooth", block: "center" });
-      }
-      if (state.cloudLoginWaiting) {
-        await submitCloudLoginFromClipboard(btnEl);
-      } else {
-        showToast("💡 Để tự động bắt 100% không cần F12, hãy tải & bật Tiện Ích (.zip) ở khung màu xanh lá!");
-        await cloudOAuthLoginFlow(btnEl);
-      }
+      showCloudExtensionRequiredModal(false);
       return;
     }
     const origText = btnEl ? btnEl.textContent : "";

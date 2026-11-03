@@ -160,8 +160,8 @@ func TestIngestEndpointSecurity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("invalid zip archive: %v", err)
 	}
-	if len(zr.File) != 5 {
-		t.Fatalf("expected 5 files in extension.zip, got %d", len(zr.File))
+	if len(zr.File) != 6 {
+		t.Fatalf("expected 6 files in extension.zip, got %d", len(zr.File))
 	}
 }
 
