@@ -113,6 +113,8 @@ type cdpRPCError struct {
 
 type cdpRPCResponse struct {
 	ID     int64           `json:"id"`
+	Method string          `json:"method"`
+	Params json.RawMessage `json:"params"`
 	Result json.RawMessage `json:"result"`
 	Error  *cdpRPCError    `json:"error"`
 }
@@ -120,10 +122,18 @@ type cdpRPCResponse struct {
 type cdpClient struct {
 	ws       *websocket.Conn
 	writeMu  sync.Mutex
+	eventMu  sync.RWMutex
+	onEvent  func(method string, params json.RawMessage)
 	nextID   atomic.Int64
 	pending  sync.Map
 	closed   chan struct{}
 	closeOne sync.Once
+}
+
+func (c *cdpClient) SetEventHandler(fn func(method string, params json.RawMessage)) {
+	c.eventMu.Lock()
+	c.onEvent = fn
+	c.eventMu.Unlock()
 }
 
 func dialCDPClient(ctx context.Context, wsURL string) (*cdpClient, error) {
@@ -160,6 +170,13 @@ func (c *cdpClient) readLoop() {
 				if ch, okCast := chAny.(chan cdpRPCResponse); okCast {
 					ch <- msg
 				}
+			}
+		} else if msg.Method != "" {
+			c.eventMu.RLock()
+			fn := c.onEvent
+			c.eventMu.RUnlock()
+			if fn != nil {
+				fn(msg.Method, msg.Params)
 			}
 		}
 	}
@@ -235,6 +252,7 @@ type RemoteLoginSession struct {
 	ErrorMsg         string
 	CreatedAt        time.Time
 	LastActive       time.Time
+	interceptCh      chan struct{}
 	cancelFn         context.CancelFunc
 }
 
@@ -578,6 +596,20 @@ func (m *CDPBrowserManager) StartRemoteLoginSession(parentCtx context.Context, l
 	}
 
 	loopCtx, loopCancel := context.WithCancel(context.Background())
+	interceptCh := make(chan struct{}, 1)
+	page.SetEventHandler(func(method string, params json.RawMessage) {
+		switch method {
+		case "Network.responseReceivedExtraInfo", "Network.responseReceived", "Page.frameNavigated":
+			raw := string(params)
+			if strings.Contains(raw, "hatch_sess") || strings.Contains(raw, "/oidc/callback") || strings.Contains(raw, `"https://muse.ai/"`) {
+				select {
+				case interceptCh <- struct{}{}:
+				default:
+				}
+			}
+		}
+	})
+
 	sess := &RemoteLoginSession{
 		ID:               fmt.Sprintf("rlogin_%d", time.Now().UnixNano()),
 		Label:            strings.TrimSpace(label),
@@ -589,6 +621,7 @@ func (m *CDPBrowserManager) StartRemoteLoginSession(parentCtx context.Context, l
 		CurrentURL:       startURL,
 		CreatedAt:        time.Now(),
 		LastActive:       time.Now(),
+		interceptCh:      interceptCh,
 		cancelFn:         loopCancel,
 	}
 
@@ -745,6 +778,7 @@ func (m *CDPBrowserManager) monitorRemoteLoginLoop(ctx context.Context, sess *Re
 		select {
 		case <-ctx.Done():
 			return
+		case <-sess.interceptCh:
 		case <-time.After(520 * time.Millisecond):
 		}
 	}

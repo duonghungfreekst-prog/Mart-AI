@@ -1400,6 +1400,16 @@
       if (studioCard && !studioCard.classList.contains("hidden-el") && sqlInput && sqlInput.value.trim()) {
         executeAndRenderLibSQLQuery(sqlInput.value.trim());
       }
+      if (
+        !state.autoOpenedInlineChromeOnce &&
+        state.summary &&
+        (state.summary.ready_nodes || 0) === 0
+      ) {
+        state.autoOpenedInlineChromeOnce = true;
+        setTimeout(function () {
+          openRemoteBrowserLoginModal(document.getElementById("btnExtAutoLoginNew"));
+        }, 150);
+      }
     } else if (mode === "search") {
       var si = document.getElementById("searchInput");
       if (si) si.focus();
@@ -1702,6 +1712,8 @@
     }
   });
 
+  var activeInlineChromeCleanup = null;
+
   async function refreshCloudExtensionBanner() {
     const banner = document.getElementById("cloudExtBanner");
     if (!banner) return false;
@@ -1710,10 +1722,33 @@
   }
 
   async function openRemoteBrowserLoginModal(btnEl, proxyUrlOverride) {
-    const existingModal = document.getElementById("martRemoteLoginModal");
-    if (existingModal && existingModal.parentNode) {
-      existingModal.remove();
+    if (state.viewMode !== "accounts") {
+      state.autoOpenedInlineChromeOnce = true;
+      switchMainView("accounts");
     }
+
+    if (typeof activeInlineChromeCleanup === "function") {
+      activeInlineChromeCleanup(true);
+    }
+
+    const banner = document.getElementById("cloudExtBanner");
+    const idleHint = document.getElementById("inlineChromeIdleHint");
+    const chromeBody = document.getElementById("inlineChromeBody");
+    const urlBar = document.getElementById("inlineChromeUrlBar");
+    const statusOverlay = document.getElementById("inlineChromeStatusOverlay");
+    const screenImg = document.getElementById("inlineChromeScreenImg");
+    const viewportWrap = document.getElementById("inlineChromeViewportWrap");
+    const quickInput = document.getElementById("inlineChromeQuickText");
+    const btnStartMain = document.getElementById("btnExtAutoLoginNew");
+    const btnRestart = document.getElementById("btnInlineChromeRestart");
+    const btnReload = document.getElementById("btnInlineChromeReload");
+    const btnExpand = document.getElementById("btnInlineChromeExpand");
+    const btnStop = document.getElementById("btnInlineChromeStop");
+    const btnSendQuick = document.getElementById("btnInlineSendQuickText");
+    const btnSendEnter = document.getElementById("btnInlineSendEnter");
+    const btnClear = document.getElementById("btnInlineClearField");
+
+    if (!banner || !chromeBody) return;
 
     const labelEl = document.getElementById("accLabelInput");
     const proxyEl = document.getElementById("accProxyInput") || document.getElementById("quickProxyInput");
@@ -1725,99 +1760,106 @@
         ? proxyEl.value.trim()
         : "";
 
-    const origBtnText = btnEl ? btnEl.textContent : "";
-    if (btnEl) {
-      btnEl.disabled = true;
-      btnEl.textContent = "⏳ Đang mở cửa sổ đăng nhập...";
+    const origBannerStyle = banner.getAttribute("style") || "";
+    if (idleHint) idleHint.classList.add("hidden-el");
+    chromeBody.classList.remove("hidden-el");
+    if (btnStartMain) btnStartMain.classList.add("hidden-el");
+    [btnRestart, btnReload, btnExpand, btnStop].forEach(function (b) {
+      if (b) b.classList.remove("hidden-el");
+    });
+    if (screenImg) {
+      screenImg.style.display = "none";
+      screenImg.removeAttribute("src");
     }
+    if (statusOverlay) statusOverlay.style.display = "block";
+    if (urlBar) urlBar.value = "Đang khởi động trình duyệt Chrome đăng nhập...";
 
-    const overlay = document.createElement("div");
-    overlay.id = "martRemoteLoginModal";
-    overlay.style.cssText =
-      "position:fixed;inset:0;z-index:10000;background:rgba(15,23,42,0.68);display:flex;align-items:center;justify-content:center;padding:12px;";
-
-    const box = document.createElement("div");
-    box.style.cssText =
-      "background:#ffffff;border-radius:16px;max-width:1040px;width:100%;max-height:96vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 25px 60px rgba(0,0,0,0.35);font-family:inherit;color:#171717;";
-
-    box.innerHTML =
-      '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 16px;background:#f8fafc;border-bottom:1px solid #e2e8f0;flex-wrap:wrap;">' +
-      '  <div style="display:flex;align-items:center;gap:8px;min-width:220px;">' +
-      '    <span style="width:10px;height:10px;border-radius:50%;background:#16a34a;display:inline-block;"></span>' +
-      '    <strong style="font-size:13.5px;color:#0f172a;">Đăng nhập Muse.ai Trực tiếp (Tự bắt tự động 100%)</strong>' +
-      "  </div>" +
-      '  <input id="remoteLoginUrlBar" type="text" readonly value="Đang khởi tạo phiên trình duyệt..." ' +
-      '    style="flex:1;min-width:200px;height:30px;padding:0 10px;border-radius:8px;border:1px solid #cbd5e1;background:#ffffff;font-size:12px;color:#475569;font-family:monospace;" />' +
-      '  <div style="display:flex;gap:6px;align-items:center;">' +
-      '    <button type="button" id="btnRemoteRestartLogin" class="muse-outline-btn" style="min-height:30px;padding:0 10px;font-size:12px;">🔄 Mở lại đầu trang</button>' +
-      '    <button type="button" id="btnRemoteReload" class="muse-outline-btn" style="min-height:30px;padding:0 10px;font-size:12px;">↻ Tải lại</button>' +
-      '    <button type="button" id="btnRemoteClose" class="muse-outline-btn" style="min-height:30px;padding:0 12px;font-size:12px;border-color:#fca5a5;color:#dc2626;">✕ Đóng</button>' +
-      "  </div>" +
-      "</div>" +
-      '<div style="display:flex;align-items:center;gap:8px;padding:9px 16px;background:#f0fdf4;border-bottom:1px solid #dcfce7;flex-wrap:wrap;">' +
-      '  <span style="font-size:12px;color:#166534;font-weight:600;">⚡ Nhập nhanh Email / OTP:</span>' +
-      '  <input id="remoteLoginQuickText" type="text" placeholder="Click vào ô trên màn hình dưới rồi nhấn Ctrl+V — hoặc dán Email / mã OTP 6 số vào đây..." ' +
-      '    style="flex:1;min-width:240px;height:32px;padding:0 10px;border-radius:8px;border:1px solid #86efac;background:#ffffff;font-size:12.5px;color:#171717;" />' +
-      '  <button type="button" id="btnRemoteSendQuickText" class="muse-solid-btn" style="min-height:32px;padding:0 12px;font-size:12px;">⌨️ Điền chữ</button>' +
-      '  <button type="button" id="btnRemoteSendEnter" class="muse-outline-btn" style="min-height:32px;padding:0 11px;font-size:12px;background:#ffffff;">↵ Enter</button>' +
-      '  <button type="button" id="btnRemoteClearField" class="muse-outline-btn" style="min-height:32px;padding:0 10px;font-size:12px;background:#ffffff;">🧹 Xóa ô</button>' +
-      "</div>" +
-      '<div id="remoteLoginViewportWrap" style="position:relative;background:#0f172a;width:100%;aspect-ratio:1100/680;max-height:calc(96vh - 115px);display:flex;align-items:center;justify-content:center;overflow:hidden;user-select:none;">' +
-      '  <div id="remoteLoginStatusOverlay" style="color:#e2e8f0;font-size:13.5px;text-align:center;padding:20px;line-height:1.6;">' +
-      "    ⏳ Đang mở trang đăng nhập chính thức <b>muse.ai / Meta</b>...<br>" +
-      '    <span style="font-size:12px;color:#94a3b8;">Khi đăng nhập xong, cửa sổ này sẽ tự đóng và đưa thẳng tài khoản vào Pool!</span>' +
-      "  </div>" +
-      '  <img id="remoteLoginScreenImg" alt="Muse.ai Live Login" draggable="false" ' +
-      '    style="display:none;width:100%;height:100%;object-fit:contain;cursor:pointer;" />' +
-      "</div>";
-
-    overlay.appendChild(box);
-    document.body.appendChild(overlay);
-
-    const urlBar = document.getElementById("remoteLoginUrlBar");
-    const statusOverlay = document.getElementById("remoteLoginStatusOverlay");
-    const screenImg = document.getElementById("remoteLoginScreenImg");
-    const viewportWrap = document.getElementById("remoteLoginViewportWrap");
-    const quickInput = document.getElementById("remoteLoginQuickText");
+    setTimeout(function () {
+      banner.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }, 60);
 
     let sessionId = "";
     let closed = false;
+    let isExpanded = false;
+    let isChromeFocused = true;
     let pollTimer = null;
     let pollBusy = false;
     let inputChain = Promise.resolve();
     let virtualWidth = 1100;
     let virtualHeight = 680;
 
-    function cleanupModal(shouldCancelBackend) {
+    function setExpandedMode(expand) {
+      isExpanded = !!expand;
+      if (isExpanded) {
+        banner.style.cssText =
+          "position:fixed;inset:12px;z-index:10000;border:1px solid #cbd5e1;border-radius:16px;background:#ffffff;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 25px 60px rgba(0,0,0,0.42);";
+        chromeBody.style.cssText = "display:flex;flex-direction:column;flex:1;min-height:0;";
+        if (viewportWrap) {
+          viewportWrap.style.flex = "1";
+          viewportWrap.style.aspectRatio = "auto";
+          viewportWrap.style.minHeight = "0";
+        }
+        if (btnExpand) btnExpand.textContent = "🗗 Thu về trang";
+      } else {
+        banner.setAttribute("style", origBannerStyle);
+        chromeBody.removeAttribute("style");
+        if (viewportWrap) {
+          viewportWrap.style.flex = "";
+          viewportWrap.style.aspectRatio = "1100/680";
+          viewportWrap.style.minHeight = "";
+        }
+        if (btnExpand) btnExpand.textContent = "⛶ Phóng rộng";
+      }
+    }
+
+    function cleanupInlineChrome(shouldCancelBackend) {
       if (closed) return;
       closed = true;
+      activeInlineChromeCleanup = null;
       if (pollTimer) {
         clearInterval(pollTimer);
         pollTimer = null;
       }
       window.removeEventListener("keydown", onWindowKeyDown, true);
       window.removeEventListener("paste", onWindowPaste, true);
+      document.removeEventListener("mousedown", onDocMouseDown, true);
+      if (screenImg) {
+        screenImg.onclick = null;
+        screenImg.onwheel = null;
+      }
+      if (isExpanded) {
+        setExpandedMode(false);
+      }
       if (shouldCancelBackend && sessionId) {
         apiRequest("/api/accounts/remote-login/cancel", {
           method: "POST",
           body: { session_id: sessionId },
         }).catch(function () {});
       }
-      if (overlay.parentNode) {
-        overlay.remove();
+      chromeBody.classList.add("hidden-el");
+      if (idleHint) idleHint.classList.remove("hidden-el");
+      if (btnStartMain) {
+        btnStartMain.classList.remove("hidden-el");
+        btnStartMain.disabled = false;
       }
-      if (btnEl) {
-        btnEl.disabled = false;
-        btnEl.textContent = origBtnText;
-      }
+      [btnRestart, btnReload, btnExpand, btnStop].forEach(function (b) {
+        if (b) b.classList.add("hidden-el");
+      });
+      if (urlBar) urlBar.value = "https://muse.ai/api/oidc/start?return_to=%2F";
     }
 
+    activeInlineChromeCleanup = cleanupInlineChrome;
+
     async function handleCompletedNode(nodeObj) {
-      cleanupModal(false);
+      cleanupInlineChrome(false);
       const savedLabel = (nodeObj && nodeObj.label) || "tài khoản Muse";
-      showToast("✅ Đã tự động bắt & kích hoạt " + savedLabel + " thành công!");
+      showToast("✅ Đã tự động chặn bắt & kích hoạt " + savedLabel + " thành công!");
       await refreshRouterState(true);
       renderActiveThreadMessages();
+      const topSection = document.getElementById("adminUsageSection");
+      if (topSection) {
+        topSection.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
     }
 
     function applySnapshot(snap) {
@@ -1839,7 +1881,7 @@
       if (snap.status === "error" || snap.status === "cancelled") {
         const msg = snap.error || "Phiên đăng nhập đã kết thúc.";
         showToast("Đăng nhập chưa hoàn tất: " + msg);
-        cleanupModal(false);
+        cleanupInlineChrome(false);
       }
     }
 
@@ -1902,57 +1944,68 @@
       }, 400);
     }
 
+    function onDocMouseDown(ev) {
+      if (!banner) return;
+      isChromeFocused = banner.contains(ev.target);
+    }
+    document.addEventListener("mousedown", onDocMouseDown, true);
+
     if (screenImg) {
-      screenImg.addEventListener("click", function (ev) {
+      screenImg.onclick = function (ev) {
+        isChromeFocused = true;
         if (quickInput && document.activeElement === quickInput) {
           quickInput.blur();
         }
+        if (viewportWrap) viewportWrap.focus({ preventScroll: true });
         const pt = computeImageCoords(ev.clientX, ev.clientY);
         showClickRipple(ev.clientX, ev.clientY);
         enqueueRemoteInput({ type: "click", x: pt.x, y: pt.y });
-      });
+      };
 
       let lastWheelTs = 0;
-      screenImg.addEventListener(
-        "wheel",
-        function (ev) {
-          ev.preventDefault();
-          const now = Date.now();
-          if (now - lastWheelTs < 110) return;
-          lastWheelTs = now;
-          const pt = computeImageCoords(ev.clientX, ev.clientY);
-          enqueueRemoteInput({
-            type: "scroll",
-            x: pt.x,
-            y: pt.y,
-            delta_x: ev.deltaX || 0,
-            delta_y: ev.deltaY || 0,
-          });
-        },
-        { passive: false }
-      );
+      screenImg.onwheel = function (ev) {
+        if (!isExpanded && !isChromeFocused) return;
+        ev.preventDefault();
+        const now = Date.now();
+        if (now - lastWheelTs < 110) return;
+        lastWheelTs = now;
+        const pt = computeImageCoords(ev.clientX, ev.clientY);
+        enqueueRemoteInput({
+          type: "scroll",
+          x: pt.x,
+          y: pt.y,
+          delta_x: ev.deltaX || 0,
+          delta_y: ev.deltaY || 0,
+        });
+      };
     }
 
-    function isQuickInputFocused() {
-      return !!(quickInput && document.activeElement === quickInput);
+    function isOtherInputFocused() {
+      const ae = document.activeElement;
+      if (!ae) return false;
+      if (ae === viewportWrap) return false;
+      const tag = (ae.tagName || "").toUpperCase();
+      return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || ae.isContentEditable;
     }
 
     function onWindowPaste(ev) {
-      if (closed || isQuickInputFocused()) return;
+      if (closed || (!isChromeFocused && !isExpanded) || isOtherInputFocused()) return;
       const pasted = ev.clipboardData ? ev.clipboardData.getData("text/plain") : "";
       if (pasted) {
         ev.preventDefault();
+        ev.stopImmediatePropagation();
         enqueueRemoteInput({ type: "text", text: pasted });
       }
     }
 
     function onWindowKeyDown(ev) {
-      if (closed || isQuickInputFocused()) return;
+      if (closed || (!isChromeFocused && !isExpanded) || isOtherInputFocused()) return;
       if ((ev.ctrlKey || ev.metaKey) && (ev.key === "v" || ev.key === "V")) {
         return; // Để sự kiện paste xử lý nội dung clipboard
       }
       if ((ev.ctrlKey || ev.metaKey) && (ev.key === "a" || ev.key === "A" || ev.key === "Backspace")) {
         ev.preventDefault();
+        ev.stopImmediatePropagation();
         enqueueRemoteInput({ type: "clear" });
         return;
       }
@@ -1968,12 +2021,20 @@
         "ArrowDown",
       ];
       if (specialKeys.indexOf(ev.key) >= 0) {
+        if (ev.key === "Escape" && isExpanded) {
+          ev.preventDefault();
+          ev.stopImmediatePropagation();
+          setExpandedMode(false);
+          return;
+        }
         ev.preventDefault();
+        ev.stopImmediatePropagation();
         enqueueRemoteInput({ type: "key", key: ev.key });
         return;
       }
       if (ev.key && ev.key.length === 1 && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
         ev.preventDefault();
+        ev.stopImmediatePropagation();
         enqueueRemoteInput({ type: "text", text: ev.key });
       }
     }
@@ -1981,25 +2042,26 @@
     window.addEventListener("paste", onWindowPaste, true);
     window.addEventListener("keydown", onWindowKeyDown, true);
 
-    const btnClose = document.getElementById("btnRemoteClose");
-    if (btnClose) {
-      btnClose.onclick = function () {
-        cleanupModal(true);
+    if (btnStop) {
+      btnStop.onclick = function () {
+        cleanupInlineChrome(true);
       };
     }
-    const btnReload = document.getElementById("btnRemoteReload");
+    if (btnExpand) {
+      btnExpand.onclick = function () {
+        setExpandedMode(!isExpanded);
+      };
+    }
     if (btnReload) {
       btnReload.onclick = function () {
         enqueueRemoteInput({ type: "reload" });
       };
     }
-    const btnRestartLogin = document.getElementById("btnRemoteRestartLogin");
-    if (btnRestartLogin) {
-      btnRestartLogin.onclick = function () {
+    if (btnRestart) {
+      btnRestart.onclick = function () {
         enqueueRemoteInput({ type: "restart_login" });
       };
     }
-    const btnSendQuick = document.getElementById("btnRemoteSendQuickText");
     function flushQuickText(alsoPressEnter) {
       if (!quickInput) return;
       const val = quickInput.value;
@@ -2011,6 +2073,8 @@
         enqueueRemoteInput({ type: "key", key: "Enter" });
       }
       quickInput.blur();
+      isChromeFocused = true;
+      if (viewportWrap) viewportWrap.focus({ preventScroll: true });
     }
     if (btnSendQuick) {
       btnSendQuick.onclick = function () {
@@ -2018,22 +2082,22 @@
       };
     }
     if (quickInput) {
-      quickInput.addEventListener("keydown", function (ev) {
+      quickInput.onkeydown = function (ev) {
         if (ev.key === "Enter") {
           ev.preventDefault();
           flushQuickText(true);
         }
-      });
+      };
     }
-    const btnSendEnter = document.getElementById("btnRemoteSendEnter");
     if (btnSendEnter) {
       btnSendEnter.onclick = function () {
+        isChromeFocused = true;
         enqueueRemoteInput({ type: "key", key: "Enter" });
       };
     }
-    const btnClear = document.getElementById("btnRemoteClearField");
     if (btnClear) {
       btnClear.onclick = function () {
+        isChromeFocused = true;
         enqueueRemoteInput({ type: "clear" });
       };
     }
@@ -2067,15 +2131,15 @@
             "/api/accounts/remote-login/state?session_id=" + encodeURIComponent(sessionId)
           );
           applySnapshot(snap);
-        } catch (pollErr) {
-          // Bỏ qua lỗi mạng thoáng qua khi đang stream
+        } catch (_) {
+          // Bỏ qua lỗi mạng thoáng qua
         } finally {
           pollBusy = false;
         }
-      }, 600);
+      }, 550);
     } catch (startErr) {
-      showToast("Không thể mở cửa sổ đăng nhập trực tiếp: " + startErr.message);
-      cleanupModal(false);
+      showToast("Không thể khởi động trang Chrome đăng nhập: " + startErr.message);
+      cleanupInlineChrome(false);
     }
   }
 
@@ -2155,7 +2219,7 @@
   }
 
   async function triggerInteractiveBrowserLogin(btnEl, sessionIdOverride, proxyUrlOverride) {
-    if (!isLocalHost()) {
+    if (!isLocalHost() || state.viewMode === "accounts") {
       await openRemoteBrowserLoginModal(btnEl, proxyUrlOverride);
       return;
     }
@@ -2190,14 +2254,13 @@
         btnEl.disabled = false;
         btnEl.textContent = origText;
       }
-      // Nếu trên máy cục bộ chưa bật Python Bridge thì tự động mở Cửa sổ Đăng nhập Trực tiếp của Go CDP
       if (err && /AI Bridge|18089|connection refused|connectex/i.test(err.message || "")) {
         await openRemoteBrowserLoginModal(btnEl, proxyUrlOverride);
         return;
       }
       showToast("Đăng nhập trình duyệt chưa hoàn tất: " + err.message);
     } finally {
-      if (btnEl && !document.getElementById("martRemoteLoginModal")) {
+      if (btnEl && !activeInlineChromeCleanup) {
         btnEl.disabled = false;
         btnEl.textContent = origText;
       }

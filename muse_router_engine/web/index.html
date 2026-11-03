@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css?v=5.0">
+  <link rel="stylesheet" href="/styles.css?v=5.1">
 </head>
 <body>
   <!-- Cảnh báo mất kết nối Backend (chỉ hiện khi dịch vụ chưa bật) -->
@@ -728,20 +728,62 @@
             <!-- KHỐI THÊM TÀI KHOẢN MỚI (ĐẶT GỌN GÀNG BÊN DƯỚI THEO PHONG CÁCH CÀI ĐẶT) -->
             <div style="margin-top:26px;">
               <div class="admin-section-label" style="margin-bottom:10px;">Thêm tài khoản mới vào Pool Token</div>
-              <div class="admin-gray-block" id="cloudExtBanner" style="border:1px solid #bbf7d0;background:#f0fdf4;margin-bottom:14px;">
-                <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
-                  <div style="flex:1;min-width:240px;">
-                    <strong id="cloudExtTitle" style="font-size:13.5px;color:#14532d;display:block;margin-bottom:4px;">
-                      🌐 Đăng Nhập Muse.ai Trực Tiếp &amp; Tự Động Bắt Tài Khoản (Không cần F12 / Không cần Tiện ích)
+              <div id="cloudExtBanner" style="border:1px solid #cbd5e1;border-radius:14px;background:#ffffff;overflow:hidden;margin-bottom:16px;box-shadow:0 4px 16px rgba(15,23,42,0.06);">
+                <!-- Thanh Tab & Địa Chỉ kiểu Trình duyệt Chrome -->
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;background:#f1f5f9;border-bottom:1px solid #e2e8f0;flex-wrap:wrap;">
+                  <div style="display:flex;align-items:center;gap:8px;min-width:210px;">
+                    <span style="display:inline-flex;gap:5px;align-items:center;">
+                      <i style="width:10px;height:10px;border-radius:50%;background:#ef4444;display:inline-block;"></i>
+                      <i style="width:10px;height:10px;border-radius:50%;background:#f59e0b;display:inline-block;"></i>
+                      <i style="width:10px;height:10px;border-radius:50%;background:#22c55e;display:inline-block;"></i>
+                    </span>
+                    <strong id="cloudExtTitle" style="font-size:13px;color:#0f172a;">
+                      🌐 Chrome Đăng Nhập Muse.ai (Tự Chặn &amp; Bắt Phiên)
                     </strong>
-                    <div id="cloudExtDesc" style="font-size:12.5px;color:#166534;line-height:1.45;">
-                      Bấm nút bên phải để mở cửa sổ đăng nhập Muse.ai ngay trên trang này. Khi bạn nhập Email &amp; mã OTP xong, máy chủ sẽ tự động bắt Cookie phiên thật và đưa thẳng vào Pool!
-                    </div>
                   </div>
-                  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-                    <button type="button" class="muse-solid-btn" id="btnExtAutoLoginNew" style="min-height:38px;font-size:13px;padding:0 16px;">
-                      🚀 Mở Cửa Sổ Đăng Nhập &amp; Tự Bắt
+                  <input id="inlineChromeUrlBar" type="text" readonly value="https://muse.ai/api/oidc/start?return_to=%2F"
+                    style="flex:1;min-width:200px;height:30px;padding:0 10px;border-radius:8px;border:1px solid #cbd5e1;background:#ffffff;font-size:12px;color:#475569;font-family:var(--font-mono);" />
+                  <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+                    <button type="button" class="muse-solid-btn" id="btnExtAutoLoginNew" style="min-height:32px;font-size:12.5px;padding:0 13px;">
+                      🚀 Bật Trang Chrome Đăng Nhập
                     </button>
+                    <button type="button" class="muse-outline-btn hidden-el" id="btnInlineChromeRestart" style="min-height:30px;font-size:12px;padding:0 10px;background:#fff;">
+                      🔄 Đầu trang
+                    </button>
+                    <button type="button" class="muse-outline-btn hidden-el" id="btnInlineChromeReload" style="min-height:30px;font-size:12px;padding:0 10px;background:#fff;">
+                      ↻ Tải lại
+                    </button>
+                    <button type="button" class="muse-outline-btn hidden-el" id="btnInlineChromeExpand" style="min-height:30px;font-size:12px;padding:0 10px;background:#fff;">
+                      ⛶ Phóng rộng
+                    </button>
+                    <button type="button" class="muse-outline-btn hidden-el" id="btnInlineChromeStop" style="min-height:30px;font-size:12px;padding:0 10px;background:#fff;border-color:#fca5a5;color:#dc2626;">
+                      ✕ Đóng tab
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Mô tả ngắn khi chưa bật tab -->
+                <div id="inlineChromeIdleHint" style="padding:12px 16px;background:#f0fdf4;font-size:12.5px;color:#166534;line-height:1.5;">
+                  Bấm <strong>"🚀 Bật Trang Chrome Đăng Nhập"</strong> để mở thẳng trình duyệt Chrome đăng nhập <code>muse.ai / Meta</code> ngay tại khung này. Ngay khi bạn nhập Email &amp; mã OTP xong, hệ thống tự động chặn callback và bắt lấy Cookie đưa thẳng vào Pool!
+                </div>
+
+                <!-- Khung màn hình Chrome trực tiếp nằm thẳng trong mục /admin -->
+                <div id="inlineChromeBody" class="hidden-el">
+                  <div style="display:flex;align-items:center;gap:8px;padding:8px 14px;background:#f0fdf4;border-bottom:1px solid #dcfce7;flex-wrap:wrap;">
+                    <span style="font-size:12px;color:#166534;font-weight:600;">⚡ Dán nhanh Email / OTP:</span>
+                    <input id="inlineChromeQuickText" type="text" placeholder="Click vào ô trên trang Chrome bên dưới rồi nhấn Ctrl+V — hoặc dán Email / mã OTP 6 số vào đây rồi nhấn Enter..."
+                      style="flex:1;min-width:220px;height:32px;padding:0 10px;border-radius:8px;border:1px solid #86efac;background:#ffffff;font-size:12.5px;color:#171717;" />
+                    <button type="button" id="btnInlineSendQuickText" class="muse-solid-btn" style="min-height:32px;padding:0 12px;font-size:12px;">⌨️ Điền chữ</button>
+                    <button type="button" id="btnInlineSendEnter" class="muse-outline-btn" style="min-height:32px;padding:0 10px;font-size:12px;background:#ffffff;">↵ Enter</button>
+                    <button type="button" id="btnInlineClearField" class="muse-outline-btn" style="min-height:32px;padding:0 10px;font-size:12px;background:#ffffff;">🧹 Xóa ô</button>
+                  </div>
+                  <div id="inlineChromeViewportWrap" tabindex="0" style="position:relative;background:#0f172a;width:100%;aspect-ratio:1100/680;display:flex;align-items:center;justify-content:center;overflow:hidden;user-select:none;outline:none;">
+                    <div id="inlineChromeStatusOverlay" style="color:#e2e8f0;font-size:13.5px;text-align:center;padding:20px;line-height:1.6;">
+                      ⏳ Đang mở trang Chrome đăng nhập chính thức <b>muse.ai / Meta</b> ngay trong mục Admin...<br>
+                      <span style="font-size:12px;color:#94a3b8;">Khi đăng nhập xong, hệ thống sẽ tự chặn bắt tài khoản vào Pool và đóng tab này!</span>
+                    </div>
+                    <img id="inlineChromeScreenImg" alt="Muse.ai Inline Chrome" draggable="false"
+                      style="display:none;width:100%;height:100%;object-fit:contain;cursor:pointer;" />
                   </div>
                 </div>
               </div>
@@ -1135,6 +1177,6 @@
     <div class="toast-region" id="toastRegion" aria-live="polite"></div>
   </div>
 
-  <script src="/app.js?v=5.0"></script>
+  <script src="/app.js?v=5.1"></script>
 </body>
 </html>
