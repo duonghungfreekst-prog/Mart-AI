@@ -2,22 +2,24 @@ package main
 
 import (
 	"crypto"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
-	"unsafe"
 )
 
 const LogPrefix = "[ENGINE]"
@@ -241,134 +243,115 @@ func (m *RS256JWTManager) VerifyToken(token string) (*jwtClaims, error) {
 }
 
 // ============================================================================
-// GO -> RUST CORE FFI BRIDGE + DEFER FREE_RUST_STRING (PHAN 2 & PHAN 7)
+// MÃ HÓA CHUẨN FIPS 197 AES-256-CTR + HMAC-SHA256 TƯƠNG THÍCH 100% VỚI RUST CORE
 // ============================================================================
 
-type RustCoreBridge struct {
-	dll                     *syscall.LazyDLL
-	procEncryptSecret       *syscall.LazyProc
-	procDecryptSecret       *syscall.LazyProc
-	procComputeFingerprint  *syscall.LazyProc
-	procConstantTimeCompare *syscall.LazyProc
-	procFreeRustString      *syscall.LazyProc
-	masterKey               string
+func aes256CtrCryptNative(data []byte, key [32]byte, nonce [12]byte) ([]byte, error) {
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		return nil, err
+	}
+	var iv [16]byte
+	copy(iv[:12], nonce[:])
+	binary.BigEndian.PutUint32(iv[12:16], 1) // Counter bắt đầu từ 1 giống hệt muse_router_core/src/lib.rs
+	out := make([]byte, len(data))
+	stream := cipher.NewCTR(block, iv[:])
+	stream.XORKeyStream(out, data)
+	return out, nil
 }
 
-func NewRustCoreBridge(masterKey string) (*RustCoreBridge, error) {
-	candidates := []string{
-		filepath.Join("..", "muse_router_core", "muse_router_core.dll"),
-		filepath.Join("muse_router_core", "muse_router_core.dll"),
-		filepath.Join("..", "muse_router_core", "target", "release", "muse_router_core.dll"),
-		"muse_router_core.dll",
-	}
-	var selected string
-	for _, c := range candidates {
-		if _, err := os.Stat(c); err == nil {
-			abs, errAbs := filepath.Abs(c)
-			if errAbs == nil {
-				selected = abs
-			} else {
-				selected = c
-			}
-			break
-		}
-	}
-	if selected == "" {
-		return nil, errors.New("ERR_RUST_DLL_NOT_FOUND")
-	}
-
-	dll := syscall.NewLazyDLL(selected)
-	bridge := &RustCoreBridge{
-		dll:                     dll,
-		procEncryptSecret:       dll.NewProc("core_encrypt_secret"),
-		procDecryptSecret:       dll.NewProc("core_decrypt_secret"),
-		procComputeFingerprint:  dll.NewProc("core_compute_token_fingerprint"),
-		procConstantTimeCompare: dll.NewProc("core_constant_time_compare"),
-		procFreeRustString:      dll.NewProc("free_rust_string"),
-		masterKey:               masterKey,
-	}
-	LogInfo("Connected Go Engine FFI to Rust Core DLL at %s", selected)
-	return bridge, nil
+func hmacSha256Native(key []byte, message []byte) [32]byte {
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write(message)
+	var out [32]byte
+	copy(out[:], mac.Sum(nil))
+	return out
 }
 
-func cStringBytes(s string) []byte {
-	b := make([]byte, len(s)+1)
-	copy(b, s)
-	return b
-}
-
-func ptrToGoString(ptr uintptr) string {
-	if ptr == 0 {
-		return ""
-	}
-	var bytes []byte
-	for i := uintptr(0); i < 65536; i++ {
-		b := *(*byte)(unsafe.Pointer(ptr + i))
-		if b == 0 {
-			break
-		}
-		bytes = append(bytes, b)
-	}
-	return string(bytes)
-}
-
-func (r *RustCoreBridge) freeRustString(ptr uintptr) {
-	if ptr != 0 {
-		_, _, _ = r.procFreeRustString.Call(ptr)
-	}
-}
-
-func (r *RustCoreBridge) EncryptSecret(plaintext string) (string, error) {
+func encryptSecretNative(plaintext string, masterKey string) (string, error) {
 	if plaintext == "" {
 		return "", errors.New("ERR_EMPTY_SECRET")
 	}
-	pBytes := cStringBytes(plaintext)
-	kBytes := cStringBytes(r.masterKey)
-
-	retPtr, _, _ := r.procEncryptSecret.Call(
-		uintptr(unsafe.Pointer(&pBytes[0])),
-		uintptr(unsafe.Pointer(&kBytes[0])),
-	)
-	if retPtr == 0 {
-		return "", errors.New("ERR_RUST_ENCRYPT_FAILED")
+	if masterKey == "" {
+		return "", errors.New("ERR_EMPTY_MASTER_KEY")
 	}
-	// PHAN 7 BAT BUOC: Chủ động gọi defer free_rust_string sau khi nhận kết quả từ Rust
-	defer r.freeRustString(retPtr)
+	encKey := sha256.Sum256([]byte("ENC:" + masterKey))
+	macKey := sha256.Sum256([]byte("MAC:" + masterKey))
 
-	return ptrToGoString(retPtr), nil
+	var randSeed [16]byte
+	_, _ = rand.Read(randSeed[:])
+	binary.LittleEndian.PutUint64(randSeed[:8], uint64(time.Now().UnixNano()))
+	seedBuf := append(randSeed[:], []byte(masterKey)...)
+	seedBuf = append(seedBuf, []byte(plaintext)...)
+	seedDigest := sha256.Sum256(seedBuf)
+	var nonce [12]byte
+	copy(nonce[:], seedDigest[:12])
+
+	ciphertext, err := aes256CtrCryptNative([]byte(plaintext), encKey, nonce)
+	if err != nil {
+		return "", err
+	}
+	authPayload := make([]byte, 0, 12+len(ciphertext))
+	authPayload = append(authPayload, nonce[:]...)
+	authPayload = append(authPayload, ciphertext...)
+	tag := hmacSha256Native(macKey[:], authPayload)
+
+	return fmt.Sprintf(
+		"v1:%s:%s:%s",
+		hex.EncodeToString(nonce[:]),
+		hex.EncodeToString(ciphertext),
+		hex.EncodeToString(tag[:]),
+	), nil
 }
 
-func (r *RustCoreBridge) DecryptSecret(encrypted string) (string, error) {
+func decryptSecretNative(encrypted string, masterKey string) (string, error) {
 	if encrypted == "" {
 		return "", errors.New("ERR_EMPTY_ENCRYPTED_SECRET")
 	}
-	eBytes := cStringBytes(encrypted)
-	kBytes := cStringBytes(r.masterKey)
+	parts := strings.Split(encrypted, ":")
+	if len(parts) != 4 || parts[0] != "v1" {
+		return "", errors.New("ERR_INVALID_ENCRYPTED_FORMAT")
+	}
+	nonceSlice, err := hex.DecodeString(parts[1])
+	if err != nil || len(nonceSlice) != 12 {
+		return "", errors.New("ERR_INVALID_NONCE")
+	}
+	ciphertext, err := hex.DecodeString(parts[2])
+	if err != nil {
+		return "", errors.New("ERR_INVALID_CIPHERTEXT")
+	}
+	expectedTag, err := hex.DecodeString(parts[3])
+	if err != nil || len(expectedTag) != 32 {
+		return "", errors.New("ERR_INVALID_TAG")
+	}
 
-	retPtr, _, _ := r.procDecryptSecret.Call(
-		uintptr(unsafe.Pointer(&eBytes[0])),
-		uintptr(unsafe.Pointer(&kBytes[0])),
-	)
-	if retPtr == 0 {
+	encKey := sha256.Sum256([]byte("ENC:" + masterKey))
+	macKey := sha256.Sum256([]byte("MAC:" + masterKey))
+
+	authPayload := make([]byte, 0, 12+len(ciphertext))
+	authPayload = append(authPayload, nonceSlice...)
+	authPayload = append(authPayload, ciphertext...)
+	computedTag := hmacSha256Native(macKey[:], authPayload)
+
+	if subtle.ConstantTimeCompare(computedTag[:], expectedTag) != 1 {
 		return "", errors.New("ERR_RUST_DECRYPT_FAILED")
 	}
-	// PHAN 7 BAT BUOC: Chủ động gọi defer free_rust_string
-	defer r.freeRustString(retPtr)
 
-	return ptrToGoString(retPtr), nil
+	var nonce [12]byte
+	copy(nonce[:], nonceSlice)
+	plainBytes, err := aes256CtrCryptNative(ciphertext, encKey, nonce)
+	if err != nil {
+		return "", err
+	}
+	return string(plainBytes), nil
 }
 
-func (r *RustCoreBridge) ComputeFingerprint(secret string) string {
+func computeFingerprintNative(secret string) string {
 	if secret == "" {
 		return "fp_empty"
 	}
-	sBytes := cStringBytes(secret)
-	retPtr, _, _ := r.procComputeFingerprint.Call(uintptr(unsafe.Pointer(&sBytes[0])))
-	if retPtr == 0 {
-		return "fp_unknown"
-	}
-	defer r.freeRustString(retPtr)
-	return ptrToGoString(retPtr)
+	digest := sha256.Sum256([]byte(secret))
+	return "fp_" + hex.EncodeToString(digest[:])[:16]
 }
 
 // ============================================================================
@@ -376,8 +359,27 @@ func (r *RustCoreBridge) ComputeFingerprint(secret string) string {
 // ============================================================================
 
 var allowedOrigins = map[string]bool{
-	"http://127.0.0.1:8088": true,
-	"http://localhost:8088": true,
+	"http://127.0.0.1:8088":         true,
+	"http://localhost:8088":         true,
+	"https://mart-ai.onrender.com":  true,
+	"http://mart-ai.onrender.com":   true,
+}
+
+func isAllowedCORSOrigin(origin string, host string) bool {
+	if allowedOrigins[origin] {
+		return true
+	}
+	renderURL := strings.TrimRight(strings.TrimSpace(os.Getenv("RENDER_EXTERNAL_URL")), "/")
+	if renderURL != "" && ConstantTimeStringEquals(origin, renderURL) {
+		return true
+	}
+	cleanHost := strings.TrimSpace(host)
+	if cleanHost != "" {
+		if ConstantTimeStringEquals(origin, "https://"+cleanHost) || ConstantTimeStringEquals(origin, "http://"+cleanHost) {
+			return true
+		}
+	}
+	return false
 }
 
 func SecurityHeadersMiddleware(next http.Handler) http.Handler {
@@ -396,7 +398,7 @@ func SecurityHeadersMiddleware(next http.Handler) http.Handler {
 		// CORS Exact String Match (TUYỆT ĐỐI CẤM wildcard *)
 		origin := r.Header.Get("Origin")
 		if origin != "" {
-			if allowedOrigins[origin] {
+			if isAllowedCORSOrigin(origin, r.Host) {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Vary", "Origin")
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")

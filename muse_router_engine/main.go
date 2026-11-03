@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -880,20 +881,65 @@ func (a *ServerApp) Routes() http.Handler {
 	return SecurityHeadersMiddleware(mux)
 }
 
+func tryStartLocalPythonBridge(rootDir string) {
+	bridgeURL := os.Getenv("MUSE_AI_BRIDGE_URL")
+	if bridgeURL == "" {
+		bridgeURL = "http://127.0.0.1:18089"
+	}
+	client := &http.Client{Timeout: 800 * time.Millisecond}
+	if resp, err := client.Get(bridgeURL + "/internal/live-status"); err == nil {
+		resp.Body.Close()
+		return
+	}
+
+	scriptPath := filepath.Join(rootDir, "muse_router_ai", "bridge_service.py")
+	if _, err := os.Stat(scriptPath); err != nil {
+		return
+	}
+
+	for _, pyBin := range []string{"python3", "python"} {
+		if path, err := exec.LookPath(pyBin); err == nil {
+			cmd := exec.Command(path, scriptPath)
+			cmd.Dir = rootDir
+			cmd.Env = os.Environ()
+			if errStart := cmd.Start(); errStart == nil {
+				LogInfo("Auto-started AI Bridge sidecar (%s %s)", pyBin, scriptPath)
+				return
+			}
+		}
+	}
+}
+
 func main() {
-	port := os.Getenv("MUSE_ENGINE_PORT")
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = os.Getenv("MUSE_ENGINE_PORT")
+	}
 	if port == "" {
 		port = "8088"
+	}
+
+	host := os.Getenv("MUSE_ENGINE_HOST")
+	if host == "" {
+		if os.Getenv("PORT") != "" || os.Getenv("RENDER") != "" {
+			host = "0.0.0.0"
+		} else {
+			host = "127.0.0.1"
+		}
 	}
 
 	baseDir, err := os.Getwd()
 	if err != nil {
 		baseDir = "."
 	}
+	rootDir := baseDir
 	dataDir := filepath.Join(baseDir, "data")
 	if filepath.Base(baseDir) == "muse_router_engine" {
-		dataDir = filepath.Join(filepath.Dir(baseDir), "data")
+		rootDir = filepath.Dir(baseDir)
+		dataDir = filepath.Join(rootDir, "data")
 	}
+
+	tryStartLocalPythonBridge(rootDir)
 
 	app, err := NewServerApp(dataDir)
 	if err != nil {
@@ -902,7 +948,7 @@ func main() {
 	}
 	defer app.pool.Shutdown()
 
-	addr := "127.0.0.1:" + port
+	addr := host + ":" + port
 	LogInfo("MuseRouter Engine & Web Studio started at http://%s", addr)
 
 	srv := &http.Server{
