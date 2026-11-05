@@ -1063,3 +1063,111 @@ func TestAccountSyncAndDeletionIntegrity(t *testing.T) {
 	_ = store.DeleteAccount(nodeB.ID, nodeB.Fingerprint)
 	t.Logf("PASS: Account Sync & Deletion Reconciliation test passed perfectly!")
 }
+
+func TestSSEChatSendNeverCorruptedByGzipAndCleansPendingTurn(t *testing.T) {
+	t.Setenv("MART_ADMIN_PASSWORD", "")
+	t.Setenv("RENDER", "true")
+	tmpDir := t.TempDir()
+	app, err := NewServerApp(filepath.Join(tmpDir, "data"))
+	if err != nil {
+		t.Fatalf("NewServerApp: %v", err)
+	}
+	defer app.pool.Shutdown()
+
+	// Cắm 1 tài khoản hợp lệ vào pool để test luồng SSE + Browser Relay + Cleanup Pending Turn
+	encCookie, err := app.pool.rustBridge.EncryptSecret("hatch_sess=test_valid_session_cookie_123456")
+	if err != nil {
+		t.Fatalf("EncryptSecret: %v", err)
+	}
+	app.pool.mu.Lock()
+	app.pool.nodes = append(app.pool.nodes, &MuseAccountNode{
+		ID:                  "node-sse-test",
+		NodeIndex:           1,
+		Label:               "Muse Test #1",
+		PlanTier:            "Muse.ai",
+		AuthType:            "cookie",
+		UpstreamURL:         "https://muse.ai",
+		EncryptedCredential: encCookie,
+		Fingerprint:         "fp_sse_test_1",
+		HasHatchSess:        true,
+		Status:              "ready",
+	})
+	app.pool.mu.Unlock()
+
+	handler := app.Routes()
+	token, err := app.jwtMgr.IssueUserToken("admin", "admin", "Quản trị viên", "admin", 15*time.Minute)
+	if err != nil {
+		t.Fatalf("IssueUserToken: %v", err)
+	}
+
+	chatPayload := `{"thread_id":"thread_sse_1","preferred_node_id":"auto","workspace":"chat","prompt":"alo","stream":true,"client_relay_capable":true}`
+	req := httptest.NewRequest(http.MethodPost, "/api/chat/send", strings.NewReader(chatPayload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream, application/json")
+	req.Header.Set("Accept-Encoding", "gzip")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Mart-Client", "web")
+	req.Header.Set("X-Mart-Ext-Relay", "1")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/chat/send status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if ce := rec.Header().Get("Content-Encoding"); ce != "" {
+		t.Fatalf("Expected empty Content-Encoding on SSE stream, got %q", ce)
+	}
+	rawSSE := rec.Body.String()
+	if !strings.Contains(rawSSE, "event: start\n") || !strings.Contains(rawSSE, "event: done\n") {
+		t.Fatalf("Expected both 'event: start' and 'event: done' in plain UTF-8 SSE body, got:\n%s", rawSSE)
+	}
+
+	var doneData map[string]interface{}
+	for _, block := range strings.Split(rawSSE, "\n\n") {
+		if strings.Contains(block, "event: done") {
+			for _, line := range strings.Split(block, "\n") {
+				if strings.HasPrefix(line, "data:") {
+					_ = json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &doneData)
+				}
+			}
+		}
+	}
+	if doneData == nil || doneData["browser_relay"] != true {
+		t.Fatalf("Expected browser_relay=true in SSE done event, got: %+v", doneData)
+	}
+	turnID, _ := doneData["turn_id"].(string)
+	if turnID == "" {
+		t.Fatalf("Expected non-empty turn_id in SSE done event")
+	}
+
+	// Hủy lượt relay qua /api/chat/relay-complete -> turn pending phải được dọn sạch khỏi thread
+	cancelPayload, _ := json.Marshal(map[string]string{
+		"thread_id": "thread_sse_1",
+		"turn_id":   turnID,
+		"node_id":   "node-sse-test",
+		"error":     "USER_STOPPED",
+	})
+	reqCancel := httptest.NewRequest(http.MethodPost, "/api/chat/relay-complete", bytes.NewReader(cancelPayload))
+	reqCancel.Header.Set("Content-Type", "application/json")
+	reqCancel.Header.Set("Authorization", "Bearer "+token)
+	reqCancel.Header.Set("X-Mart-Client", "web")
+	recCancel := httptest.NewRecorder()
+	handler.ServeHTTP(recCancel, reqCancel)
+	if recCancel.Code != http.StatusOK {
+		t.Fatalf("POST /api/chat/relay-complete status=%d body=%s", recCancel.Code, recCancel.Body.String())
+	}
+
+	app.pool.mu.RLock()
+	for _, th := range app.pool.threads {
+		if th.ID == "thread_sse_1" {
+			for _, m := range th.Messages {
+				if m.Pending || (m.Role == "assistant" && strings.TrimSpace(m.Content) == "") {
+					app.pool.mu.RUnlock()
+					t.Fatalf("Expected pending/empty assistant turn to be cleaned up, but found: %+v", m)
+				}
+			}
+		}
+	}
+	app.pool.mu.RUnlock()
+}
+

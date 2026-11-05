@@ -42,21 +42,31 @@ func defaultVaultMasterKey() string {
 	return "MUSE_ROUTER_SQL40_CLOUD_VAULT_KEY_2026_AES256CTR"
 }
 
-func NewServerApp(dataDir string) (*ServerApp, error) {
+func ensureRuntimeBridgeSecrets() (string, string, error) {
 	masterKey := defaultVaultMasterKey()
-	aiBridgeURL := os.Getenv("MUSE_AI_BRIDGE_URL")
-	if aiBridgeURL == "" {
-		aiBridgeURL = "http://127.0.0.1:18089"
-	}
-	// [FIX #2] aiBridgeToken — khong con hard-code; sinh ngau nhien neu thieu
-	aiBridgeToken := os.Getenv("MUSE_INTERNAL_BRIDGE_TOKEN")
+	_ = os.Setenv("MUSE_VAULT_MASTER_KEY", masterKey)
+
+	aiBridgeToken := strings.TrimSpace(os.Getenv("MUSE_INTERNAL_BRIDGE_TOKEN"))
 	if aiBridgeToken == "" {
 		LogWarn("MUSE_INTERNAL_BRIDGE_TOKEN chua duoc dat — dang sinh token ngau nhien cho session nay.")
 		tokenBytes := make([]byte, 24)
 		if _, err := rand.Read(tokenBytes); err != nil {
-			return nil, fmt.Errorf("khong the sinh bridge token: %w", err)
+			return "", "", fmt.Errorf("khong the sinh bridge token: %w", err)
 		}
 		aiBridgeToken = hex.EncodeToString(tokenBytes)
+		_ = os.Setenv("MUSE_INTERNAL_BRIDGE_TOKEN", aiBridgeToken)
+	}
+	return masterKey, aiBridgeToken, nil
+}
+
+func NewServerApp(dataDir string) (*ServerApp, error) {
+	masterKey, aiBridgeToken, err := ensureRuntimeBridgeSecrets()
+	if err != nil {
+		return nil, err
+	}
+	aiBridgeURL := os.Getenv("MUSE_AI_BRIDGE_URL")
+	if aiBridgeURL == "" {
+		aiBridgeURL = "http://127.0.0.1:18089"
 	}
 
 	cache := NewTTLCache()
@@ -546,13 +556,15 @@ func (a *ServerApp) Routes() http.Handler {
 			return
 		}
 		var req struct {
-			ThreadID        string           `json:"thread_id"`
-			PreferredNodeID string           `json:"preferred_node_id"`
-			Model           string           `json:"model"`
-			Workspace       string           `json:"workspace"`
-			Prompt          string           `json:"prompt"`
-			Attachments     []ChatAttachment `json:"attachments"`
-			Stream          bool             `json:"stream"`
+			ThreadID           string           `json:"thread_id"`
+			PreferredNodeID    string           `json:"preferred_node_id"`
+			Model              string           `json:"model"`
+			Workspace          string           `json:"workspace"`
+			Prompt             string           `json:"prompt"`
+			Attachments        []ChatAttachment `json:"attachments"`
+			Stream             bool             `json:"stream"`
+			ClientRelayCapable bool             `json:"client_relay_capable"`
+			SkipBrowserRelay   bool             `json:"skip_browser_relay"`
 		}
 		if err := a.readJSONBody(r, &req); err != nil {
 			WriteJSONError(w, http.StatusBadRequest, "ERR_INVALID_INPUT")
@@ -565,7 +577,9 @@ func (a *ServerApp) Routes() http.Handler {
 		}
 		idemKey := r.Header.Get("X-Idempotency-Key")
 		chatCtx := r.Context()
-		if r.Header.Get("X-Mart-Client") == "web" {
+		if req.SkipBrowserRelay {
+			chatCtx = context.WithValue(chatCtx, skipBrowserRelayContextKey{}, true)
+		} else if r.Header.Get("X-Mart-Client") == "web" && (req.ClientRelayCapable || r.Header.Get("X-Mart-Ext-Relay") == "1") {
 			chatCtx = context.WithValue(chatCtx, clientBrowserRelayContextKey{}, true)
 		}
 
@@ -578,6 +592,7 @@ func (a *ServerApp) Routes() http.Handler {
 			w.Header().Set("Cache-Control", "no-cache, no-transform")
 			w.Header().Set("Connection", "keep-alive")
 			w.Header().Set("X-Accel-Buffering", "no")
+			w.WriteHeader(http.StatusOK)
 			flusher.Flush()
 
 			onStreamChunk := func(chunkType string, data map[string]interface{}) {
@@ -1197,7 +1212,8 @@ func (g *gzipResponseWriter) WriteHeader(code int) {
 		return
 	}
 	g.wroteHeader = true
-	if code < 200 || code == http.StatusNoContent || code == http.StatusNotModified {
+	ct := strings.ToLower(g.Header().Get("Content-Type"))
+	if code < 200 || code == http.StatusNoContent || code == http.StatusNotModified || strings.Contains(ct, "text/event-stream") {
 		g.passthrough = true
 		g.ResponseWriter.WriteHeader(code)
 		return
@@ -1225,6 +1241,9 @@ func (g *gzipResponseWriter) Write(b []byte) (int, error) {
 }
 
 func (g *gzipResponseWriter) Flush() {
+	if !g.wroteHeader {
+		g.WriteHeader(http.StatusOK)
+	}
 	if g.gz != nil {
 		_ = g.gz.Flush()
 	}
@@ -1307,7 +1326,10 @@ func shouldSkipGzip(path string) bool {
 	case "/", "/index.html", "/cai-dat", "/admin", "/library/artifacts", "/app.js", "/styles.css", "/favicon.svg":
 		return true
 	}
-	if path == "/api/accounts/extension.zip" ||
+	if path == "/api/chat/send" ||
+		path == "/api/chat/relay-complete" ||
+		path == "/v1/chat/completions" ||
+		path == "/api/accounts/extension.zip" ||
 		path == "/api/accounts/remote-login/state" ||
 		path == "/api/accounts/remote-login/input" {
 		return true
@@ -1399,6 +1421,7 @@ func main() {
 		dataDir = filepath.Join(rootDir, "data")
 	}
 
+	_, _, _ = ensureRuntimeBridgeSecrets()
 	tryStartLocalPythonBridge(rootDir)
 
 	app, err := NewServerApp(dataDir)

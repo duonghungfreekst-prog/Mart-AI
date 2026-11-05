@@ -193,9 +193,23 @@ const cdpMuseSnapshotJS = `
 
   var composer = document.querySelector('textarea[aria-label="Message"], textarea, [contenteditable="true"]');
   var isGen = !!document.querySelector('.animate-spin, button[aria-label*="Stop" i], button[aria-label*="Dừng" i], button.stop-button, [data-is-generating="true"], .typing-indicator, .pulse');
-  var els = Array.from(document.querySelectorAll('.prose, [data-message-author-role="assistant"], div[class*="prose"], div[class*="message-assistant"], .chat-bubble-assistant'));
-  var count = els.length;
-  var lastMd = count > 0 ? nodeToMd(els[count - 1], 0).replace(/\n{3,}/g, "\n\n").trim() : "";
+  var rawEls = Array.from(document.querySelectorAll('.prose'));
+  if (rawEls.length === 0) {
+    rawEls = Array.from(document.querySelectorAll('[data-message-author-role="assistant"], div[class*="message-assistant"], .chat-bubble-assistant'));
+  }
+  rawEls = rawEls.filter(function(el) {
+    return !el.closest('form, textarea, [contenteditable="true"]');
+  });
+  var leafEls = rawEls.filter(function(el) {
+    return !rawEls.some(function(other) { return other !== el && el.contains(other); });
+  });
+  var mdList = [];
+  for (var i = 0; i < leafEls.length; i++) {
+    var m = nodeToMd(leafEls[i], 0).replace(/\n{3,}/g, "\n\n").trim();
+    if (m.length > 0) mdList.push(m);
+  }
+  var count = mdList.length;
+  var lastMd = count > 0 ? mdList[count - 1] : "";
   return JSON.stringify({
     hasComposer: !!composer,
     isGenerating: isGen,
@@ -1381,9 +1395,25 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 			if (btn) { btn.click(); return; }
 		}
 		var root = el.parentElement;
-		for (var d = 0; d < 4 && root; d++) {
-			var b = root.querySelector('button[type="submit"]:not(:disabled), button[aria-label*="Send" i]:not(:disabled), button[aria-label*="Gửi" i]:not(:disabled)');
+		for (var d = 0; d < 5 && root; d++) {
+			var b = root.querySelector('button[type="submit"]:not(:disabled), button[aria-label*="Send" i]:not(:disabled), button[aria-label*="Gửi" i]:not(:disabled), button[data-testid*="send" i]:not(:disabled)');
 			if (b) { b.click(); return; }
+			var btns = Array.from(root.querySelectorAll('button:not(:disabled)')).filter(function(btn) {
+				var r = btn.getBoundingClientRect();
+				if (r.width <= 0 || r.height <= 0) return false;
+				var lbl = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.getAttribute('title') || '') + ' ' + (btn.textContent || '')).toLowerCase();
+				if (/attach|upload|file|image|plus|add|model|voice|mic|audio|stop|cancel|new|clear/i.test(lbl)) return false;
+				return !!btn.querySelector('svg');
+			});
+			if (btns.length > 0) {
+				btns.sort(function(a, b) {
+					var ra = a.getBoundingClientRect();
+					var rb = b.getBoundingClientRect();
+					return (rb.right + rb.bottom) - (ra.right + ra.bottom);
+				});
+				btns[0].click();
+				return;
+			}
 			root = root.parentElement;
 		}
 	})()`

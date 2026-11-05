@@ -93,6 +93,8 @@
     lastNodesSignature: "",
     bgActive: false,
     pendingChatCount: 0,
+    hasMartExtension: false,
+    activeTurnIds: {},
   };
 
   function loadStoredSessionToken() {
@@ -1192,7 +1194,13 @@
         const row = document.createElement("div");
         if (m.turn_id) row.setAttribute("data-turn-id", m.turn_id);
 
-        if (m.pending && (state.pendingChatCount || 0) > 0) {
+        const isCurrentlyActiveTurn =
+          m.pending &&
+          (state.pendingChatCount || 0) > 0 &&
+          ((m.turn_id && state.activeTurnIds && state.activeTurnIds[m.turn_id]) ||
+            msgIdx === current.messages.length - 1);
+
+        if (isCurrentlyActiveTurn) {
           // Dòng trả lời để trống ngay bên dưới câu hỏi đang chờ phản hồi
           row.className = "ai-bubble-row pending-answer-row";
           const aiCard = document.createElement("div");
@@ -1207,12 +1215,7 @@
         }
 
         if (!String(m.content || "").trim()) {
-          row.className = "ai-bubble-row";
-          const failedCard = document.createElement("div");
-          failedCard.className = "ai-bubble-card";
-          failedCard.innerHTML = '<div class="chat-error-alert" style="color:#b91c1c;background:#fef2f2;border:1px solid #fee2e2;border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.5;">Lượt chat trước không nhận được câu trả lời. Hãy gửi lại tin nhắn.</div>';
-          row.appendChild(failedCard);
-          streamInner.appendChild(row);
+          // Bỏ qua các bản ghi trả lời rỗng / mồ côi từ những lần lỗi trước để không tạo bong bóng "..." hoặc hộp báo lỗi lặp lại
           return;
         }
 
@@ -1917,11 +1920,15 @@
         clearTimeout(timer);
         delete pendingExtResolvers[reqId];
         if (resp) {
+          if (resp.ok) state.hasMartExtension = true;
           resolve(resp);
         } else if (act === "execute_muse_chat") {
           resolve(null);
         } else {
-          sendViaDirectExternal(payload, 8000).then(resolve);
+          sendViaDirectExternal(payload, 8000).then(function (extResp) {
+            if (extResp && extResp.ok) state.hasMartExtension = true;
+            resolve(extResp);
+          });
         }
       };
 
@@ -1998,6 +2005,13 @@
   var activeInlineChromeCleanup = null;
 
   async function refreshCloudExtensionBanner() {
+    sendExtensionMessage({ action: "ping" })
+      .then(function (p) {
+        if (p && p.ok && p.supportsChatRelay !== false) {
+          state.hasMartExtension = true;
+        }
+      })
+      .catch(function () {});
     const banner = document.getElementById("cloudExtBanner");
     if (!banner) return false;
     banner.classList.remove("hidden-el");
@@ -2460,7 +2474,7 @@
     }
   }
 
-  async function executeBrowserRelayIfNeeded(res, onProgress) {
+  async function executeBrowserRelayIfNeeded(res, onProgress, fallbackServerFn) {
     if (!res || !res.browser_relay) return res;
 
     const ping = await sendExtensionMessage({ action: "ping" });
@@ -2477,6 +2491,7 @@
       throw new Error("Extension Mart AI của bạn là v" + (ping.version || "cũ") + ". Cần cập nhật lên v1.2.2 để gửi lệnh sang Muse.ai.");
     }
     if (!ping || !ping.ok || !ping.supportsChatRelay) {
+      state.hasMartExtension = false;
       const cancelRes = await apiRequest("/api/chat/relay-complete", {
         method: "POST",
         body: {
@@ -2495,11 +2510,18 @@
         renderSideNodesList();
         renderAccountsTable();
       }
+      if (typeof fallbackServerFn === "function") {
+        const fbRes = await fallbackServerFn();
+        if (fbRes && !fbRes.browser_relay && String((fbRes.reply || fbRes.content) || "").trim()) {
+          return fbRes;
+        }
+      }
       throw new Error(
         "Máy chủ đang bận xử lý hoặc đang khởi động phiên làm việc ngầm. Vui lòng bấm gửi lại sau giây lát."
       );
     }
 
+    state.hasMartExtension = true;
     if (typeof onProgress === "function") {
       onProgress(45, "Đang nhận phản hồi từ " + (res.routed_node || "Muse") + "...");
     }
@@ -2529,6 +2551,14 @@
         updateMuseSidebarStatus();
         renderSideNodesList();
         renderAccountsTable();
+      }
+      if (typeof fallbackServerFn === "function") {
+        try {
+          const fbRes = await fallbackServerFn();
+          if (fbRes && !fbRes.browser_relay && String((fbRes.reply || fbRes.content) || "").trim()) {
+            return fbRes;
+          }
+        } catch (_) {}
       }
       throw new Error(errMsg);
     }
@@ -3001,19 +3031,27 @@
     }
 
     // 7.5. Hỗ trợ Server-Sent Events (SSE) Streaming theo thời gian thực
-    async function sendChatStream(payload, onChunk, onReaderReady) {
+    async function sendChatStream(payload, onChunk, onReaderReady, onStart) {
       const headers = {
         "Content-Type": "application/json",
         "Accept": "text/event-stream, application/json",
         "X-Mart-Client": "web",
+        "X-Mart-Ext-Relay": state.hasMartExtension ? "1" : "0",
       };
       if (state.jwtToken) {
         headers["Authorization"] = "Bearer " + state.jwtToken;
       }
+      const reqBody = Object.assign(
+        {
+          client_relay_capable: Boolean(state.hasMartExtension),
+        },
+        payload,
+        { stream: true }
+      );
       const resp = await fetch("/api/chat/send", {
         method: "POST",
         headers: headers,
-        body: JSON.stringify(Object.assign({}, payload, { stream: true })),
+        body: JSON.stringify(reqBody),
         cache: "no-store",
       });
 
@@ -3032,40 +3070,56 @@
         let buffer = "";
         let finalResult = null;
 
+        function processSSEBlock(block) {
+          if (!block || !block.trim()) return;
+          let eventName = "message";
+          let dataStr = "";
+          const lines = block.split("\n");
+          for (const line of lines) {
+            if (line.startsWith("event:")) {
+              eventName = line.slice(6).trim();
+            } else if (line.startsWith("data:")) {
+              dataStr = line.slice(5).trim();
+            }
+          }
+          if (dataStr) {
+            try {
+              const parsed = JSON.parse(dataStr);
+              if (eventName === "start") {
+                if (typeof onStart === "function") onStart(parsed);
+              } else if (eventName === "delta") {
+                if (typeof onChunk === "function") onChunk(parsed);
+              } else if (eventName === "done") {
+                finalResult = parsed;
+              } else if (eventName === "error") {
+                throw new Error(parsed.error || "STREAM_ERROR");
+              }
+            } catch (parseErr) {
+              if (eventName === "error") throw parseErr;
+            }
+          }
+        }
+
         try {
           while (true) {
             const { done, value } = await reader.read();
-            if (done) break;
+            if (done) {
+              buffer += decoder.decode();
+              break;
+            }
             buffer += decoder.decode(value, { stream: true });
+            buffer = buffer.replace(/\r\n/g, "\n");
             const parts = buffer.split("\n\n");
             buffer = parts.pop() || "";
 
             for (const block of parts) {
-              if (!block.trim()) continue;
-              let eventName = "message";
-              let dataStr = "";
-              const lines = block.split("\n");
-              for (const line of lines) {
-                if (line.startsWith("event:")) {
-                  eventName = line.slice(6).trim();
-                } else if (line.startsWith("data:")) {
-                  dataStr = line.slice(5).trim();
-                }
-              }
-              if (dataStr) {
-                try {
-                  const parsed = JSON.parse(dataStr);
-                  if (eventName === "delta") {
-                    if (typeof onChunk === "function") onChunk(parsed);
-                  } else if (eventName === "done") {
-                    finalResult = parsed;
-                  } else if (eventName === "error") {
-                    throw new Error(parsed.error || "STREAM_ERROR");
-                  }
-                } catch (parseErr) {
-                  if (eventName === "error") throw parseErr;
-                }
-              }
+              processSSEBlock(block);
+            }
+          }
+          if (buffer.trim()) {
+            const remainingParts = buffer.replace(/\r\n/g, "\n").split("\n\n");
+            for (const block of remainingParts) {
+              processSSEBlock(block);
             }
           }
         } catch (streamErr) {
@@ -3352,13 +3406,89 @@
         }, 1200);
 
         var activeStreamReader = null;
+        var startedTurnInfo = null;
         const stopBtn = document.getElementById("btnStopGenerating");
         var stoppedByUser = false;
+
+        function ensureTurnRowsAttached() {
+          if (!viewport) return;
+          viewport.classList.remove("hidden-el");
+          let streamInner = viewport.querySelector(".chat-stream-inner");
+          if (!streamInner) {
+            viewport.innerHTML = "";
+            streamInner = document.createElement("div");
+            streamInner.className = "chat-stream-inner";
+            viewport.appendChild(streamInner);
+          }
+          const turnId = (startedTurnInfo && startedTurnInfo.turn_id) || "";
+          if (aiRow && !aiRow.parentNode) {
+            const existingAi =
+              (turnId && streamInner.querySelector('.ai-bubble-row[data-turn-id="' + turnId + '"]')) ||
+              streamInner.querySelector('.ai-bubble-row[data-local-turn="' + localTurnId + '"]');
+            if (existingAi) {
+              aiRow = existingAi;
+            } else {
+              if (uRow && !uRow.parentNode) {
+                const existingUser =
+                  (turnId && streamInner.querySelector('.user-bubble-row[data-turn-id="' + turnId + '"]')) ||
+                  streamInner.querySelector('.user-bubble-row[data-local-turn="' + localTurnId + '"]');
+                if (!existingUser) {
+                  streamInner.appendChild(uRow);
+                }
+              }
+              streamInner.appendChild(aiRow);
+            }
+          }
+        }
+
+        function handleStreamDeltaChunk(chunk) {
+          if (stoppedByUser) return;
+          ensureTurnRowsAttached();
+          if (aiRow && aiRow.parentNode) {
+            const card = aiRow.querySelector(".ai-bubble-card");
+            if (card) {
+              if (card.classList.contains("typing-dots-bubble")) {
+                card.classList.remove("typing-dots-bubble");
+              }
+              var curText = chunk.content || "";
+              card.innerHTML = formatMarkdownNative(curText);
+              if (viewport) {
+                viewport.scrollTop = viewport.scrollHeight;
+              }
+              if (curText.length > 0) {
+                var livePct = Math.min(94, 28 + Math.floor(curText.length / 18));
+                updateMartCartProgress(livePct, "Đang viết câu trả lời...");
+              }
+            }
+          }
+        }
+
+        function handleStreamStartEvent(startEvt) {
+          if (!startEvt || typeof startEvt !== "object") return;
+          startedTurnInfo = startEvt;
+          if (startEvt.turn_id) {
+            state.activeTurnIds = state.activeTurnIds || {};
+            state.activeTurnIds[startEvt.turn_id] = true;
+            if (uRow) uRow.setAttribute("data-turn-id", startEvt.turn_id);
+            if (aiRow) aiRow.setAttribute("data-turn-id", startEvt.turn_id);
+          }
+        }
+
         if (stopBtn) {
           stopBtn.onclick = function () {
             stoppedByUser = true;
             if (activeStreamReader) {
               try { activeStreamReader.cancel(); } catch(_) {}
+            }
+            if (startedTurnInfo && startedTurnInfo.turn_id) {
+              apiRequest("/api/chat/relay-complete", {
+                method: "POST",
+                body: {
+                  thread_id: startedTurnInfo.thread_id || requestThreadId || "",
+                  turn_id: startedTurnInfo.turn_id || "",
+                  error: "USER_STOPPED",
+                },
+              }).catch(function () {});
             }
             clearInterval(livePollTimer);
             state.pendingChatCount = Math.max(0, (state.pendingChatCount || 1) - 1);
@@ -3382,38 +3512,22 @@
             }
           } catch(_) { /* không có memories — bỏ qua */ }
 
+          const baseSendPayload = {
+            thread_id: requestThreadId,
+            preferred_node_id: selNode ? selNode.value : "auto",
+            model: "",
+            workspace: "chat",
+            prompt: finalPrompt,
+            attachments: attachmentsToSend,
+          };
+
           let res = await sendChatStream(
-            {
-              thread_id: requestThreadId,
-              preferred_node_id: selNode ? selNode.value : "auto",
-              model: "",
-              workspace: "chat",
-              prompt: finalPrompt,
-              attachments: attachmentsToSend,
-            },
-            function (chunk) {
-              if (stoppedByUser) return;
-              if (aiRow && aiRow.parentNode) {
-                const card = aiRow.querySelector(".ai-bubble-card");
-                if (card) {
-                  if (card.classList.contains("typing-dots-bubble")) {
-                    card.classList.remove("typing-dots-bubble");
-                  }
-                  var curText = chunk.content || "";
-                  card.innerHTML = formatMarkdownNative(curText);
-                  if (viewport) {
-                    viewport.scrollTop = viewport.scrollHeight;
-                  }
-                  if (curText.length > 0) {
-                    var livePct = Math.min(94, 28 + Math.floor(curText.length / 18));
-                    updateMartCartProgress(livePct, "Đang viết câu trả lời...");
-                  }
-                }
-              }
-            },
+            baseSendPayload,
+            handleStreamDeltaChunk,
             function (reader) {
               activeStreamReader = reader;
-            }
+            },
+            handleStreamStartEvent
           );
 
           if (stoppedByUser) {
@@ -3433,7 +3547,24 @@
           }
 
           if (res && res.browser_relay) {
-            res = await executeBrowserRelayIfNeeded(res, updateMartCartProgress);
+            res = await executeBrowserRelayIfNeeded(
+              res,
+              updateMartCartProgress,
+              async function () {
+                if (stoppedByUser) return null;
+                return await sendChatStream(
+                  Object.assign({}, baseSendPayload, {
+                    skip_browser_relay: true,
+                    client_relay_capable: false,
+                  }),
+                  handleStreamDeltaChunk,
+                  function (reader) {
+                    activeStreamReader = reader;
+                  },
+                  handleStreamStartEvent
+                );
+              }
+            );
             if (stoppedByUser) return;
           }
 
@@ -3442,6 +3573,7 @@
           }
 
           // Điền câu trả lời NGAY VÀO DÒNG ĐỂ TRỐNG ngay bên dưới câu hỏi đó
+          ensureTurnRowsAttached();
           if (aiRow && aiRow.parentNode) {
             if (res.turn_id) {
               aiRow.setAttribute("data-turn-id", res.turn_id);
@@ -3527,8 +3659,19 @@
             }
           } catch(_) { /* bỏ qua lỗi notification */ }
         } catch (err) {
+          if (startedTurnInfo && startedTurnInfo.turn_id) {
+            apiRequest("/api/chat/relay-complete", {
+              method: "POST",
+              body: {
+                thread_id: startedTurnInfo.thread_id || requestThreadId || "",
+                turn_id: startedTurnInfo.turn_id || "",
+                error: (err && err.message) || "CLIENT_CHAT_ERROR",
+              },
+            }).catch(function () {});
+          }
           if (!stoppedByUser) {
             // Giữ nguyên câu hỏi của người dùng (uRow), không bao giờ xóa mất câu hỏi
+            ensureTurnRowsAttached();
             if (aiRow && aiRow.parentNode) {
               const card = aiRow.querySelector(".ai-bubble-card");
               if (card) {
@@ -3547,6 +3690,9 @@
             showToast(err.message);
           }
         } finally {
+          if (startedTurnInfo && startedTurnInfo.turn_id && state.activeTurnIds) {
+            delete state.activeTurnIds[startedTurnInfo.turn_id];
+          }
           clearInterval(livePollTimer);
           if (!stoppedByUser) {
             state.pendingChatCount = Math.max(0, (state.pendingChatCount || 1) - 1);

@@ -23,7 +23,8 @@ func extractCookieValue(cookieHeader, name string) string {
 			return strings.TrimSpace(kv[1])
 		}
 	}
-	if name == "hatch_sess" && trimmed != "" && !strings.Contains(trimmed, "=") &&
+	if name == "hatch_sess" && len(trimmed) >= 12 && !strings.EqualFold(trimmed, "hatch_sess") &&
+		!strings.Contains(trimmed, "=") && !strings.Contains(trimmed, ";") &&
 		!strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[") &&
 		!strings.HasPrefix(strings.ToLower(trimmed), "http://") && !strings.HasPrefix(strings.ToLower(trimmed), "https://") {
 		return trimmed

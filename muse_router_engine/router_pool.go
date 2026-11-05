@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -137,6 +138,7 @@ type MuseRouterPool struct {
 }
 
 type clientBrowserRelayContextKey struct{}
+type skipBrowserRelayContextKey struct{}
 
 func (p *MuseRouterPool) shouldTryPythonBridge() bool {
 	u := strings.TrimSpace(p.aiBridgeURL)
@@ -1294,6 +1296,10 @@ func (p *MuseRouterPool) WakeAndProbeNode(parentCtx context.Context, nodeID stri
 		resp, err = p.httpClient.Do(req)
 		if err != nil {
 			p.markPythonBridgeDown()
+		} else if resp.StatusCode == http.StatusUnauthorized {
+			_ = resp.Body.Close()
+			p.markPythonBridgeDown()
+			err = errors.New("AI_BRIDGE_UNAUTHORIZED")
 		}
 	} else {
 		err = errors.New("AI_BRIDGE_BYPASSED")
@@ -1847,16 +1853,23 @@ func (p *MuseRouterPool) RouteAndExecuteChatForOwner(
 		userPrompt,
 		attachments,
 	)
+	if len(onChunk) > 0 && onChunk[0] != nil {
+		onChunk[0]("start", map[string]interface{}{
+			"thread_id": resolvedThreadID,
+			"turn_id":   turnID,
+			"model":     model,
+		})
+	}
 	var lastErr error
+	skipClientRelay, _ := parentCtx.Value(skipBrowserRelayContextKey{}).(bool)
+	forceClientRelay, _ := parentCtx.Value(clientBrowserRelayContextKey{}).(bool)
 
 	for _, candidate := range candidates {
 		p.markNodeRunning(candidate.ID)
 		startTs := time.Now()
-		// Render không có browser Muse chạy trên server. Với tài khoản cookie,
-		// gửi qua extension trên trình duyệt người dùng để lệnh xuất hiện trong
-		// chính phiên chat Muse.ai đó; tránh bridge HTTP trả rỗng mà vẫn thành công.
-		forceClientRelay, _ := parentCtx.Value(clientBrowserRelayContextKey{}).(bool)
-		if forceClientRelay && candidate.AuthType == "cookie" && candidate.HasHatchSess {
+		// Trên Cloud (không có Python Bridge local), nếu trình duyệt người dùng có cài Mart AI Extension,
+		// ưu tiên gửi qua Extension để lệnh thực thi trực tiếp trên phiên trình duyệt của người dùng.
+		if !skipClientRelay && forceClientRelay && candidate.AuthType == "cookie" && candidate.HasHatchSess && !p.shouldTryPythonBridge() {
 			LogInfo("Routing web chat through client browser relay for node %s", candidate.ID)
 			return p.prepareBrowserRelayResponse(candidate, resolvedThreadID, turnID, model, userPrompt)
 		}
@@ -1890,6 +1903,10 @@ func (p *MuseRouterPool) RouteAndExecuteChatForOwner(
 			resp, errDo = p.httpClient.Do(req)
 			if errDo != nil {
 				p.markPythonBridgeDown()
+			} else if resp.StatusCode == http.StatusUnauthorized {
+				_ = resp.Body.Close()
+				p.markPythonBridgeDown()
+				errDo = errors.New("AI_BRIDGE_UNAUTHORIZED")
 			}
 		} else {
 			errDo = errors.New("AI_BRIDGE_BYPASSED")
@@ -1928,6 +1945,10 @@ func (p *MuseRouterPool) RouteAndExecuteChatForOwner(
 						return p.CompleteBrowserRelayTurn(resolvedThreadID, turnID, candidate.ID, model, replyCDP, tokCDP, latCDP, "")
 					}
 					LogWarn("CDP server-side chat error on %s: %v", candidate.Label, errCDP)
+					if !skipClientRelay && forceClientRelay {
+						LogInfo("Falling back from CDP error to client browser relay on %s", candidate.Label)
+						return p.prepareBrowserRelayResponse(candidate, resolvedThreadID, turnID, model, userPrompt)
+					}
 					p.unmarkNodeRunningKeepReady(candidate.ID)
 					lastErr = errCDP
 					if !p.autoFailover {
@@ -1935,7 +1956,10 @@ func (p *MuseRouterPool) RouteAndExecuteChatForOwner(
 					}
 					continue
 				}
-				return p.prepareBrowserRelayResponse(candidate, resolvedThreadID, turnID, model, userPrompt)
+				if !skipClientRelay {
+					return p.prepareBrowserRelayResponse(candidate, resolvedThreadID, turnID, model, userPrompt)
+				}
+				errMsg = "Máy chủ chưa thể khởi chạy trình duyệt Headless cho Muse.ai; vui lòng bật tiện ích Mart AI Extension hoặc thử lại."
 			}
 			p.releaseNode(candidate.ID, 0, 0, false, errMsg)
 			lastErr = errors.New(errMsg)
@@ -1975,9 +1999,9 @@ func (p *MuseRouterPool) RouteAndExecuteChatForOwner(
 		latencyMs := int(time.Since(startTs).Milliseconds())
 		if strings.TrimSpace(assistantReply) == "" {
 			emptyReplyErr := errors.New("Muse AI bridge returned an empty reply")
-			LogWarn("Node %s returned HTTP 200 with empty content; trying browser relay", candidate.Label)
+			LogWarn("Node %s returned HTTP 200 with empty content; trying fallback", candidate.Label)
 			lastErr = emptyReplyErr
-			if candidate.AuthType == "cookie" && candidate.HasHatchSess {
+			if !skipClientRelay && candidate.AuthType == "cookie" && candidate.HasHatchSess {
 				return p.prepareBrowserRelayResponse(candidate, resolvedThreadID, turnID, model, userPrompt)
 			}
 			p.releaseNode(candidate.ID, 0, latencyMs, false, emptyReplyErr.Error())
@@ -2031,9 +2055,6 @@ func (p *MuseRouterPool) RouteAndExecuteChatForOwner(
 
 		if idempotencyKey != "" {
 			p.cache.Set("idem:"+ownerID+":"+idempotencyKey, result, 5*time.Minute)
-		}
-		if len(onChunk) > 0 && onChunk[0] != nil {
-			onChunk[0]("done", result)
 		}
 		return result, nil
 	}
@@ -2182,6 +2203,51 @@ func (p *MuseRouterPool) reserveQuestionTurn(
 	return p.reserveQuestionTurnForOwner("", threadID, model, workspace, userPrompt, attachments)
 }
 
+func cleanStaleMessagesInThread(t *ChatThread, nowNano int64) bool {
+	if t == nil || len(t.Messages) == 0 {
+		return false
+	}
+	staleTurns := make(map[string]bool)
+	changed := false
+	for _, m := range t.Messages {
+		if m.Role == "assistant" && strings.TrimSpace(m.Content) == "" && len(m.Attachments) == 0 {
+			if !m.Pending {
+				changed = true
+				if m.TurnID != "" {
+					staleTurns[m.TurnID] = true
+				}
+				continue
+			}
+			// Kiểm tra thời gian tạo turn (turn_<unixNano>)
+			if strings.HasPrefix(m.TurnID, "turn_") {
+				if tsNano, err := strconv.ParseInt(strings.TrimPrefix(m.TurnID, "turn_"), 10, 64); err == nil {
+					if nowNano-tsNano > int64(95*time.Second) {
+						staleTurns[m.TurnID] = true
+						changed = true
+					}
+				}
+			} else {
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return false
+	}
+	filtered := make([]ChatMessage, 0, len(t.Messages))
+	for _, m := range t.Messages {
+		if m.TurnID != "" && staleTurns[m.TurnID] {
+			continue
+		}
+		if m.Role == "assistant" && strings.TrimSpace(m.Content) == "" && len(m.Attachments) == 0 {
+			continue
+		}
+		filtered = append(filtered, m)
+	}
+	t.Messages = filtered
+	return true
+}
+
 func (p *MuseRouterPool) reserveQuestionTurnForOwner(
 	ownerID string,
 	threadID string,
@@ -2208,6 +2274,10 @@ func (p *MuseRouterPool) reserveQuestionTurnForOwner(
 			}
 			break
 		}
+	}
+
+	if target != nil {
+		cleanStaleMessagesInThread(target, now.UnixNano())
 	}
 
 	title := strings.TrimSpace(userPrompt)
@@ -2373,6 +2443,52 @@ func (p *MuseRouterPool) cancelQuestionTurn(threadID string, turnID string) {
 	for _, t := range p.threads {
 		if t.ID != threadID {
 			continue
+		}
+		targetTurnID := strings.TrimSpace(turnID)
+		if targetTurnID == "" {
+			for i := len(t.Messages) - 1; i >= 0; i-- {
+				if t.Messages[i].Pending && t.Messages[i].TurnID != "" {
+					targetTurnID = t.Messages[i].TurnID
+					break
+				}
+			}
+		}
+		filtered := make([]ChatMessage, 0, len(t.Messages))
+		for _, m := range t.Messages {
+			if targetTurnID != "" && m.TurnID == targetTurnID {
+				continue
+			}
+			if targetTurnID == "" && m.Pending && m.Role == "assistant" && strings.TrimSpace(m.Content) == "" {
+				continue
+			}
+			filtered = append(filtered, m)
+		}
+		t.Messages = filtered
+		_ = p.saveSingleThreadLocked(t)
+		return
+	}
+}
+
+func (p *MuseRouterPool) cancelQuestionTurnIfStillPending(threadID string, turnID string) {
+	if threadID == "" || turnID == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for _, t := range p.threads {
+		if t.ID != threadID {
+			continue
+		}
+		stillPending := false
+		for _, m := range t.Messages {
+			if m.TurnID == turnID && m.Pending {
+				stillPending = true
+				break
+			}
+		}
+		if !stillPending {
+			return
 		}
 		filtered := make([]ChatMessage, 0, len(t.Messages))
 		for _, m := range t.Messages {

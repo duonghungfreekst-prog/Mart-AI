@@ -960,6 +960,14 @@ func (s *MySQLStore) LoadThreadsWithMessages() ([]*ChatThread, error) {
 		return []*ChatThread{}, nil
 	}
 
+	// Tự động dọn sạch các bản ghi assistant rỗng bị kẹt từ các lần lỗi trước trong DB
+	_, _ = db.ExecContext(ctx, `
+		DELETE FROM chat_messages
+		WHERE role = 'assistant'
+		  AND (content IS NULL OR TRIM(content) = '')
+		  AND (attachments_json IS NULL OR attachments_json = '' OR attachments_json = '[]')
+	`)
+
 	mRows, err := db.QueryContext(ctx, `
 		SELECT thread_id, role, content, attachments_json, node_label,
 		       model, latency_ms, tokens, timestamp
@@ -990,6 +998,9 @@ func (s *MySQLStore) LoadThreadsWithMessages() ([]*ChatThread, error) {
 		}
 		if attJSON != "" && attJSON != "[]" {
 			_ = json.Unmarshal([]byte(attJSON), &m.Attachments)
+		}
+		if m.Role == "assistant" && strings.TrimSpace(m.Content) == "" && len(m.Attachments) == 0 {
+			continue
 		}
 		if idx, ok := threadIdxMap[threadID]; ok {
 			threads[idx].Messages = append(threads[idx].Messages, m)
@@ -1036,12 +1047,16 @@ func (s *MySQLStore) SaveThreadWithMessages(t *ChatThread) error {
 		return err
 	}
 
-	for idx, m := range t.Messages {
+	persistedIdx := 0
+	for _, m := range t.Messages {
+		if m.Pending || (m.Role == "assistant" && strings.TrimSpace(m.Content) == "" && len(m.Attachments) == 0) {
+			continue
+		}
 		attBytes, _ := json.Marshal(m.Attachments)
 		if len(attBytes) == 0 {
 			attBytes = []byte("[]")
 		}
-		msgID := fmt.Sprintf("%s_msg_%d", t.ID, idx)
+		msgID := fmt.Sprintf("%s_msg_%d", t.ID, persistedIdx)
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO chat_messages (
 				id, thread_id, seq_num, role, content, attachments_json,
@@ -1060,7 +1075,7 @@ func (s *MySQLStore) SaveThreadWithMessages(t *ChatThread) error {
 		`,
 			msgID,
 			t.ID,
-			idx,
+			persistedIdx,
 			m.Role,
 			m.Content,
 			string(attBytes),
@@ -1073,11 +1088,12 @@ func (s *MySQLStore) SaveThreadWithMessages(t *ChatThread) error {
 		if err != nil {
 			return err
 		}
+		persistedIdx++
 	}
 	// Remove messages that were removed from a thread. Upserting only current
 	// indices leaves trailing rows behind when a thread is edited or truncated.
 	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM chat_messages WHERE thread_id = ? AND seq_num >= ?`, t.ID, len(t.Messages)); err != nil {
+		`DELETE FROM chat_messages WHERE thread_id = ? AND seq_num >= ?`, t.ID, persistedIdx); err != nil {
 		return err
 	}
 

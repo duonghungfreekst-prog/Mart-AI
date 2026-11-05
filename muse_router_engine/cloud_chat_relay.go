@@ -117,11 +117,10 @@ func (p *MuseRouterPool) prepareBrowserRelayResponse(
 		cookieHeader = "hatch_sess=" + cookieHeader
 	}
 
-	// Phòng hờ trình duyệt người dùng đóng tab giữa chừng: tự giải phóng slot sau 95 giây mà không làm hỏng trạng thái ready.
-	go func(nodeID string) {
+	// Phòng hờ trình duyệt người dùng đóng tab giữa chừng: tự giải phóng slot và dọn turn pending sau 95 giây.
+	go func(nodeID, tID, trnID string) {
 		time.Sleep(95 * time.Second)
 		p.mu.Lock()
-		defer p.mu.Unlock()
 		for _, n := range p.nodes {
 			if n.ID == nodeID && n.ActiveRequests > 0 {
 				if time.Now().UnixMilli()-n.LastUsedUnixMs >= 90000 {
@@ -133,7 +132,9 @@ func (p *MuseRouterPool) prepareBrowserRelayResponse(
 				}
 			}
 		}
-	}(candidate.ID)
+		p.mu.Unlock()
+		p.cancelQuestionTurnIfStillPending(tID, trnID)
+	}(candidate.ID, resolvedThreadID, turnID)
 
 	return map[string]interface{}{
 		"browser_relay": true,

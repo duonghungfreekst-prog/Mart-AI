@@ -2108,7 +2108,7 @@ class BridgeRequestHandler(http.server.BaseHTTPRequestHandler):
 def run_server() -> None:
     host = os.environ.get("MUSE_AI_BRIDGE_HOST", "127.0.0.1")
     port = int(os.environ.get("MUSE_AI_BRIDGE_PORT", "18089"))
-    master_key = os.environ.get("MUSE_VAULT_MASTER_KEY", "muse_router_default_vault_2026_key")
+    master_key = os.environ.get("MUSE_VAULT_MASTER_KEY", "MUSE_ROUTER_SQL40_CLOUD_VAULT_KEY_2026_AES256CTR")
     internal_token = os.environ.get("MUSE_INTERNAL_BRIDGE_TOKEN", "muse_bridge_internal_token_2026")
 
     rust_ffi = RustCoreFFI()

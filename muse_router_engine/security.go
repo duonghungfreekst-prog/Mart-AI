@@ -564,7 +564,7 @@ func SecurityHeadersMiddleware(next http.Handler) http.Handler {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Vary", "Origin")
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Idempotency-Key, X-Mart-Client")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Idempotency-Key, X-Mart-Client, X-Mart-Ext-Relay")
 			} else {
 				LogWarn("Blocked disallowed CORS origin: %s", origin)
 				WriteJSONError(w, http.StatusForbidden, "ERR_CORS_ORIGIN_FORBIDDEN")
