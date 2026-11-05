@@ -3408,6 +3408,10 @@
             if (stoppedByUser) return;
           }
 
+          if (!String((res && (res.reply || res.content)) || "").trim()) {
+            throw new Error("Muse.ai trả về phản hồi rỗng; Mart AI chưa nhận được câu trả lời.");
+          }
+
           // Điền câu trả lời NGAY VÀO DÒNG ĐỂ TRỐNG ngay bên dưới câu hỏi đó
           if (aiRow && aiRow.parentNode) {
             if (res.turn_id) {
