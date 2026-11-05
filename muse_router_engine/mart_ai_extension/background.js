@@ -312,19 +312,15 @@ function waitForTabComplete(tabId, timeoutMs) {
 
 async function ensureMuseWorkerTab(switchedAccount) {
   var tabs = await chrome.tabs.query({ url: "https://muse.ai/*" });
+  // Tuyệt đối không cướp tab đang mở và đang hoạt động của người dùng (tránh đọc nhầm tin nhắn cá nhân)
   var candidates = (tabs || []).filter(function (tab) {
-    return tab && tab.id && !/\/oidc\//i.test(tab.url || "");
-  });
-  // Prefer the tab the person is viewing; otherwise use the most recently used Muse tab.
-  candidates.sort(function (a, b) {
-    if (!!a.active !== !!b.active) return a.active ? -1 : 1;
-    return (Number(b.lastAccessed) || 0) - (Number(a.lastAccessed) || 0);
+    return tab && tab.id && !/\/oidc\//i.test(tab.url || "") && !tab.active;
   });
   var candidateTab = candidates[0] || null;
 
   if (candidateTab) {
-    if (switchedAccount || candidateTab.status !== "complete") {
-      await chrome.tabs.reload(candidateTab.id);
+    if (switchedAccount || candidateTab.status !== "complete" || !candidateTab.url.endsWith("muse.ai/")) {
+      await chrome.tabs.update(candidateTab.id, { url: "https://muse.ai/" });
       await waitForTabComplete(candidateTab.id, 18000);
     }
     return candidateTab.id;
