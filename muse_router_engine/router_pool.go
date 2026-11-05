@@ -110,8 +110,6 @@ type RouterSummary struct {
 	MemAllocMB        uint64             `json:"mem_alloc_mb"`
 	DatabaseDriver    string             `json:"database_driver"`
 	DatabaseURL       string             `json:"database_url"`
-	LibSQLDriver      string             `json:"libsql_driver"`
-	LibSQLURL         string             `json:"libsql_url"`
 	Nodes             []*MuseAccountNode `json:"nodes"`
 }
 
@@ -211,10 +209,10 @@ func NewMuseRouterPool(
 	go pool.memoryMonitorLoop()
 
 	if err := pool.loadVault(); err != nil {
-		LogWarn("Initializing clean account vault in libSQL (%v)", err)
+		LogWarn("Initializing clean account vault in MySQL (%v)", err)
 	}
 	if err := pool.loadThreads(); err != nil {
-		LogWarn("Initializing clean chat session store in libSQL (%v)", err)
+		LogWarn("Initializing clean chat session store in MySQL (%v)", err)
 	}
 
 	go pool.autoSyncAccountsLoop()
@@ -328,10 +326,6 @@ func (p *MuseRouterPool) Shutdown() {
 }
 
 func (p *MuseRouterPool) GetMySQLStore() *MySQLStore {
-	return p.mysqlStore
-}
-
-func (p *MuseRouterPool) GetLibSQLStore() *MySQLStore {
 	return p.mysqlStore
 }
 
@@ -476,7 +470,7 @@ func (p *MuseRouterPool) loadVault() error {
 			_ = p.syncBackupJSONLocked()
 			return nil
 		}
-		LogWarn("libSQL LoadAccounts fallback check: %v", err)
+		LogWarn("MySQL LoadAccounts fallback check: %v", err)
 	}
 
 	if _, err := os.Stat(p.vaultPath); os.IsNotExist(err) {
@@ -511,7 +505,7 @@ func (p *MuseRouterPool) saveVaultLocked() error {
 	normalizeAccountIndices(p.nodes)
 	if p.mysqlStore != nil {
 		if err := p.mysqlStore.SyncAllAccounts(p.nodes); err != nil {
-			LogError("libSQL SyncAllAccounts error: %v", err)
+			LogError("MySQL SyncAllAccounts error: %v", err)
 			return err
 		}
 	}
@@ -528,7 +522,7 @@ func (p *MuseRouterPool) loadThreads() error {
 			p.threads = loaded
 			return nil
 		}
-		LogWarn("libSQL LoadThreadsWithMessages error: %v", err)
+		LogWarn("MySQL LoadThreadsWithMessages error: %v", err)
 	}
 
 	p.threads = []*ChatThread{}
@@ -539,7 +533,7 @@ func (p *MuseRouterPool) saveThreadsLocked() error {
 	if p.mysqlStore != nil {
 		for _, t := range p.threads {
 			if err := p.mysqlStore.SaveThreadWithMessages(t); err != nil {
-				LogError("libSQL SaveThreadWithMessages error: %v", err)
+				LogError("MySQL SaveThreadWithMessages error: %v", err)
 				return err
 			}
 		}
@@ -557,7 +551,7 @@ func (p *MuseRouterPool) saveSingleThreadLocked(target *ChatThread) error {
 	}
 	if p.mysqlStore != nil {
 		if err := p.mysqlStore.SaveThreadWithMessages(target); err != nil {
-			LogError("libSQL SaveThreadWithMessages error: %v", err)
+			LogError("MySQL SaveThreadWithMessages error: %v", err)
 			return err
 		}
 	}
@@ -681,8 +675,6 @@ func (p *MuseRouterPool) GetSummary() RouterSummary {
 		MemAllocMB:        allocMB,
 		DatabaseDriver:    dbDriver,
 		DatabaseURL:       dbURL,
-		LibSQLDriver:      dbDriver,
-		LibSQLURL:         dbURL,
 		Nodes:             safeNodes,
 	}
 }
@@ -691,8 +683,6 @@ func (p *MuseRouterPool) GetSummary() RouterSummary {
 func (p *MuseRouterPool) GetPublicSummary() RouterSummary {
 	sum := p.GetSummary()
 	sum.DatabaseURL = ""
-	sum.LibSQLURL = ""
-	sum.LibSQLURL = ""
 	sum.Nodes = []*MuseAccountNode{}
 	return sum
 }

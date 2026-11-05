@@ -15,18 +15,10 @@ import (
 	"time"
 )
 
-// MySQLStore quản lý kết nối trực tiếp tới cơ sở dữ liệu chuẩn SQL40 / Aiven MySQL Cloud TLS 1.2+
-// (đã loại bỏ hoàn toàn phụ thuộc libSQL và SQLite, vận hành 100% trên MySQL 8.4 TLS).
+// MySQLStore quản lý kết nối trực tiếp tới cơ sở dữ liệu chuẩn MySQL 8.0+ / TiDB Serverless Cloud TLS 1.2+
+// Vận hành 100% trên MySQL driver thuần Go.
 
-// Backward compatibility aliases (hoan toan thay the libSQL bang pure MySQL):
-type LibSQLStore = MySQLStore
-type LibSQLStatusResponse = MySQLStatusResponse
-type LibSQLTableStat = MySQLTableStat
-type LibSQLQueryResult = MySQLQueryResult
 
-func NewLibSQLStore(dataDir string, customURL string, authToken string) (*MySQLStore, error) {
-	return NewMySQLStore(dataDir, customURL, authToken)
-}
 type MySQLStore struct {
 	mu              sync.RWMutex
 	db              *sql.DB
@@ -52,13 +44,13 @@ func (s *MySQLStore) invalidateStatusCache() {
 	s.statusMu.Unlock()
 }
 
-// MySQLTableStat thống kê số bản ghi thực tế của từng bảng trong libSQL.
+// MySQLTableStat thống kê số bản ghi thực tế của từng bảng trong MySQL / TiDB.
 type MySQLTableStat struct {
 	TableName string `json:"table_name"`
 	RowCount  int64  `json:"row_count"`
 }
 
-// MySQLStatusResponse phản hồi trạng thái chi tiết của hệ thống cơ sở dữ liệu libSQL.
+// MySQLStatusResponse phản hồi trạng thái chi tiết của hệ thống cơ sở dữ liệu MySQL / TiDB.
 type MySQLStatusResponse struct {
 	Connected     bool              `json:"connected"`
 	Driver        string            `json:"driver"`
@@ -72,7 +64,7 @@ type MySQLStatusResponse struct {
 	CheckedAt     string            `json:"checked_at"`
 }
 
-// MySQLQueryResult kết quả truy vấn trực tiếp trên libSQL.
+// MySQLQueryResult kết quả truy vấn trực tiếp trên MySQL / TiDB.
 type MySQLQueryResult struct {
 	Columns         []string        `json:"columns"`
 	Rows            [][]interface{} `json:"rows"`
@@ -82,7 +74,7 @@ type MySQLQueryResult struct {
 	DatabaseDriver  string          `json:"database_driver"`
 }
 
-// Cấu trúc Hrana v2 HTTP Pipeline chuẩn của libSQL (/v2/pipeline)
+// Cấu trúc Hrana v2 HTTP Pipeline chuẩn (/v2/pipeline)
 type HranaPipelineRequest struct {
 	Baton    string               `json:"baton,omitempty"`
 	Requests []HranaStreamRequest `json:"requests"`
@@ -155,14 +147,6 @@ var (
 	cleanedTestDirs      sync.Map // map[string]bool
 	schemaVerifiedURLs   sync.Map // map[string]bool
 )
-
-func normalizeFileLibSQLURL(dataDir string) (string, string, error) {
-	if err := os.MkdirAll(dataDir, 0750); err != nil {
-		return "", "", err
-	}
-	cloudURL := LoadEncryptedCloudSQLConfig(dataDir)
-	return cloudURL, "", nil
-}
 
 func cloudSQLMasterKey() string {
 	if k := strings.TrimSpace(os.Getenv("MUSE_VAULT_MASTER_KEY")); k != "" {
@@ -301,7 +285,7 @@ func ensureIsolatedTestMySQLURL(baseURL string) string {
 	return baseURL
 }
 
-// NewMySQLStore khởi tạo kết nối MySQL / TiDB Serverless Cloud (0% libSQL / 0% SQLite).
+// NewMySQLStore khởi tạo kết nối MySQL / TiDB Serverless Cloud.
 func NewMySQLStore(dataDir string, customURL string, authToken string) (*MySQLStore, error) {
 	_ = os.MkdirAll(dataDir, 0750)
 
@@ -420,16 +404,42 @@ func (s *MySQLStore) connectInternal(targetURL string, authToken string) error {
 
 func (s *MySQLStore) Reconfigure(newURL string, newAuthToken string) error {
 	newURL = strings.TrimSpace(newURL)
-	if !strings.HasPrefix(strings.ToLower(newURL), "mysql://") {
-		newURL = LoadEncryptedCloudSQLConfig(s.dataDir)
+
+	s.mu.RLock()
+	activeURL := s.dbURL
+	s.mu.RUnlock()
+	if activeURL == "" && s.dataDir != "" {
+		activeURL = LoadEncryptedCloudSQLConfig(s.dataDir)
 	}
+
+	if !strings.HasPrefix(strings.ToLower(newURL), "mysql://") {
+		newURL = activeURL
+	} else if strings.Contains(newURL, ":***@") && activeURL != "" {
+		// Nguoi dung bam ket noi lai khi o nhap dang chua mat khau che giu (***).
+		// Tu dong khoi phuc mat khau that dang luu de tranh loi Access Denied (password: ***).
+		cfgNew, errNew := parseMySQLConnectionURL(newURL)
+		cfgCur, errCur := parseMySQLConnectionURL(activeURL)
+		if errNew == nil && errCur == nil && cfgNew.Password == "***" {
+			cfgNew.Password = cfgCur.Password
+			if cfgNew.UseTLS {
+				newURL = fmt.Sprintf("mysql://%s:%s@%s:%s/%s?ssl-mode=REQUIRED", cfgNew.User, cfgNew.Password, cfgNew.Host, cfgNew.Port, cfgNew.Database)
+			} else {
+				newURL = fmt.Sprintf("mysql://%s:%s@%s:%s/%s", cfgNew.User, cfgNew.Password, cfgNew.Host, cfgNew.Port, cfgNew.Database)
+			}
+		}
+	}
+
+	if newURL == "" {
+		return errors.New("chua cau hinh chuoi ket noi MySQL hop le")
+	}
+
 	if err := s.connectInternal(newURL, strings.TrimSpace(newAuthToken)); err != nil {
 		return err
 	}
 	if err := s.initSchema(); err != nil {
 		return err
 	}
-	if strings.HasPrefix(strings.ToLower(newURL), "mysql://") && s.dataDir != "" {
+	if strings.HasPrefix(strings.ToLower(newURL), "mysql://") && s.dataDir != "" && !strings.Contains(newURL, ":***@") {
 		_ = SaveEncryptedCloudSQLConfig(s.dataDir, newURL)
 	}
 	return nil
@@ -620,7 +630,7 @@ func (s *MySQLStore) initSchema() error {
 }
 
 // MigrateLegacyJSONIfNeeded tự động chuyển dữ liệu từ accounts_vault.json & sessions_store.json / threads.json
-// sang cơ sở dữ liệu chuẩn libSQL nếu bảng trong libSQL đang trống.
+// sang cơ sở dữ liệu chuẩn MySQL nếu bảng trong MySQL đang trống.
 func (s *MySQLStore) MigrateLegacyJSONIfNeeded(vaultJSONPath string, threadsJSONPaths ...string) {
 	s.mu.RLock()
 	db := s.db
@@ -642,7 +652,7 @@ func (s *MySQLStore) MigrateLegacyJSONIfNeeded(vaultJSONPath string, threadsJSON
 						_ = s.UpsertAccount(n)
 					}
 				}
-				LogInfo("Migrated %d Muse accounts from legacy JSON into libSQL (%s)", len(legacyNodes), s.dbFile)
+				LogInfo("Migrated %d Muse accounts from legacy JSON into MySQL (%s)", len(legacyNodes), s.dbFile)
 			}
 		}
 	}
@@ -661,7 +671,7 @@ func (s *MySQLStore) MigrateLegacyJSONIfNeeded(vaultJSONPath string, threadsJSON
 							_ = s.SaveThreadWithMessages(t)
 						}
 					}
-					LogInfo("Migrated %d threads from legacy JSON (%s) into libSQL (%s)", len(legacyThreads), tPath, s.dbFile)
+					LogInfo("Migrated %d threads from legacy JSON (%s) into MySQL (%s)", len(legacyThreads), tPath, s.dbFile)
 					break
 				}
 			}
@@ -669,13 +679,13 @@ func (s *MySQLStore) MigrateLegacyJSONIfNeeded(vaultJSONPath string, threadsJSON
 	}
 }
 
-// LoadAccounts đọc toàn bộ danh sách tài khoản Muse.ai từ bảng muse_accounts trong libSQL.
+// LoadAccounts đọc toàn bộ danh sách tài khoản Muse.ai từ bảng muse_accounts trong MySQL.
 func (s *MySQLStore) LoadAccounts() ([]*MuseAccountNode, error) {
 	s.mu.RLock()
 	db := s.db
 	s.mu.RUnlock()
 	if db == nil {
-		return nil, errors.New("libsql db not open")
+		return nil, errors.New("mysql db not open")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -746,7 +756,7 @@ func (s *MySQLStore) LoadAccounts() ([]*MuseAccountNode, error) {
 	return nodes, rows.Err()
 }
 
-// SyncAllAccounts đồng bộ danh sách tài khoản hiện tại vào bảng muse_accounts trong libSQL.
+// SyncAllAccounts đồng bộ danh sách tài khoản hiện tại vào bảng muse_accounts trong MySQL.
 func (s *MySQLStore) SyncAllAccounts(nodes []*MuseAccountNode) error {
 	for _, n := range nodes {
 		if err := s.UpsertAccount(n); err != nil {
@@ -756,7 +766,7 @@ func (s *MySQLStore) SyncAllAccounts(nodes []*MuseAccountNode) error {
 	return nil
 }
 
-// UpsertAccount thêm mới hoặc cập nhật tài khoản Muse.ai vào bảng muse_accounts trong libSQL.
+// UpsertAccount thêm mới hoặc cập nhật tài khoản Muse.ai vào bảng muse_accounts trong MySQL.
 func (s *MySQLStore) UpsertAccount(n *MuseAccountNode) error {
 	if n == nil || n.ID == "" {
 		return errors.New("invalid account node")
@@ -765,7 +775,7 @@ func (s *MySQLStore) UpsertAccount(n *MuseAccountNode) error {
 	db := s.db
 	s.mu.RUnlock()
 	if db == nil {
-		return errors.New("libsql db not open")
+		return errors.New("mysql db not open")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -859,13 +869,13 @@ func (s *MySQLStore) UpsertAccount(n *MuseAccountNode) error {
 	return err
 }
 
-// DeleteAccount xóa tài khoản khỏi bảng muse_accounts trong libSQL.
+// DeleteAccount xóa tài khoản khỏi bảng muse_accounts trong MySQL.
 func (s *MySQLStore) DeleteAccount(nodeID string) error {
 	s.mu.RLock()
 	db := s.db
 	s.mu.RUnlock()
 	if db == nil {
-		return errors.New("libsql db not open")
+		return errors.New("mysql db not open")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -878,13 +888,13 @@ func (s *MySQLStore) DeleteAccount(nodeID string) error {
 	return err
 }
 
-// LoadThreadsWithMessages tải toàn bộ lịch sử hội thoại và tin nhắn từ libSQL.
+// LoadThreadsWithMessages tải toàn bộ lịch sử hội thoại và tin nhắn từ MySQL.
 func (s *MySQLStore) LoadThreadsWithMessages() ([]*ChatThread, error) {
 	s.mu.RLock()
 	db := s.db
 	s.mu.RUnlock()
 	if db == nil {
-		return nil, errors.New("libsql db not open")
+		return nil, errors.New("mysql db not open")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
@@ -959,7 +969,7 @@ func (s *MySQLStore) LoadThreadsWithMessages() ([]*ChatThread, error) {
 	return threads, nil
 }
 
-// SaveThreadWithMessages lưu đồng bộ một luồng hội thoại và các tin nhắn vào libSQL trong một Transaction.
+// SaveThreadWithMessages lưu đồng bộ một luồng hội thoại và các tin nhắn vào MySQL trong một Transaction.
 func (s *MySQLStore) SaveThreadWithMessages(t *ChatThread) error {
 	if t == nil || t.ID == "" {
 		return nil
@@ -968,7 +978,7 @@ func (s *MySQLStore) SaveThreadWithMessages(t *ChatThread) error {
 	db := s.db
 	s.mu.RUnlock()
 	if db == nil {
-		return errors.New("libsql db not open")
+		return errors.New("mysql db not open")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
@@ -1042,13 +1052,13 @@ func (s *MySQLStore) SaveThreadWithMessages(t *ChatThread) error {
 	return nil
 }
 
-// DeleteThread xóa luồng hội thoại và toàn bộ tin nhắn liên quan khỏi libSQL.
+// DeleteThread xóa luồng hội thoại và toàn bộ tin nhắn liên quan khỏi MySQL.
 func (s *MySQLStore) DeleteThread(threadID string) error {
 	s.mu.RLock()
 	db := s.db
 	s.mu.RUnlock()
 	if db == nil {
-		return errors.New("libsql db not open")
+		return errors.New("mysql db not open")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1062,7 +1072,7 @@ func (s *MySQLStore) DeleteThread(threadID string) error {
 	return err
 }
 
-// SaveOAuthSession lưu phiên OAuth Link vào bảng oauth_sessions trong libSQL.
+// SaveOAuthSession lưu phiên OAuth Link vào bảng oauth_sessions trong MySQL.
 func (s *MySQLStore) SaveOAuthSession(sessionID, loginURL, state, appID, redirectURI string) error {
 	if sessionID == "" || loginURL == "" {
 		return nil
@@ -1090,7 +1100,7 @@ func (s *MySQLStore) SaveOAuthSession(sessionID, loginURL, state, appID, redirec
 	return err
 }
 
-// RecordRoutingTelemetry ghi nhật ký định tuyến thực tế vào bảng routing_telemetry trong libSQL.
+// RecordRoutingTelemetry ghi nhật ký định tuyến thực tế vào bảng routing_telemetry trong MySQL.
 func (s *MySQLStore) RecordRoutingTelemetry(threadID, nodeID, nodeLabel, model string, latencyMs, tokensUsed int64, status string) {
 	s.mu.RLock()
 	db := s.db
@@ -1246,7 +1256,7 @@ func validateSafeWebSQL(rawSQL string) error {
 	return nil
 }
 
-// ExecuteSQL thực thi câu lệnh SQL có tham số trực tiếp trên kết nối libSQL.
+// ExecuteSQL thực thi câu lệnh SQL có tham số trực tiếp trên kết nối MySQL.
 func (s *MySQLStore) ExecuteSQL(rawSQL string, args []interface{}) (*MySQLQueryResult, error) {
 	if err := validateSafeWebSQL(rawSQL); err != nil {
 		return nil, err
@@ -1256,7 +1266,7 @@ func (s *MySQLStore) ExecuteSQL(rawSQL string, args []interface{}) (*MySQLQueryR
 	db := s.db
 	s.mu.RUnlock()
 	if db == nil {
-		return nil, errors.New("cơ sở dữ liệu libSQL chưa được khởi tạo")
+		return nil, errors.New("cơ sở dữ liệu MySQL chưa được khởi tạo")
 	}
 
 	start := time.Now()
@@ -1331,8 +1341,8 @@ func (s *MySQLStore) ExecuteSQL(rawSQL string, args []interface{}) (*MySQLQueryR
 	return res, nil
 }
 
-// ExecuteHranaPipeline xử lý giao thức chuẩn libSQL Hrana v2 HTTP Pipeline (/v2/pipeline)
-// giúp trình duyệt Web có thể dùng trực tiếp chuẩn giao thức libSQL Client.
+// ExecuteHranaPipeline xử lý giao thức chuẩn Hrana v2 HTTP Pipeline (/v2/pipeline)
+// giúp trình duyệt Web có thể dùng trực tiếp chuẩn giao thức Pipeline Client.
 func (s *MySQLStore) ExecuteHranaPipeline(req HranaPipelineRequest) HranaPipelineResponse {
 	results := make([]HranaStreamResult, 0, len(req.Requests))
 

@@ -400,7 +400,7 @@ func (a *ServerApp) Routes() http.Handler {
 	mux.HandleFunc("/api/accounts/remote-login/state", a.handleRemoteLoginState)
 	mux.HandleFunc("/api/accounts/remote-login/input", a.handleRemoteLoginInput)
 	mux.HandleFunc("/api/accounts/remote-login/cancel", a.handleRemoteLoginCancel)
-	// 4. Quản lý Phiên Hội Thoại (Threads) & Muse AI Chat thật (cô lập theo từng tài khoản trong libSQL)
+	// 4. Quản lý Phiên Hội Thoại (Threads) & Muse AI Chat thật (cô lập theo từng tài khoản trong MySQL)
 	mux.HandleFunc("/api/threads", func(w http.ResponseWriter, r *http.Request) {
 		actor := a.resolveActor(r)
 		ownerScope := actor.OwnerScope()
@@ -605,7 +605,6 @@ func (a *ServerApp) Routes() http.Handler {
 	}
 	mux.HandleFunc("/api/sql/status", handleSQLStatus)
 	mux.HandleFunc("/api/mysql/status", handleSQLStatus)
-	mux.HandleFunc("/api/libsql/status", handleSQLStatus)
 
 	handleSQLQuery := func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -634,7 +633,6 @@ func (a *ServerApp) Routes() http.Handler {
 	}
 	mux.HandleFunc("/api/sql/query", handleSQLQuery)
 	mux.HandleFunc("/api/mysql/query", handleSQLQuery)
-	mux.HandleFunc("/api/libsql/query", handleSQLQuery)
 
 	handleSQLConfig := func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -664,7 +662,6 @@ func (a *ServerApp) Routes() http.Handler {
 	}
 	mux.HandleFunc("/api/sql/config", handleSQLConfig)
 	mux.HandleFunc("/api/mysql/config", handleSQLConfig)
-	mux.HandleFunc("/api/libsql/config", handleSQLConfig)
 
 	mux.HandleFunc("/api/admin/migrate-to-mysql", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -713,7 +710,6 @@ func (a *ServerApp) Routes() http.Handler {
 	}
 	mux.HandleFunc("/v2/pipeline", handleHranaPipeline)
 	mux.HandleFunc("/api/mysql/pipeline", handleHranaPipeline)
-	mux.HandleFunc("/api/libsql/pipeline", handleHranaPipeline)
 
 	// 4.6. Tasks API — chạy batch task độc lập qua Token Pool
 	mux.HandleFunc("/api/tasks/run", func(w http.ResponseWriter, r *http.Request) {

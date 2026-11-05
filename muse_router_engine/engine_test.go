@@ -106,25 +106,25 @@ func TestZeroFakeNodesAndRealVaultEncryption(t *testing.T) {
 		t.Fatalf("Expected chat without accounts to fail with error, but got 200 OK")
 	}
 
-	// 3. Kiểm tra trực tiếp cơ sở dữ liệu chuẩn libSQL nhúng (/api/libsql/status & /v2/pipeline Hrana v2)
-	reqLibStatus := httptest.NewRequest(http.MethodGet, "/api/libsql/status", nil)
+	// 3. Kiểm tra trực tiếp cơ sở dữ liệu chuẩn MySQL (/api/mysql/status & /v2/pipeline Hrana v2)
+	reqLibStatus := httptest.NewRequest(http.MethodGet, "/api/mysql/status", nil)
 	recLibStatus := httptest.NewRecorder()
 	handler.ServeHTTP(recLibStatus, reqLibStatus)
 	if recLibStatus.Code != http.StatusOK {
-		t.Fatalf("Expected 200 OK from /api/libsql/status, got %d: %s", recLibStatus.Code, recLibStatus.Body.String())
+		t.Fatalf("Expected 200 OK from /api/mysql/status, got %d: %s", recLibStatus.Code, recLibStatus.Body.String())
 	}
-	var libStatus LibSQLStatusResponse
+	var libStatus MySQLStatusResponse
 	if err := json.Unmarshal(recLibStatus.Body.Bytes(), &libStatus); err != nil {
-		t.Fatalf("Failed to parse LibSQLStatusResponse: %v", err)
+		t.Fatalf("Failed to parse MySQLStatusResponse: %v", err)
 	}
 	if !libStatus.Connected || (libStatus.JournalMode != "WAL" && libStatus.JournalMode != "InnoDB (ACID)") {
 		t.Fatalf("Expected connected database, got connected=%v mode=%s", libStatus.Connected, libStatus.JournalMode)
 	}
 
 	// Tạo một đoạn chat và truy vấn trực tiếp qua chuẩn giao thức Hrana v2 Pipeline (/v2/pipeline)
-	created := app.pool.CreateNewThread("Kiểm thử LibSQL Trực Tiếp", "Muse", "chat")
+	created := app.pool.CreateNewThread("Kiểm thử MySQL Trực Tiếp", "Muse", "chat")
 	if created == nil || created.ID == "" {
-		t.Fatalf("Failed to create thread in libSQL")
+		t.Fatalf("Failed to create thread in MySQL")
 	}
 
 	pipelineReq := HranaPipelineRequest{
@@ -156,11 +156,11 @@ func TestZeroFakeNodesAndRealVaultEncryption(t *testing.T) {
 		t.Fatalf("Unexpected Hrana pipeline response: %+v", pipeResp)
 	}
 
-	// 4. Đảm bảo cơ sở dữ liệu thật tại f:\tools muse ai\data\muse_router.libsql.db được khởi tạo và đồng bộ tài khoản đã cắm
+	// 4. Đảm bảo cơ sở dữ liệu thật MySQL được khởi tạo và đồng bộ tài khoản đã cắm
 	prodDataDir := filepath.Join("..", "data")
-	prodStore, err := NewLibSQLStore(prodDataDir, "", "")
+	prodStore, err := NewMySQLStore(prodDataDir, "", "")
 	if err != nil {
-		t.Fatalf("Failed to initialize production libSQL database: %v", err)
+		t.Fatalf("Failed to initialize production MySQL database: %v", err)
 	}
 	defer prodStore.Close()
 	prodStore.MigrateLegacyJSONIfNeeded(
@@ -231,7 +231,7 @@ func TestNewEndpoints(t *testing.T) {
 	}
 }
 
-func TestLibSQLNewTables(t *testing.T) {
+func TestMySQLNewTables(t *testing.T) {
 	tempDir := filepath.Join(".", "test_new_tables")
 	t.Cleanup(func() { _ = os.RemoveAll(tempDir) })
 	app, err := NewServerApp(tempDir)
@@ -507,7 +507,7 @@ func TestMultiUserAccountIsolationAndSQL40Standard(t *testing.T) {
 	if recSQL.Code != http.StatusOK {
 		t.Fatalf("Expected 200 OK from /api/sql/status, got %d", recSQL.Code)
 	}
-	var sqlStatus LibSQLStatusResponse
+	var sqlStatus MySQLStatusResponse
 	_ = json.Unmarshal(recSQL.Body.Bytes(), &sqlStatus)
 	if !sqlStatus.Connected || !strings.HasPrefix(sqlStatus.EngineVersion, "SQL40 Standard") {
 		t.Fatalf("Expected SQL40 Standard engine, got connected=%v version=%q", sqlStatus.Connected, sqlStatus.EngineVersion)
@@ -707,7 +707,7 @@ func TestAivenMySQLPushAndLiveSync(t *testing.T) {
 	}
 
 	// Đảm bảo tài khoản Quản trị viên (admin) có mặt trong Aiven MySQL Cloud
-	ensureAdminInStore := func(st *LibSQLStore) {
+	ensureAdminInStore := func(st *MySQLStore) {
 		qRes, err := st.ExecuteSQL("SELECT id FROM mart_users WHERE id = 'admin' OR username = 'admin' LIMIT 1", nil)
 		if err == nil && len(qRes.Rows) > 0 {
 			return
@@ -756,7 +756,7 @@ func TestAdminAccountLoginSettingsAndChatFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServerApp failed: %v", err)
 	}
-	defer app.pool.GetLibSQLStore().Close()
+	defer app.pool.GetMySQLStore().Close()
 
 	handler := app.Routes()
 
@@ -825,7 +825,7 @@ func TestResponseSpeedBenchmark(t *testing.T) {
 		t.Fatalf("NewServerApp failed: %v", err)
 	}
 	defer func() {
-		if st := app.pool.GetLibSQLStore(); st != nil {
+		if st := app.pool.GetMySQLStore(); st != nil {
 			_ = st.Close()
 		}
 	}()
@@ -869,8 +869,8 @@ func TestResponseSpeedBenchmark(t *testing.T) {
 		{name: "GET /api/workspace/memories", method: http.MethodGet, path: "/api/workspace/memories"},
 		{name: "GET /api/workspace/tasks", method: http.MethodGet, path: "/api/workspace/tasks"},
 		{name: "GET /api/admin/users", method: http.MethodGet, path: "/api/admin/users"},
-		{name: "GET /api/libsql/status (Cold 1-Query)", method: http.MethodGet, path: "/api/libsql/status"},
-		{name: "GET /api/libsql/status (Warm L1 Cache)", method: http.MethodGet, path: "/api/libsql/status"},
+		{name: "GET /api/mysql/status (Cold 1-Query)", method: http.MethodGet, path: "/api/mysql/status"},
+		{name: "GET /api/mysql/status (Warm L1 Cache)", method: http.MethodGet, path: "/api/mysql/status"},
 	}
 
 	t.Logf("=== BENCHMARK TOC DO PHAN HOI (SQL40 LOCAL + L1 RAM CACHE) ===")
@@ -904,7 +904,7 @@ func TestResponseSpeedBenchmark(t *testing.T) {
 	cloudURL := LoadEncryptedCloudSQLConfig(`f:\tools muse ai\data`)
 	if strings.HasPrefix(strings.ToLower(cloudURL), "mysql://") {
 		connStart := time.Now()
-		cloudStore, errCloud := NewLibSQLStore(t.TempDir(), cloudURL, "")
+		cloudStore, errCloud := NewMySQLStore(t.TempDir(), cloudURL, "")
 		connDur := time.Since(connStart)
 		if errCloud == nil {
 			defer cloudStore.Close()

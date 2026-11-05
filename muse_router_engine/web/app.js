@@ -486,10 +486,10 @@
   }
 
   // ============================================================================
-  // 0.5. CHUẨN LIBSQL WEB CLIENT TRỰC TIẾP (HRANA V2 HTTP PIPELINE /v2/pipeline)
+  // 0.5. CHUẨN MYSQL / TIDB WEB CLIENT TRỰC TIẾP (HRANA V2 /v2/pipeline)
   // ============================================================================
 
-  const libsqlClient = {
+  const mysqlClient = {
     pipelineEndpoint: "/v2/pipeline",
 
     encodeArg: function (val) {
@@ -507,7 +507,7 @@
 
     execute: async function (sql, args) {
       const startMs = performance.now();
-      const encodedArgs = (args || []).map(libsqlClient.encodeArg);
+      const encodedArgs = (args || []).map(mysqlClient.encodeArg);
       const payload = {
         requests: [
           {
@@ -524,17 +524,17 @@
         ],
       };
 
-      const resp = await apiRequest(libsqlClient.pipelineEndpoint, {
+      const resp = await apiRequest(mysqlClient.pipelineEndpoint, {
         method: "POST",
         body: payload,
       });
 
       const first = (resp.results || [])[0];
       if (!first) {
-        throw new Error("Phản hồi Hrana Pipeline rỗng");
+        throw new Error("Phản hồi MySQL Pipeline rỗng");
       }
       if (first.type === "error") {
-        throw new Error((first.error && first.error.message) || "Lỗi thực thi SQL trên libSQL");
+        throw new Error((first.error && first.error.message) || "Lỗi thực thi SQL trên MySQL");
       }
 
       const result = (first.response && first.response.result) || {};
@@ -558,13 +558,13 @@
     },
   };
 
-  window.MuseLibSQLClient = libsqlClient;
+  window.MuseMySQLClient = mysqlClient;
 
-  async function refreshLibSQLStatus() {
+  async function refreshMySQLStatus() {
     if (!state.currentUser || state.currentUser.role !== "admin") return;
     try {
       const st = await apiRequest("/api/sql/status");
-      const sideBadge = document.getElementById("sideLibsqlBadge");
+      const sideBadge = document.getElementById("sideMySQLBadge");
       if (sideBadge) {
         const tblSummary = (st.tables || [])
           .map(function (t) {
@@ -580,12 +580,17 @@
           (tblSummary ? " [" + tblSummary + "]" : "");
       }
 
-      const urlInput = document.getElementById("libsqlUrlInput");
-      if (urlInput && !urlInput.value && st.database_url) {
-        urlInput.value = st.database_url;
+      const urlInput = document.getElementById("mysqlUrlInput");
+      if (urlInput) {
+        if (st.database_url) {
+          urlInput.placeholder = st.database_url;
+        }
+        if (urlInput.value && urlInput.value.includes(":***@")) {
+          urlInput.value = "";
+        }
       }
 
-      const subtext = document.getElementById("libsqlStatusSubtext");
+      const subtext = document.getElementById("mysqlStatusSubtext");
       if (subtext && st.connected) {
         const tblCounts = (st.tables || [])
           .map(function (t) {
@@ -607,14 +612,14 @@
     }
   }
 
-  async function executeAndRenderLibSQLQuery(sqlText) {
-    const headEl = document.getElementById("libsqlResultHead");
-    const bodyEl = document.getElementById("libsqlResultBody");
-    const metaEl = document.getElementById("libsqlQueryMeta");
+  async function executeAndRenderMySQLQuery(sqlText) {
+    const headEl = document.getElementById("mysqlResultHead");
+    const bodyEl = document.getElementById("mysqlResultBody");
+    const metaEl = document.getElementById("mysqlQueryMeta");
     if (!headEl || !bodyEl) return;
 
     try {
-      const res = await libsqlClient.execute(sqlText, []);
+      const res = await mysqlClient.execute(sqlText, []);
       if (metaEl) {
         metaEl.textContent =
           "✅ Thực thi trực tiếp qua MySQL / TiDB Engine • " +
@@ -632,7 +637,7 @@
           '<tr><td style="padding:12px;color:#16a34a;">Thực thi câu lệnh thành công (' +
           res.rowsAffected +
           " bản ghi được cập nhật).</td></tr>";
-        await refreshLibSQLStatus();
+        await refreshMySQLStatus();
         return;
       }
 
@@ -672,9 +677,9 @@
         .join("");
     } catch (err) {
       if (metaEl) {
-        metaEl.textContent = "❌ Lỗi truy vấn libSQL: " + err.message;
+        metaEl.textContent = "❌ Lỗi truy vấn MySQL: " + err.message;
       }
-      showToast("Lỗi thực thi libSQL: " + err.message);
+      showToast("Lỗi thực thi MySQL: " + err.message);
     }
   }
 
@@ -1653,12 +1658,12 @@
         state.lastSilentSyncTs = Date.now();
         silentAutoSyncAccounts();
       }
-      refreshLibSQLStatus();
+      refreshMySQLStatus();
       loadAdminUsersList();
-      var studioCard = document.getElementById("libsqlStudioCard");
-      var sqlInput = document.getElementById("libsqlSqlInput");
+      var studioCard = document.getElementById("mysqlStudioCard");
+      var sqlInput = document.getElementById("mysqlSqlInput");
       if (studioCard && !studioCard.classList.contains("hidden-el") && sqlInput && sqlInput.value.trim()) {
-        executeAndRenderLibSQLQuery(sqlInput.value.trim());
+        executeAndRenderMySQLQuery(sqlInput.value.trim());
       }
       if (
         !state.prewarmedChromeOnce &&
@@ -2910,10 +2915,10 @@
                 (res.probed || 0) +
                 " tài khoản (" +
                 (res.ready || 0) +
-                " sẵn sàng gộp Token chung trong LibSQL)."
+                " sẵn sàng gộp Token chung trong MySQL)."
             );
             await refreshRouterState(true);
-            await refreshLibSQLStatus();
+            await refreshMySQLStatus();
           } catch (err) {
             showToast("Lỗi đồng bộ tài khoản: " + err.message);
           } finally {
@@ -3327,7 +3332,7 @@
           }
 
           renderTodayActivityLists();
-          refreshLibSQLStatus();
+          refreshMySQLStatus();
 
           // Auto-extract: tự tìm code blocks & markdown trong reply → lưu vào muse_documents
           try {
@@ -3396,47 +3401,51 @@
       });
     }
 
-    // 9. Điều khiển & Truy vấn trực tiếp Cơ sở dữ liệu chuẩn LibSQL (/v2/pipeline)
-    document.querySelectorAll(".btn-libsql-preset").forEach(function (btn) {
+    // 9. Điều khiển & Truy vấn trực tiếp Cơ sở dữ liệu chuẩn MySQL / TiDB (/v2/pipeline)
+    document.querySelectorAll(".btn-mysql-preset").forEach(function (btn) {
       btn.addEventListener("click", function () {
         const sql = btn.getAttribute("data-sql") || "";
-        const sqlInput = document.getElementById("libsqlSqlInput");
+        const sqlInput = document.getElementById("mysqlSqlInput");
         if (sqlInput && sql) {
           sqlInput.value = sql;
-          executeAndRenderLibSQLQuery(sql);
+          executeAndRenderMySQLQuery(sql);
         }
       });
     });
 
-    const libsqlQueryForm = document.getElementById("libsqlQueryForm");
-    if (libsqlQueryForm) {
-      libsqlQueryForm.addEventListener("submit", async function (ev) {
+    const mysqlQueryForm = document.getElementById("mysqlQueryForm");
+    if (mysqlQueryForm) {
+      mysqlQueryForm.addEventListener("submit", async function (ev) {
         ev.preventDefault();
-        const sqlInput = document.getElementById("libsqlSqlInput");
+        const sqlInput = document.getElementById("mysqlSqlInput");
         if (sqlInput && sqlInput.value.trim()) {
-          await executeAndRenderLibSQLQuery(sqlInput.value.trim());
+          await executeAndRenderMySQLQuery(sqlInput.value.trim());
         }
       });
     }
 
-    const libsqlConfigForm = document.getElementById("libsqlConfigForm");
-    if (libsqlConfigForm) {
-      libsqlConfigForm.addEventListener("submit", async function (ev) {
+    const mysqlConfigForm = document.getElementById("mysqlConfigForm");
+    if (mysqlConfigForm) {
+      mysqlConfigForm.addEventListener("submit", async function (ev) {
         ev.preventDefault();
-        const urlEl = document.getElementById("libsqlUrlInput");
-        const tokEl = document.getElementById("libsqlTokenInput");
-        const btnEl = document.getElementById("btnApplyLibsqlConfig");
+        const urlEl = document.getElementById("mysqlUrlInput");
+        const tokEl = document.getElementById("mysqlTokenInput");
+        const btnEl = document.getElementById("btnApplyMySQLConfig");
         if (btnEl) btnEl.disabled = true;
+        let targetURL = urlEl ? urlEl.value.trim() : "";
+        if (!targetURL && urlEl && urlEl.placeholder && urlEl.placeholder.startsWith("mysql://")) {
+          targetURL = urlEl.placeholder;
+        }
         try {
           await apiRequest("/api/sql/config", {
             method: "POST",
             body: {
-              database_url: urlEl ? urlEl.value.trim() : "",
+              database_url: targetURL,
               auth_token: tokEl ? tokEl.value.trim() : "",
             },
           });
           showToast("✅ Đã kết nối & đồng bộ Cơ sở dữ liệu MySQL / TiDB Cloud thành công!");
-          await refreshLibSQLStatus();
+          await refreshMySQLStatus();
           await refreshRouterState(true);
           await loadThreads();
         } catch (err) {
@@ -3454,7 +3463,7 @@
         try {
           const res = await apiRequest("/api/admin/migrate-to-mysql", { method: "POST" });
           showToast(res.message || "✅ Đã di chuyển toàn bộ dữ liệu vào MySQL thành công!");
-          await refreshLibSQLStatus();
+          await refreshMySQLStatus();
           await refreshRouterState(true);
           await loadThreads();
         } catch (err) {
@@ -3774,7 +3783,7 @@
     ]);
 
     if (state.viewMode === "accounts" && state.currentUser && state.currentUser.role === "admin") {
-      refreshLibSQLStatus();
+      refreshMySQLStatus();
       loadAdminUsersList();
       if (!state.prewarmedChromeOnce && state.summary && (state.summary.ready_nodes || 0) === 0) {
         state.prewarmedChromeOnce = true;
@@ -4364,7 +4373,7 @@
   }
 
   /* ====================================================================
-     HELPER: Chuẩn SQL40 REST API (Thay thế libsqlExec /v2/pipeline cũ)
+     HELPER: Chuẩn SQL40 REST API (Thay thế /v2/pipeline cũ)
      ==================================================================== */
   function nowISO() { return new Date().toISOString().replace("T"," ").slice(0,19); }
   function uuid4() {

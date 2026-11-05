@@ -346,7 +346,6 @@ func isAdminOnlyRoute(path string) bool {
 	if strings.HasPrefix(path, "/api/accounts/") ||
 		strings.HasPrefix(path, "/api/mysql/") ||
 		strings.HasPrefix(path, "/api/sql/") ||
-		strings.HasPrefix(path, "/api/libsql/") ||
 		strings.HasPrefix(path, "/api/admin/") ||
 		path == "/api/router/config" ||
 		path == "/v2/pipeline" {

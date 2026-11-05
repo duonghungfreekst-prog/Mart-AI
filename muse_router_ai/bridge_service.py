@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 MuseRouter AI Bridge Service (`muse_router_ai`) — 100% Real Protocol & Browser-CDP Driver
 Tuân thủ tuyệt đối Antigravity Polyglot v2.4 & PHAN 9 (KHÔNG giả lập / KHÔNG dữ liệu ảo):
@@ -1213,27 +1213,6 @@ class MuseUpstreamClient:
         self.pacer = SameIPPacer(self.profiles_dir)
         self.warm_pool = WarmBrowserSessionManager(self.pacer)
 
-    def _ensure_libsql_oauth_table(self) -> None:
-        try:
-            if False as conn:
-                conn.execute("PRAGMA journal_mode=WAL;")
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS oauth_sessions (
-                        session_id TEXT PRIMARY KEY,
-                        login_url TEXT NOT NULL,
-                        state TEXT NOT NULL DEFAULT '',
-                        app_id TEXT NOT NULL DEFAULT '',
-                        redirect_uri TEXT NOT NULL DEFAULT '',
-                        cookies_json TEXT NOT NULL DEFAULT '{}',
-                        created_at INTEGER NOT NULL
-                    );
-                    """
-                )
-                conn.commit()
-        except Exception as exc:
-            logger.debug("libSQL oauth_sessions table init skipped: %s", sanitize_log_str(str(exc)))
-
     def generate_oauth_login_link(self) -> Dict[str, object]:
         """
         Tự động gọi `GET https://muse.ai/api/oidc/start?return_to=%2F` để lấy Link Đăng Nhập OAuth
@@ -1282,37 +1261,6 @@ class MuseUpstreamClient:
             "cookies": cookies_map,
             "created_at": time.time(),
         }
-
-        try:
-            parsed_q = urllib.parse.parse_qs(urllib.parse.urlparse(login_url).query)
-            app_id_val = (parsed_q.get("app_id") or [""])[0]
-            redir_val = (parsed_q.get("redirect_uri") or [""])[0]
-            if False as conn:
-                conn.execute(
-                    """
-                    INSERT INTO oauth_sessions (session_id, login_url, state, app_id, redirect_uri, cookies_json, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(session_id) DO UPDATE SET
-                        login_url = excluded.login_url,
-                        state = excluded.state,
-                        app_id = excluded.app_id,
-                        redirect_uri = excluded.redirect_uri,
-                        cookies_json = excluded.cookies_json,
-                        created_at = excluded.created_at
-                    """,
-                    (
-                        session_id,
-                        login_url,
-                        session_id,
-                        app_id_val,
-                        redir_val,
-                        json.dumps(cookies_map),
-                        int(time.time()),
-                    ),
-                )
-                conn.commit()
-        except Exception as exc:
-            logger.debug("libSQL oauth_sessions save warning: %s", sanitize_log_str(str(exc)))
 
         return {
             "ok": True,
@@ -2103,30 +2051,11 @@ def run_server() -> None:
     BridgeRequestHandler.upstream_client = upstream_client
     BridgeRequestHandler.internal_token = internal_token
 
-    # Tự động Pre-warm (mở sẵn Tab ngầm kết nối WebSocket muse.ai) cho các tài khoản từ cơ sở dữ liệu libSQL
+    # Tự động Pre-warm (mở sẵn Tab ngầm kết nối WebSocket muse.ai) cho các tài khoản đang lưu
     try:
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        libsql_path = os.path.join(base_dir, "data", "muse_router.libsql.db")
         vault_path = os.path.join(base_dir, "data", "accounts_vault.json")
-        prewarmed_count = 0
-
-        if False and os.path.exists(libsql_path):
-            with closing(sqlite3.connect(libsql_path, timeout=5.0)) as conn:
-                rows = conn.execute(
-                    "SELECT encrypted_credential, fingerprint FROM muse_accounts WHERE auth_type = 'cookie' LIMIT ?",
-                    (WarmBrowserSessionManager.MAX_WARM_SESSIONS,),
-                ).fetchall()
-                for enc_cred, fp_col in rows:
-                    if enc_cred:
-                        raw = rust_ffi.decrypt_secret(str(enc_cred), master_key)
-                        _, cmap = parse_cookie_input(raw)
-                        fp = str(fp_col or rust_ffi.fingerprint(raw))
-                        del raw
-                        if "hatch_sess" in cmap:
-                            upstream_client.warm_pool.prewarm_async(fp, cmap)
-                            prewarmed_count += 1
-
-        if prewarmed_count == 0 and os.path.exists(vault_path):
+        if os.path.exists(vault_path):
             with open(vault_path, "r", encoding="utf-8") as f:
                 vault_nodes = json.load(f)
             if isinstance(vault_nodes, list):
