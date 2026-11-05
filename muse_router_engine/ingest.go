@@ -16,11 +16,17 @@ var embeddedExtensionFS embed.FS
 
 // extractCookieValue lấy giá trị của cookie `name` từ chuỗi dạng "a=1; b=2".
 func extractCookieValue(cookieHeader, name string) string {
+	trimmed := strings.TrimSpace(cookieHeader)
 	for _, part := range strings.Split(cookieHeader, ";") {
 		kv := strings.SplitN(strings.TrimSpace(part), "=", 2)
 		if len(kv) == 2 && kv[0] == name {
 			return strings.TrimSpace(kv[1])
 		}
+	}
+	if name == "hatch_sess" && trimmed != "" && !strings.Contains(trimmed, "=") &&
+		!strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[") &&
+		!strings.HasPrefix(strings.ToLower(trimmed), "http://") && !strings.HasPrefix(strings.ToLower(trimmed), "https://") {
+		return trimmed
 	}
 	return ""
 }
@@ -28,11 +34,15 @@ func extractCookieValue(cookieHeader, name string) string {
 // IngestAccountCookie nhận chuỗi cookie muse.ai gửi từ extension trình duyệt.
 // Nếu hatch_sess đã có trong Pool thì cập nhật cookie cho tài khoản đó (không tạo trùng),
 // ngược lại thêm tài khoản mới. Trả về (node, created, error).
-func (p *MuseRouterPool) IngestAccountCookie(ctx context.Context, label, cookie string) (*MuseAccountNode, bool, error) {
+func (p *MuseRouterPool) IngestAccountCookie(ctx context.Context, label, cookie string, proxyURLs ...string) (*MuseAccountNode, bool, error) {
 	cookie = strings.TrimSpace(cookie)
 	newSess := extractCookieValue(cookie, "hatch_sess")
 	if newSess == "" {
 		return nil, false, errors.New("ERR_MISSING_HATCH_SESS")
+	}
+	proxyURL := ""
+	if len(proxyURLs) > 0 {
+		proxyURL = strings.TrimSpace(proxyURLs[0])
 	}
 
 	type pair struct{ id, enc string }
@@ -57,7 +67,7 @@ func (p *MuseRouterPool) IngestAccountCookie(ctx context.Context, label, cookie 
 	}
 
 	if existingID == "" {
-		node, err := p.AddAccountNode(ctx, label, "", "cookie", "", cookie, 0)
+		node, err := p.AddAccountNode(ctx, label, "", "cookie", "", cookie, 0, proxyURL)
 		if err != nil {
 			return nil, false, err
 		}
@@ -77,6 +87,10 @@ func (p *MuseRouterPool) IngestAccountCookie(ctx context.Context, label, cookie 
 			n.Fingerprint = fp
 			n.HasHatchSess = hasSess
 			n.HasHatchGw = hasGw
+			n.DeviceProfile = computeDeterministicDeviceProfile(fp)
+			if proxyURL != "" {
+				n.ProxyURL = proxyURL
+			}
 			break
 		}
 	}

@@ -640,31 +640,11 @@
                 <span>Đồng bộ mức sử dụng</span>
               </button>
 
-              <button type="button" class="admin-nav-pill" id="btnBrowserInteractiveLogin">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-                  <rect x="3" y="3" width="7" height="7" rx="1.5"/>
-                  <rect x="14" y="3" width="7" height="7" rx="1.5"/>
-                  <rect x="14" y="14" width="7" height="7" rx="1.5"/>
-                  <rect x="3" y="14" width="7" height="7" rx="1.5"/>
-                </svg>
-                <span>Công cụ kết nối (Tự bắt)</span>
-              </button>
 
-              <button type="button" class="admin-nav-pill" id="btnGetOAuthLink">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-                  <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
-                </svg>
-                <span>Lấy Link Đăng Nhập</span>
-              </button>
 
-              <button type="button" class="admin-nav-pill" onclick="document.getElementById('addAccountForm').scrollIntoView({behavior:'smooth'})">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-                  <rect x="2" y="5" width="20" height="14" rx="2"/>
-                  <line x1="2" y1="10" x2="22" y2="10"/>
-                </svg>
-                <span>Thêm tài khoản vào Ví</span>
-              </button>
+
+
+
 
               <button type="button" class="admin-nav-pill" onclick="document.getElementById('adminRouterConfigSection').scrollIntoView({behavior:'smooth'})">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
@@ -929,9 +909,7 @@
                   <button type="submit" class="muse-solid-btn" id="btnSubmitAddAccount">
                     🔌 Xác thực &amp; Thêm tài khoản
                   </button>
-                  <button type="button" class="muse-outline-btn" id="btnFormGetOAuthLink" style="background:#ffffff;">
-                    🔗 Tự lấy Link Đăng Nhập
-                  </button>
+
                 </div>
               </form>
             </div>
@@ -1010,26 +988,7 @@
                   Toàn bộ tài khoản, đoạn chat, tin nhắn, tài liệu, bộ nhớ, nhiệm vụ, phiên OAuth và nhật ký điều phối được lưu trữ và đồng bộ 100% trên <code>MySQL / TiDB Cloud</code>.
                 </p>
               </div>
-              <div style="display:flex;gap:6px;flex-wrap:wrap;" id="mysqlTablePills">
-                <button type="button" class="muse-outline-btn btn-mysql-preset" style="min-height:30px;font-size:12px;" data-sql="SELECT id, username, display_name, role, is_disabled, created_at, last_login_at FROM mart_users ORDER BY created_at DESC;">
-                  👥 Bảng mart_users
-                </button>
-                <button type="button" class="muse-outline-btn btn-mysql-preset" style="min-height:30px;font-size:12px;" data-sql="SELECT id, node_index, label, status, device_profile, proxy_url, fingerprint, total_requests, latency_ms, last_used_at, status_detail FROM muse_accounts ORDER BY node_index ASC;">
-                  📋 Bảng muse_accounts
-                </button>
-                <button type="button" class="muse-outline-btn btn-mysql-preset" style="min-height:30px;font-size:12px;" data-sql="SELECT id, owner_id, title, model, workspace, created_at, updated_at FROM chat_threads ORDER BY updated_at DESC LIMIT 30;">
-                  💬 Bảng chat_threads
-                </button>
-                <button type="button" class="muse-outline-btn btn-mysql-preset" style="min-height:30px;font-size:12px;" data-sql="SELECT id, thread_id, seq_num, role, substr(content, 1, 80) AS content_preview, node_label, latency_ms, timestamp FROM chat_messages ORDER BY thread_id DESC, seq_num ASC LIMIT 50;">
-                  📨 Bảng chat_messages
-                </button>
-                <button type="button" class="muse-outline-btn btn-mysql-preset" style="min-height:30px;font-size:12px;" data-sql="SELECT session_id, substr(login_url, 1, 65) AS oauth_url, app_id, created_at FROM oauth_sessions ORDER BY created_at DESC LIMIT 20;">
-                  🔑 Bảng oauth_sessions
-                </button>
-                <button type="button" class="muse-outline-btn btn-mysql-preset" style="min-height:30px;font-size:12px;" data-sql="SELECT id, thread_id, node_label, model, latency_ms, status, created_at FROM routing_telemetry ORDER BY id DESC LIMIT 30;">
-                  ⚡ Bảng routing_telemetry
-                </button>
-              </div>
+
             </div>
 
             <!-- Cấu hình URL kết nối MySQL / TiDB Cloud -->
@@ -1049,38 +1008,11 @@
               <button type="submit" class="muse-outline-btn" id="btnApplyMySQLConfig" style="min-height:36px;">
                 🔄 Kết nối MySQL / TiDB
               </button>
-              <button type="button" class="muse-outline-btn" id="btnMigrateToMySQL" style="min-height:36px;border-color:#0284c7;color:#0284c7;">
-                📥 Di chuyển dữ liệu Local -> MySQL
-              </button>
+
             </form>
 
             <!-- Ô chạy truy vấn MySQL trực tiếp -->
-            <form id="mysqlQueryForm" style="display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap;">
-              <textarea
-                id="mysqlSqlInput"
-                class="clean-textarea"
-                rows="2"
-                style="flex:1;min-width:260px;font-family:var(--font-mono);font-size:12.5px;"
-              >SELECT id, node_index, label, status, fingerprint, total_requests, latency_ms, last_used_at, status_detail FROM muse_accounts ORDER BY node_index ASC;</textarea>
-              <button type="submit" class="muse-solid-btn" id="btnRunMySQLQuery" style="min-height:42px;">
-                ▶️ Thực thi qua MySQL Engine
-              </button>
-            </form>
 
-            <div id="mysqlQueryMeta" style="font-size:12px;color:#525252;font-family:var(--font-mono);"></div>
-
-            <div class="table-wrap" style="max-height:280px;overflow:auto;">
-              <table class="clean-table" id="mysqlResultTable">
-                <thead id="mysqlResultHead"></thead>
-                <tbody id="mysqlResultBody">
-                  <tr>
-                    <td style="text-align:center;color:#737373;padding:14px;">
-                      Bấm một bảng phía trên hoặc nhấn "▶️ Thực thi qua SQL40 Engine" để truy vấn trực tiếp.
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
           </div>
         </div>
       </section>

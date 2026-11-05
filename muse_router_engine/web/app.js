@@ -1503,12 +1503,7 @@
         '%;"></div>' +
         "  </div>" +
         '  <div class="admin-usage-divider" style="margin:14px 0 10px;"></div>' +
-        // Chân thẻ: Nâng cấp + Thông số điều phối
-        '  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">' +
-        '    <button type="button" class="btn-open-native" data-id="' +
-        escapeHtml(n.id) +
-        '" style="border:none;background:transparent;padding:0;color:#0066ff;font-family:var(--font-sans);font-size:14.5px;font-weight:500;cursor:pointer;">Nâng cấp</button>' +
-        '    <div style="font-size:12px;color:#737373;display:flex;gap:12px;flex-wrap:wrap;">' +
+        '<div style="font-size:12px;color:#737373;display:flex;gap:12px;flex-wrap:wrap;margin-top:12px;">' +
         "      <span>📊 Đã dùng qua Router: <strong>" +
         formatNumWithCommas(usedTok) +
         " tok</strong></span>" +
@@ -1951,20 +1946,16 @@
     autoSyncCookieInFlight = true;
     state.lastAutoSyncedCookie = cookieHeader;
     try {
-      const node = await apiRequest("/api/accounts/add", {
+      const result = await apiRequest("/api/accounts/ingest", {
         method: "POST",
         body: {
           label: "",
-          plan_tier: "Muse.ai",
-          auth_type: "cookie",
-          upstream_url: "https://muse.ai",
-          proxy_url: "",
-          credential: cookieHeader,
-          tokens_remaining: 0,
+          cookie: cookieHeader,
         },
       });
+      const node = result.node || result;
       state.lastAutoSyncedOnce = true;
-      showToast("✅ Đã tự động bắt & kết nối " + (node.label || "tài khoản Muse.ai") + " thành công!");
+      showToast((result.created ? "Đã thêm và kết nối " : "Đã cập nhật phiên cho ") + (node.label || "tài khoản Muse.ai") + "!");
       await refreshRouterState(true);
       renderActiveThreadMessages();
     } catch (_) {

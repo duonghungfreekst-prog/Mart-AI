@@ -675,9 +675,20 @@ func (p *MuseRouterPool) AddAccountNode(
 	tokensRemaining int64,
 	proxyURL ...string,
 ) (*MuseAccountNode, error) {
+	authType = strings.TrimSpace(authType)
+	if authType == "" {
+		authType = "cookie"
+	}
+	rawCredential = strings.TrimSpace(rawCredential)
+	if authType == "cookie" && rawCredential != "" && !strings.Contains(rawCredential, "=") &&
+		!strings.HasPrefix(rawCredential, "{") && !strings.HasPrefix(rawCredential, "[") &&
+		!strings.HasPrefix(strings.ToLower(rawCredential), "http://") && !strings.HasPrefix(strings.ToLower(rawCredential), "https://") {
+		rawCredential = "hatch_sess=" + rawCredential
+	}
 	if strings.TrimSpace(rawCredential) == "" {
 		return nil, errors.New("ERR_EMPTY_CREDENTIAL")
 	}
+	requestedLabel := strings.TrimSpace(label)
 	encrypted, err := p.rustBridge.EncryptSecret(rawCredential)
 	if err != nil {
 		return nil, err
@@ -705,6 +716,54 @@ func (p *MuseRouterPool) AddAccountNode(
 	}
 	if tokensRemaining < 0 {
 		tokensRemaining = 0
+	}
+
+	newSession := extractCookieValue(rawCredential, "hatch_sess")
+	for _, existing := range p.nodes {
+		if existing == nil || existing.AuthType != authType {
+			continue
+		}
+		duplicate := existing.Fingerprint == fp
+		if !duplicate && authType == "cookie" && newSession != "" {
+			oldCredential, decryptErr := p.rustBridge.DecryptSecret(existing.EncryptedCredential)
+			if decryptErr == nil {
+				oldSession := extractCookieValue(oldCredential, "hatch_sess")
+				duplicate = oldSession != "" && ConstantTimeStringEquals(oldSession, newSession)
+			}
+		}
+		if !duplicate {
+			continue
+		}
+
+		existing.EncryptedCredential = encrypted
+		existing.Fingerprint = fp
+		existing.DeviceProfile = computeDeterministicDeviceProfile(fp)
+		existing.HasHatchSess = hasSess
+		existing.HasHatchGw = hasGw
+		if requestedLabel != "" {
+			existing.Label = requestedLabel
+		}
+		if cleanProxy != "" {
+			existing.ProxyURL = cleanProxy
+		}
+		existing.StatusDetail = "Muse.ai session refreshed; checking account"
+		existingID := existing.ID
+		saveErr := p.saveVaultLocked()
+		p.mu.Unlock()
+		if saveErr != nil {
+			return nil, saveErr
+		}
+		_, _ = p.WakeAndProbeNode(ctx, existingID)
+		p.mu.RLock()
+		defer p.mu.RUnlock()
+		for _, node := range p.nodes {
+			if node.ID == existingID {
+				copyNode := *node
+				copyNode.EncryptedCredential = ""
+				return &copyNode, nil
+			}
+		}
+		return nil, errors.New("ERR_NODE_NOT_FOUND")
 	}
 
 	node := &MuseAccountNode{
@@ -932,63 +991,16 @@ func (p *MuseRouterPool) InteractiveBrowserLogin(parentCtx context.Context, labe
 	}
 
 	encrypted, _ := res["encrypted"].(string)
-	fp, _ := res["fingerprint"].(string)
-	devProf, _ := res["device_profile"].(string)
-	if devProf == "" {
-		devProf = computeDeterministicDeviceProfile(fp)
+	credential, err := p.rustBridge.DecryptSecret(encrypted)
+	if err != nil {
+		return nil, fmt.Errorf("ERR_BROWSER_LOGIN_DECRYPT: %w", err)
 	}
-	hasSess, _ := res["has_hatch_sess"].(bool)
-	hasGw, _ := res["has_hatch_gw"].(bool)
-
-	p.mu.Lock()
-	idx := len(p.nodes) + 1
-	if strings.TrimSpace(label) == "" {
-		label = fmt.Sprintf("Muse #%d", idx)
+	if strings.TrimSpace(credential) == "" {
+		return nil, errors.New("ERR_BROWSER_LOGIN_EMPTY_CREDENTIAL")
 	}
-	if tokensRemaining < 0 {
-		tokensRemaining = 0
-	}
-
-	node := &MuseAccountNode{
-		ID:                  fmt.Sprintf("muse-node-%d-%d", idx, time.Now().UnixMilli()%100000),
-		NodeIndex:           idx,
-		Label:               label,
-		PlanTier:            "Muse.ai",
-		AuthType:            "cookie",
-		UpstreamURL:         "https://muse.ai",
-		ProxyURL:            cleanProxy,
-		DeviceProfile:       devProf,
-		EncryptedCredential: encrypted,
-		Fingerprint:         fp,
-		HasHatchSess:        hasSess,
-		HasHatchGw:          hasGw,
-		Status:              "ready",
-		ActiveRequests:      0,
-		TokensRemaining:     tokensRemaining,
-		TokensQuota:         tokensRemaining,
-		LatencyMs:           0,
-		LastUsedAt:          time.Now().Format("15:04:05"),
-		LastUsedUnixMs:      time.Now().UnixMilli(),
-		StatusDetail:        "Đã bắt Cookie thật từ trình duyệt đăng nhập",
-	}
-	p.nodes = append(p.nodes, node)
-	_ = p.saveVaultLocked()
-	p.mu.Unlock()
-
-	_, _ = p.WakeAndProbeNode(parentCtx, node.ID)
-
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	for _, n := range p.nodes {
-		if n.ID == node.ID {
-			copyNode := *n
-			copyNode.EncryptedCredential = ""
-			return &copyNode, nil
-		}
-	}
-	copyNode := *node
-	copyNode.EncryptedCredential = ""
-	return &copyNode, nil
+	_ = tokensRemaining
+	node, _, err := p.IngestAccountCookie(parentCtx, label, credential, cleanProxy)
+	return node, err
 }
 
 // LaunchNativeAccountWindow mở cửa sổ trình duyệt muse.ai chính gốc với Cookie của Node được chọn
