@@ -57,7 +57,7 @@ async function broadcastSessionReadyToOpenTabs(injectIfMissing) {
                 event: "MART_EXT_SESSION_READY",
                 cookie: cookies.sess ? cookies.header : "",
                 hasExistingSession: !!cookies.sess,
-                version: "1.2.2",
+                version: "1.2.3",
               },
               function () {
                 void chrome.runtime.lastError;
@@ -73,7 +73,7 @@ async function broadcastSessionReadyToOpenTabs(injectIfMissing) {
             event: "MART_EXT_SESSION_READY",
             cookie: cookies.sess ? cookies.header : "",
             hasExistingSession: !!cookies.sess,
-            version: "1.2.2",
+            version: "1.2.3",
           },
           function () {
             void chrome.runtime.lastError;
@@ -744,7 +744,7 @@ function handleBridgeAction(msg, sendResponse) {
   var action = (msg && msg.action) || "";
   if (action === "ping") {
     martCollectMuseCookies().then(function (c) {
-      sendResponse({ ok: true, version: "1.2.2", hasExistingSession: !!c.sess, supportsChatRelay: true });
+      sendResponse({ ok: true, version: "1.2.3", hasExistingSession: !!c.sess, supportsChatRelay: true });
     });
     return true;
   }
@@ -752,7 +752,7 @@ function handleBridgeAction(msg, sendResponse) {
     martCollectMuseCookies().then(function (c) {
       sendResponse({
         ok: true,
-        version: "1.2.2",
+        version: "1.2.3",
         hasExistingSession: !!c.sess,
         supportsChatRelay: true,
         cookie: c.sess ? c.header : "",
