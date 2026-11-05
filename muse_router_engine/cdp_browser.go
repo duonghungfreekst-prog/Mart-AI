@@ -194,7 +194,10 @@ const cdpMuseSnapshotJS = `
   var composer = document.querySelector('textarea[aria-label="Nhắn tin"], textarea[placeholder="Nhắn tin"], textarea[aria-label="Message"], textarea, [contenteditable="true"]');
   var compVal = composer ? ((composer.value !== undefined ? composer.value : composer.textContent) || "").trim() : "";
   var isGen = !!document.querySelector('.animate-spin, button[aria-label*="Stop" i], button[aria-label*="Dừng" i], button.stop-button, [data-is-generating="true"], .typing-indicator');
-  var rawEls = Array.from(document.querySelectorAll('[data-hatch-assistant-message-body="true"], .prose, div[class*="message-assistant"], [data-message-author-role="assistant"]')).filter(function(el) {
+  // Muse's rendered assistant bubble has changed markup over time. Keep the
+  // explicit assistant hooks, but also retain the container selectors used by
+  // the Chrome relay so a valid login does not look like an empty API reply.
+  var rawEls = Array.from(document.querySelectorAll('[data-hatch-assistant-message-body="true"], [data-pel-click="assistant_message_content"], .prose, div.mb-6.flex.flex-col.gap-5, div.flex.flex-col.gap-5, div[class*="message-assistant"], .chat-bubble-assistant, [data-message-author-role="assistant"]')).filter(function(el) {
     if (el.closest('form, textarea, [contenteditable="true"]')) return false;
     if (el.closest('.bg-chat-user-bubble, div.items-end')) return false;
     return true;
