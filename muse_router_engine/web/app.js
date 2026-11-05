@@ -2531,7 +2531,7 @@
     if (ping && ping.ok && !isExtensionCurrent) {
       throw new Error("Extension Mart AI của bạn là v" + (ping.version || "cũ") + ". Cần cập nhật lên v1.2.2 để gửi lệnh sang Muse.ai.");
     }
-    if (!ping || !ping.ok || !ping.supportsChatRelay) {
+    if (!ping || !ping.ok) {
       state.hasMartExtension = false;
       const cancelRes = await apiRequest("/api/chat/relay-complete", {
         method: "POST",
@@ -2558,7 +2558,7 @@
         }
       }
       throw new Error(
-        "Máy chủ đang bận xử lý hoặc đang khởi động phiên làm việc ngầm. Vui lòng bấm gửi lại sau giây lát."
+        "Chưa kết nối được với Tiện ích Mart AI Extension. Vui lòng tải lại trang web (Ctrl + F5) hoặc kiểm tra tiện ích tại chrome://extensions."
       );
     }
 

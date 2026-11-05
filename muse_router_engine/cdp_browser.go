@@ -1343,7 +1343,7 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 	defer m.chatMu.Unlock()
 
 	startTs := time.Now()
-	ctx, cancel := context.WithTimeout(parentCtx, 28*time.Second)
+	ctx, cancel := context.WithTimeout(parentCtx, 90*time.Second)
 	defer cancel()
 
 	targetOrigin := strings.TrimRight(strings.TrimSpace(candidate.UpstreamURL), "/")
@@ -1428,15 +1428,33 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 			if (!el) return false;
 			var rem = ((el.value !== undefined ? el.value : el.textContent) || '').trim();
 			if (!rem) return true;
+
+			// 1. Tìm nút Gửi / Send quanh ô nhập và toàn bộ form
+			var sendBtn = null;
 			var root = el.parentElement;
-			for (var d = 0; d < 5 && root; d++) {
-				var sendBtn = root.querySelector('button[aria-label="Gửi"]:not(:disabled), button[aria-label*="Gửi" i]:not(:disabled), button[aria-label="Send"]:not(:disabled), button[aria-label*="Send" i]:not(:disabled), button[data-testid*="send" i]:not(:disabled)');
-				if (sendBtn) {
-					sendBtn.click();
-					return true;
-				}
+			for (var d = 0; d < 6 && root; d++) {
+				sendBtn = root.querySelector('button[aria-label="Gửi"]:not(:disabled), button[aria-label*="Gửi" i]:not(:disabled), button[aria-label="Send"]:not(:disabled), button[aria-label*="Send" i]:not(:disabled), button[data-testid*="send" i]:not(:disabled), button[type="submit"]:not(:disabled)');
+				if (sendBtn) break;
 				root = root.parentElement;
 			}
+			if (!sendBtn) {
+				var allBtns = Array.from(document.querySelectorAll('button:not(:disabled)'));
+				sendBtn = allBtns.find(function(b) {
+					var lbl = (b.getAttribute('aria-label') || '') + ' ' + (b.innerText || '');
+					return /gửi|send|submit/i.test(lbl);
+				});
+			}
+			if (sendBtn) {
+				sendBtn.click();
+				return true;
+			}
+
+			// 2. Dispatch Enter Event trực tiếp bên trong DOM
+			el.focus();
+			var evOpts = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
+			el.dispatchEvent(new KeyboardEvent("keydown", evOpts));
+			el.dispatchEvent(new KeyboardEvent("keypress", evOpts));
+			el.dispatchEvent(new KeyboardEvent("keyup", evOpts));
 			return false;
 		})()`
 		var clickRes struct {
@@ -1471,12 +1489,14 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 	clickSendOrEnter()
 
 	cleanPrompt := strings.TrimSpace(userPrompt)
-	deadline := time.Now().Add(25 * time.Second)
+	deadline := time.Now().Add(85 * time.Second)
 	lastNewMd := ""
 	stableTicks := 0
 	resendAttempts := 0
+	pollLoopTicks := 0
 
 	for time.Now().Before(deadline) {
+		pollLoopTicks++
 		select {
 		case <-ctx.Done():
 			return "", 0, 0, ctx.Err()
@@ -1503,6 +1523,13 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 		}
 		if replyMd == "" {
 			continue
+		}
+
+		// Tự động gia hạn deadline nếu Muse đang tiếp tục sinh nội dung (streaming)
+		if cur.IsGenerating || replyMd != lastNewMd {
+			if time.Until(deadline) < 30*time.Second {
+				deadline = time.Now().Add(45 * time.Second)
+			}
 		}
 
 		if replyMd == lastNewMd {
