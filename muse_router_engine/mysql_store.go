@@ -757,12 +757,77 @@ func (s *MySQLStore) LoadAccounts() ([]*MuseAccountNode, error) {
 }
 
 // SyncAllAccounts đồng bộ danh sách tài khoản hiện tại vào bảng muse_accounts trong MySQL.
+// Đồng bộ 2 chiều toàn diện: tự động dọn dẹp các tài khoản thừa (đã bị xóa khỏi pool) và upsert các node đang hoạt động.
 func (s *MySQLStore) SyncAllAccounts(nodes []*MuseAccountNode) error {
+	s.mu.RLock()
+	db := s.db
+	s.mu.RUnlock()
+	if db == nil {
+		return errors.New("mysql db not open")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if len(nodes) == 0 {
+		_, err := db.ExecContext(ctx, `DELETE FROM muse_accounts`)
+		if err == nil {
+			s.invalidateStatusCache()
+		}
+		return err
+	}
+
+	// 1. Dọn dẹp triệt để các tài khoản đã bị xóa khỏi pool (không còn trong nodes)
+	activeIDs := make([]interface{}, 0, len(nodes))
+	activeFPs := make([]interface{}, 0, len(nodes))
+	idPlaceholders := make([]string, 0, len(nodes))
+	fpPlaceholders := make([]string, 0, len(nodes))
+
 	for _, n := range nodes {
-		if err := s.UpsertAccount(n); err != nil {
-			return err
+		if n != nil && n.ID != "" {
+			activeIDs = append(activeIDs, n.ID)
+			idPlaceholders = append(idPlaceholders, "?")
+			if n.Fingerprint != "" {
+				activeFPs = append(activeFPs, n.Fingerprint)
+				fpPlaceholders = append(fpPlaceholders, "?")
+			}
 		}
 	}
+
+	if len(activeIDs) > 0 {
+		var deleteQuery string
+		var deleteArgs []interface{}
+
+		if len(activeFPs) > 0 {
+			deleteQuery = fmt.Sprintf(
+				"DELETE FROM muse_accounts WHERE id NOT IN (%s) AND (fingerprint = '' OR fingerprint NOT IN (%s))",
+				strings.Join(idPlaceholders, ","),
+				strings.Join(fpPlaceholders, ","),
+			)
+			deleteArgs = append(deleteArgs, activeIDs...)
+			deleteArgs = append(deleteArgs, activeFPs...)
+		} else {
+			deleteQuery = fmt.Sprintf(
+				"DELETE FROM muse_accounts WHERE id NOT IN (%s)",
+				strings.Join(idPlaceholders, ","),
+			)
+			deleteArgs = append(deleteArgs, activeIDs...)
+		}
+
+		if _, err := db.ExecContext(ctx, deleteQuery, deleteArgs...); err != nil {
+			LogError("MySQL cleanup stale accounts error: %v", err)
+		}
+	}
+
+	// 2. Upsert toàn bộ danh sách tài khoản hợp lệ
+	for _, n := range nodes {
+		if n != nil && n.ID != "" {
+			if err := s.UpsertAccount(n); err != nil {
+				return err
+			}
+		}
+	}
+	s.invalidateStatusCache()
 	return nil
 }
 
@@ -869,8 +934,8 @@ func (s *MySQLStore) UpsertAccount(n *MuseAccountNode) error {
 	return err
 }
 
-// DeleteAccount xóa tài khoản khỏi bảng muse_accounts trong MySQL.
-func (s *MySQLStore) DeleteAccount(nodeID string) error {
+// DeleteAccount xóa tài khoản khỏi bảng muse_accounts trong MySQL theo cả ID và Fingerprint.
+func (s *MySQLStore) DeleteAccount(nodeID string, fingerprint ...string) error {
 	s.mu.RLock()
 	db := s.db
 	s.mu.RUnlock()
@@ -881,7 +946,18 @@ func (s *MySQLStore) DeleteAccount(nodeID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := db.ExecContext(ctx, `DELETE FROM muse_accounts WHERE id = ?`, nodeID)
+	var err error
+	fp := ""
+	if len(fingerprint) > 0 {
+		fp = strings.TrimSpace(fingerprint[0])
+	}
+
+	if fp != "" {
+		_, err = db.ExecContext(ctx, `DELETE FROM muse_accounts WHERE id = ? OR (fingerprint != '' AND fingerprint = ?)`, nodeID, fp)
+	} else {
+		_, err = db.ExecContext(ctx, `DELETE FROM muse_accounts WHERE id = ?`, nodeID)
+	}
+
 	if err == nil {
 		s.invalidateStatusCache()
 	}
@@ -1114,7 +1190,7 @@ func (s *MySQLStore) RecordRoutingTelemetry(threadID, nodeID, nodeLabel, model s
 
 	_, _ = db.ExecContext(ctx, `
 		INSERT INTO routing_telemetry (thread_id, node_id, node_label, model, latency_ms, tokens_used, status, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+		VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
 	`, threadID, nodeID, nodeLabel, model, latencyMs, tokensUsed, status)
 }
 

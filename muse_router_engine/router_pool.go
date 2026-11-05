@@ -1124,9 +1124,14 @@ func (p *MuseRouterPool) DeleteNode(nodeID string) error {
 	if idx < 0 {
 		return errors.New("ERR_NODE_NOT_FOUND")
 	}
+	targetNode := p.nodes[idx]
+	targetFP := targetNode.Fingerprint
+
 	p.nodes = append(p.nodes[:idx], p.nodes[idx+1:]...)
 	if p.mysqlStore != nil {
-		_ = p.mysqlStore.DeleteAccount(nodeID)
+		if err := p.mysqlStore.DeleteAccount(nodeID, targetFP); err != nil {
+			LogError("MySQL DeleteAccount error for node %s (fp %s): %v", nodeID, targetFP, err)
+		}
 	}
 	return p.saveVaultLocked()
 }

@@ -744,6 +744,11 @@ func TestAivenMySQLPushAndLiveSync(t *testing.T) {
 			t.Logf("Schema Size: %v", r)
 		}
 	}
+	if accRes, errAcc := remoteStore.ExecuteSQL("SELECT id, label, fingerprint FROM muse_accounts", nil); errAcc == nil {
+		for _, r := range accRes.Rows {
+			t.Logf("muse_accounts Row: %v", r)
+		}
+	}
 	// Giữ database test sạch sẽ
 	if remoteStore.db != nil {
 		remoteStore.resetTestTables()
@@ -954,4 +959,107 @@ func TestRichContentAndSnapshotExtractionIntegrity(t *testing.T) {
 	if !strings.Contains(cdpMuseSnapshotJS, `standardFormattingTags`) {
 		t.Fatalf("cdpMuseSnapshotJS thieu logic bao toan the XML custom elements")
 	}
+}
+
+func TestAccountSyncAndDeletionIntegrity(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "muse_sync_test_*")
+	if err != nil {
+		t.Fatalf("MkdirTemp failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	mysqlURL := strings.TrimSpace(os.Getenv("DATABASE_URL"))
+	if mysqlURL == "" {
+		enc := LoadEncryptedCloudSQLConfig(filepath.Join("..", "data"))
+		if enc != "" && !strings.Contains(enc, "aivencloud.com") {
+			mysqlURL = enc
+		}
+	}
+	if mysqlURL == "" {
+		conn, errConn := net.DialTimeout("tcp", "127.0.0.1:3306", 500*time.Millisecond)
+		if errConn == nil {
+			_ = conn.Close()
+			mysqlURL = "mysql://root:@127.0.0.1:3306/muse_router"
+		}
+	}
+	if mysqlURL == "" {
+		t.Skip("Skipping account sync test: no MySQL available")
+	}
+
+	store, err := NewMySQLStore(tmpDir, mysqlURL, "")
+	if err != nil {
+		t.Fatalf("NewMySQLStore failed: %v", err)
+	}
+	defer store.Close()
+
+	if !store.isMySQL || store.db == nil {
+		t.Skip("MySQL not active in store")
+	}
+
+	nodeA := &MuseAccountNode{
+		ID:                  "test-acc-1",
+		NodeIndex:           1,
+		Label:               "Test Acc #1",
+		PlanTier:            "Muse.ai",
+		AuthType:            "cookie",
+		UpstreamURL:         "https://muse.ai",
+		EncryptedCredential: "test-enc-cred-1",
+		Fingerprint:         "fp_test_unit_1",
+		Status:              "ready",
+	}
+	nodeB := &MuseAccountNode{
+		ID:                  "test-acc-2",
+		NodeIndex:           2,
+		Label:               "Test Acc #2",
+		PlanTier:            "Muse.ai",
+		AuthType:            "cookie",
+		UpstreamURL:         "https://muse.ai",
+		EncryptedCredential: "test-enc-cred-2",
+		Fingerprint:         "fp_test_unit_2",
+		Status:              "ready",
+	}
+
+	// 1. Thêm 2 nodes vào MySQL
+	if err := store.UpsertAccount(nodeA); err != nil {
+		t.Fatalf("UpsertAccount A failed: %v", err)
+	}
+	if err := store.UpsertAccount(nodeB); err != nil {
+		t.Fatalf("UpsertAccount B failed: %v", err)
+	}
+
+	// 2. Đồng bộ 2 nodes qua SyncAllAccounts
+	if err := store.SyncAllAccounts([]*MuseAccountNode{nodeA, nodeB}); err != nil {
+		t.Fatalf("SyncAllAccounts with 2 nodes failed: %v", err)
+	}
+
+	// 3. Xóa nodeB
+	if err := store.DeleteAccount(nodeB.ID, nodeB.Fingerprint); err != nil {
+		t.Fatalf("DeleteAccount nodeB failed: %v", err)
+	}
+
+	// 4. Đồng bộ lại chỉ với nodeA (mô phỏng việc người dùng nhấn 'Đồng bộ SQL')
+	if err := store.SyncAllAccounts([]*MuseAccountNode{nodeA}); err != nil {
+		t.Fatalf("SyncAllAccounts with 1 node failed: %v", err)
+	}
+
+	// 5. Nạp lại tài khoản từ MySQL — BẮT BUỘC chỉ được có đúng 1 tài khoản (nodeA), nodeB KHÔNG ĐƯỢC PHÉP HỒI SINH
+	loaded, err := store.LoadAccounts()
+	if err != nil {
+		t.Fatalf("LoadAccounts failed: %v", err)
+	}
+
+	foundB := false
+	for _, l := range loaded {
+		if l.ID == nodeB.ID || l.Fingerprint == nodeB.Fingerprint {
+			foundB = true
+		}
+	}
+	if foundB {
+		t.Fatalf("CRITICAL ERROR: nodeB da bi xoa nhung lai bi hoi sinh sau khi dong bo SQL!")
+	}
+
+	// Dọn dẹp node test
+	_ = store.DeleteAccount(nodeA.ID, nodeA.Fingerprint)
+	_ = store.DeleteAccount(nodeB.ID, nodeB.Fingerprint)
+	t.Logf("PASS: Account Sync & Deletion Reconciliation test passed perfectly!")
 }

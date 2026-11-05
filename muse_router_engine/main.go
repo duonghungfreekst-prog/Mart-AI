@@ -719,17 +719,51 @@ func (a *ServerApp) Routes() http.Handler {
 			WriteJSONError(w, http.StatusServiceUnavailable, "ERR_DATABASE_NOT_INITIALIZED")
 			return
 		}
-		dataDir := a.pool.vaultPath
-		if dataDir != "" {
-			dataDir = filepath.Dir(dataDir)
+
+		a.pool.mu.RLock()
+		currentNodes := make([]*MuseAccountNode, len(a.pool.nodes))
+		for i, n := range a.pool.nodes {
+			currentNodes[i] = n
 		}
-		store.MigrateLegacyJSONIfNeeded(
-			filepath.Join(dataDir, "accounts_vault.json"),
-			filepath.Join(dataDir, "sessions_store.json"),
-			filepath.Join(dataDir, "threads.json"),
-		)
-		_ = a.pool.loadVault()
-		_ = a.pool.loadThreads()
+		currentThreads := make([]*ChatThread, len(a.pool.threads))
+		for i, t := range a.pool.threads {
+			currentThreads[i] = t
+		}
+		a.pool.mu.RUnlock()
+
+		// 1. Đồng bộ tài khoản Muse AI: Nếu Live Pool đang có tài khoản, đồng bộ trực tiếp Live Pool vào MySQL
+		// (SyncAllAccounts sẽ tự động xóa sạch tài khoản rác / tài khoản đã bị xóa khỏi pool)
+		if len(currentNodes) > 0 {
+			if err := store.SyncAllAccounts(currentNodes); err != nil {
+				LogError("migrate-to-mysql SyncAllAccounts error: %v", err)
+			}
+		} else {
+			// Pool rỗng -> mới nạp từ legacy JSON để cứu dữ liệu
+			dataDir := a.pool.vaultPath
+			if dataDir != "" {
+				dataDir = filepath.Dir(dataDir)
+			}
+			store.MigrateLegacyJSONIfNeeded(
+				filepath.Join(dataDir, "accounts_vault.json"),
+				filepath.Join(dataDir, "sessions_store.json"),
+				filepath.Join(dataDir, "threads.json"),
+			)
+			_ = a.pool.loadVault()
+		}
+
+		// 2. Đồng bộ các đoạn hội thoại (Threads)
+		if len(currentThreads) > 0 {
+			for _, t := range currentThreads {
+				if t != nil && t.ID != "" {
+					if err := store.SaveThreadWithMessages(t); err != nil {
+						LogError("migrate-to-mysql SaveThreadWithMessages error: %v", err)
+					}
+				}
+			}
+		} else {
+			_ = a.pool.loadThreads()
+		}
+
 		WriteJSONResponse(w, http.StatusOK, map[string]interface{}{
 			"status":    "ok",
 			"message":   "Đã di chuyển và đồng bộ toàn bộ dữ liệu vào MySQL / TiDB Cloud thành công",
@@ -790,7 +824,7 @@ func (a *ServerApp) Routes() http.Handler {
 		if taskID != "" {
 			args := append([]interface{}{taskID}, whereArgs...)
 			_, _ = store.ExecuteSQL(
-				"UPDATE muse_tasks SET status='running', updated_at=datetime('now') WHERE id=? AND "+whereSQL,
+				"UPDATE muse_tasks SET status='running', updated_at=NOW() WHERE id=? AND "+whereSQL,
 				args,
 			)
 		}
@@ -812,7 +846,7 @@ func (a *ServerApp) Routes() http.Handler {
 			if taskID != "" {
 				args := append([]interface{}{err.Error(), taskID}, whereArgs...)
 				_, _ = store.ExecuteSQL(
-					"UPDATE muse_tasks SET status='error', result_summary=?, updated_at=datetime('now') WHERE id=? AND "+whereSQL,
+					"UPDATE muse_tasks SET status='error', result_summary=?, updated_at=NOW() WHERE id=? AND "+whereSQL,
 					args,
 				)
 			}
@@ -846,7 +880,7 @@ func (a *ServerApp) Routes() http.Handler {
 		if taskID != "" {
 			args := append([]interface{}{summary, taskID}, whereArgs...)
 			_, _ = store.ExecuteSQL(
-				"UPDATE muse_tasks SET status='done', result_summary=?, updated_at=datetime('now') WHERE id=? AND "+whereSQL,
+				"UPDATE muse_tasks SET status='done', result_summary=?, updated_at=NOW() WHERE id=? AND "+whereSQL,
 				args,
 			)
 		}
@@ -919,7 +953,7 @@ func (a *ServerApp) Routes() http.Handler {
 				if taskID != "" {
 					args := append([]interface{}{taskID}, whereArgs...)
 					_, _ = store.ExecuteSQL(
-						"UPDATE muse_tasks SET status='running', updated_at=datetime('now') WHERE id=? AND "+whereSQL,
+						"UPDATE muse_tasks SET status='running', updated_at=NOW() WHERE id=? AND "+whereSQL,
 						args,
 					)
 				}
@@ -932,7 +966,7 @@ func (a *ServerApp) Routes() http.Handler {
 					if taskID != "" {
 						args := append([]interface{}{err.Error(), taskID}, whereArgs...)
 						_, _ = store.ExecuteSQL(
-							"UPDATE muse_tasks SET status='error', result_summary=?, updated_at=datetime('now') WHERE id=? AND "+whereSQL,
+							"UPDATE muse_tasks SET status='error', result_summary=?, updated_at=NOW() WHERE id=? AND "+whereSQL,
 							args,
 						)
 					}
@@ -943,7 +977,7 @@ func (a *ServerApp) Routes() http.Handler {
 					msg := "Cần chạy qua trình duyệt có Tiện ích Chrome Mart AI v1.1"
 					if taskID != "" {
 						args := append([]interface{}{msg, taskID}, whereArgs...)
-						_, _ = store.ExecuteSQL("UPDATE muse_tasks SET status='error', result_summary=?, updated_at=datetime('now') WHERE id=? AND "+whereSQL, args)
+						_, _ = store.ExecuteSQL("UPDATE muse_tasks SET status='error', result_summary=?, updated_at=NOW() WHERE id=? AND "+whereSQL, args)
 					}
 					results[idx] = batchResult{TaskID: taskID, Status: "error", ErrMsg: msg}
 					return
@@ -961,7 +995,7 @@ func (a *ServerApp) Routes() http.Handler {
 				if taskID != "" {
 					args := append([]interface{}{summary, taskID}, whereArgs...)
 					_, _ = store.ExecuteSQL(
-						"UPDATE muse_tasks SET status='done', result_summary=?, updated_at=datetime('now') WHERE id=? AND "+whereSQL,
+						"UPDATE muse_tasks SET status='done', result_summary=?, updated_at=NOW() WHERE id=? AND "+whereSQL,
 						args,
 					)
 				}
