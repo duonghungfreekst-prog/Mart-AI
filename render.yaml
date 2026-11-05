@@ -2,6 +2,7 @@ services:
   - type: web
     name: Mart-AI
     runtime: go
+    region: singapore
     plan: free
     buildCommand: bash build.sh
     startCommand: ./app
