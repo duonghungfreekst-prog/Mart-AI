@@ -194,28 +194,20 @@ const cdpMuseSnapshotJS = `
   var composer = document.querySelector('textarea[aria-label="Nhắn tin"], textarea[placeholder="Nhắn tin"], textarea[aria-label="Message"], textarea, [contenteditable="true"]');
   var compVal = composer ? ((composer.value !== undefined ? composer.value : composer.textContent) || "").trim() : "";
   var isGen = !!document.querySelector('.animate-spin, button[aria-label*="Stop" i], button[aria-label*="Dừng" i], button.stop-button, [data-is-generating="true"], .typing-indicator');
-  var rawEls = Array.from(document.querySelectorAll('.prose, [data-message-author-role="assistant"], div[class*="message-assistant"], .chat-bubble-assistant')).filter(function(el) {
-    return !el.closest('form, textarea, [contenteditable="true"]');
+  var rawEls = Array.from(document.querySelectorAll('[data-hatch-assistant-message-body="true"], .prose, div[class*="message-assistant"], [data-message-author-role="assistant"]')).filter(function(el) {
+    if (el.closest('form, textarea, [contenteditable="true"]')) return false;
+    if (el.closest('.bg-chat-user-bubble, div.items-end')) return false;
+    return true;
   });
   var leafEls = rawEls.filter(function(el) {
     return !rawEls.some(function(parent) { return parent !== el && parent.contains(el); });
   });
-  var expectedNorm = String(window.__martExpectedPrompt || "").replace(/\s+/g, " ").trim().toLowerCase();
-  var expectedSnippet = expectedNorm.length > 20 ? expectedNorm.slice(0, 20) : expectedNorm;
-  var userCandidates = Array.from(document.querySelectorAll('.hatch-chat-groupable-bubble, div.flex.flex-col.gap-2, [data-message-author-role="user"], div[class*="message"]')).filter(function(el) {
-    if (el.getAttribute("data-mart-seen") === "1") return false;
-    if (el.closest('form, textarea, [contenteditable="true"]')) return false;
-    if (el.querySelector('.prose, div.mb-6.flex.flex-col.gap-5')) return false;
-    var tNorm = (el.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
-    if (!tNorm) return false;
-    if (expectedSnippet && tNorm.indexOf(expectedSnippet) >= 0) return true;
-    var isUserRole = el.classList.contains('hatch-chat-groupable-bubble') ||
-                     el.getAttribute("data-message-author-role") === "user" ||
-                     /^(bạn|you|user|[a-zA-Z0-9_\s-]+):/i.test(tNorm);
-    return isUserRole;
+
+  var unseenUserEls = Array.from(document.querySelectorAll('.bg-chat-user-bubble, div.items-end .hatch-chat-groupable-bubble, [data-message-author-role="user"]')).filter(function(el) {
+    return el.getAttribute("data-mart-seen") !== "1";
   });
-  var lastUnseenUserEl = userCandidates.length > 0 ? userCandidates[userCandidates.length - 1] : null;
-  var userTurnSent = !!lastUnseenUserEl;
+  var userTurnSent = unseenUserEls.length > 0;
+
   var mdList = [];
   var unseenMdList = [];
   var targetEls = leafEls.length > 0 ? leafEls : rawEls;
@@ -227,13 +219,7 @@ const cdpMuseSnapshotJS = `
     if (m.length > 0) {
       mdList.push(m);
       if (targetEls[i].getAttribute("data-mart-seen") !== "1") {
-        if (lastUnseenUserEl) {
-          if (Boolean(lastUnseenUserEl.compareDocumentPosition(targetEls[i]) & 4)) {
-            unseenMdList.push(m);
-          }
-        } else {
-          unseenMdList.push(m);
-        }
+        unseenMdList.push(m);
       }
     }
   }
