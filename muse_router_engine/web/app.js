@@ -3102,7 +3102,8 @@
       }
       const reqBody = Object.assign(
         {
-          client_relay_capable: Boolean(state.canRelayChatViaExtension),
+          skip_browser_relay: true,
+          client_relay_capable: false,
         },
         payload,
         { stream: true }

@@ -1314,7 +1314,7 @@ func (m *CDPBrowserManager) getOrCreateWarmChatTab(ctx context.Context, fp strin
 		_ = page.Call(ctx, "Network.setCookies", map[string]interface{}{"cookies": cdpCookies}, nil)
 	}
 
-	if err := page.Call(ctx, "Page.navigate", map[string]interface{}{"url": targetOrigin + "/"}, nil); err != nil {
+	if err := page.Call(ctx, "Page.navigate", map[string]interface{}{"url": targetOrigin + "/thread/new"}, nil); err != nil {
 		m.closeIsolatedPage(browserCtxID, targetID, page)
 		return nil, err
 	}
@@ -1353,35 +1353,28 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 		return "", 0, 0, err
 	}
 
+	// Luôn chuyển về thread mới /thread/new để cách ly 100% cuộc hội thoại sạch,
+	// không tải dữ liệu WebSocket nặng của thread cũ và ngăn chặn tuyệt đối việc đọc nhầm tin nhắn cũ của tài khoản.
+	cleanThreadURL := targetOrigin + "/thread/new"
+	_ = wt.Page.Call(ctx, "Page.navigate", map[string]interface{}{"url": cleanThreadURL}, nil)
+
 	var baseline *cdpMuseSnap
-	prevCnt := -1
-	prevMd := ""
-	stableBaseTicks := 0
-	for i := 0; i < 40; i++ {
+	for i := 0; i < 30; i++ {
 		snap, errSnap := evalMuseSnap(ctx, wt.Page)
 		if errSnap == nil && snap.HasComposer {
 			baseline = snap
-			// Khi mới mở trang muse.ai, SSR render <textarea> ngay ở ~300ms nhưng lịch sử .prose qua Noise WebSocket
-			// mất ~3.0-3.8 giây mới tải xong. Không bao giờ chốt baseline khi Count == 0 trước 18 nhịp (~4.5s).
-			if snap.Count > 0 {
-				if snap.Count == prevCnt && snap.LastMd == prevMd {
-					stableBaseTicks++
-					if stableBaseTicks >= 2 {
-						break
-					}
-				} else {
-					stableBaseTicks = 0
-				}
-			} else if i >= 18 {
+			// Trên /thread/new, composer sẵn sàng và Count == 0 là trạng thái sạch lý tưởng để bắt đầu
+			if snap.Count == 0 {
 				break
 			}
-			prevCnt = snap.Count
-			prevMd = snap.LastMd
+			if i >= 5 {
+				break
+			}
 		}
 		select {
 		case <-ctx.Done():
 			return "", 0, 0, ctx.Err()
-		case <-time.After(250 * time.Millisecond):
+		case <-time.After(200 * time.Millisecond):
 		}
 	}
 
@@ -1518,6 +1511,9 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 		replyMd := ""
 		if cur.UnseenLastMd != "" && cur.UnseenLastMd != cleanPrompt {
 			replyMd = strings.TrimSpace(cur.UnseenLastMd)
+		} else if cur.Count > 0 && cur.LastMd != "" && cur.LastMd != cleanPrompt {
+			// Trên /thread/new, bong bóng assistant duy nhất sinh ra sau khi gửi chính là câu trả lời của prompt này
+			replyMd = strings.TrimSpace(cur.LastMd)
 		}
 		if replyMd == "" {
 			continue

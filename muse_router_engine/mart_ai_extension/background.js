@@ -312,22 +312,22 @@ function waitForTabComplete(tabId, timeoutMs) {
 
 async function ensureMuseWorkerTab(switchedAccount) {
   var tabs = await chrome.tabs.query({ url: "https://muse.ai/*" });
-  // Tuyệt đối không cướp tab đang mở và đang hoạt động của người dùng (tránh đọc nhầm tin nhắn cá nhân)
+  // TUYỆT ĐỐI CHỈ DÙNG TAB CỦA WORKER CÓ HASH #mart_worker, KHÔNG BAO GIỜ CHẠM VÀO TAB CÁ NHÂN CỦA NGƯỜI DÙNG!
   var candidates = (tabs || []).filter(function (tab) {
-    return tab && tab.id && !/\/oidc\//i.test(tab.url || "") && !tab.active;
+    return tab && tab.id && (tab.url || "").includes("#mart_worker");
   });
   var candidateTab = candidates[0] || null;
 
   if (candidateTab) {
-    if (switchedAccount || candidateTab.status !== "complete" || !candidateTab.url.endsWith("muse.ai/")) {
-      await chrome.tabs.update(candidateTab.id, { url: "https://muse.ai/" });
+    if (switchedAccount || candidateTab.status !== "complete" || !candidateTab.url.includes("/thread/new#mart_worker")) {
+      await chrome.tabs.update(candidateTab.id, { url: "https://muse.ai/thread/new#mart_worker" });
       await waitForTabComplete(candidateTab.id, 18000);
     }
     return candidateTab.id;
   }
 
   var created = await chrome.tabs.create({
-    url: "https://muse.ai/",
+    url: "https://muse.ai/thread/new#mart_worker",
     active: false,
     pinned: true,
   });
@@ -701,6 +701,8 @@ async function executeMuseChatDirect(prompt, cookieHeader, forceReload) {
     var replyMd = "";
     if (cur.unseenLastMd && cur.unseenLastMd !== cleanPrompt) {
       replyMd = (cur.unseenLastMd || "").trim();
+    } else if (cur.count > 0 && cur.lastMd && cur.lastMd !== cleanPrompt) {
+      replyMd = (cur.lastMd || "").trim();
     }
     if (!replyMd) {
       if (cur.composerValue && refillAttempts < 4) {
