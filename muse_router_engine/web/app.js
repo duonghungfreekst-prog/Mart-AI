@@ -1539,18 +1539,7 @@
     tbody.querySelectorAll(".btn-open-native").forEach(function (btn) {
       btn.addEventListener("click", async function () {
         const nodeId = btn.getAttribute("data-id");
-        btn.disabled = true;
-        try {
-          const res = await apiRequest("/api/accounts/open-native", {
-            method: "POST",
-            body: { node_id: nodeId },
-          });
-          showToast(res.detail || "Đã mở cửa sổ trình duyệt Muse.ai chính gốc.");
-        } catch (err) {
-          showToast("Lỗi mở cửa sổ gốc: " + err.message);
-        } finally {
-          btn.disabled = false;
-        }
+        await openNativeAccountWindow(nodeId, btn);
       });
     });
 
@@ -1892,7 +1881,10 @@
 
   function sendExtensionMessage(payload) {
     var act = (payload && payload.action) || "";
-    var timeoutMs = act === "ping" || act === "ping_with_cookie" ? 3000 : 95000;
+    var timeoutMs =
+      act === "ping" || act === "ping_with_cookie" || act === "open_native_muse"
+        ? 3000
+        : 95000;
 
     return new Promise(function (resolve) {
       var reqId = "mext_" + Date.now() + "_" + ++extReqCounter;
@@ -1947,6 +1939,38 @@
         sendViaDirectExternal(payload, 8000).then(resolve);
       }
     });
+  }
+
+  async function openNativeAccountWindow(nodeId, btnEl) {
+    if (btnEl) btnEl.disabled = true;
+    try {
+      const res = await apiRequest("/api/accounts/open-native", {
+        method: "POST",
+        body: { node_id: nodeId || "" },
+      });
+      if (res && res.browser_relay) {
+        const targetUrl = res.upstream_url || "https://muse.ai/";
+        let openedByExt = false;
+        if (state.hasMartExtension || (window.chrome && window.chrome.runtime)) {
+          const extOut = await sendExtensionMessage({
+            action: "open_native_muse",
+            cookie: res.relay_cookie || "",
+            url: targetUrl,
+          });
+          if (extOut && extOut.ok) {
+            openedByExt = true;
+          }
+        }
+        if (!openedByExt) {
+          window.open(targetUrl, "_blank", "noopener,noreferrer");
+        }
+      }
+      showToast((res && res.detail) || "Đã mở cửa sổ trình duyệt Muse.ai chính gốc.");
+    } catch (err) {
+      showToast("Lỗi mở cửa sổ gốc: " + err.message);
+    } finally {
+      if (btnEl) btnEl.disabled = false;
+    }
   }
 
   async function autoIngestCookieFromExtension(cookieHeader) {
@@ -2952,18 +2976,7 @@
           });
           targetId = readyNode ? readyNode.id : nodes[0].id;
         }
-        btnOpenPinnedNative.disabled = true;
-        try {
-          const res = await apiRequest("/api/accounts/open-native", {
-            method: "POST",
-            body: { node_id: targetId },
-          });
-          showToast(res.detail || "Đã mở cửa sổ Muse.ai gốc.");
-        } catch (err) {
-          showToast("Lỗi: " + err.message);
-        } finally {
-          btnOpenPinnedNative.disabled = false;
-        }
+        await openNativeAccountWindow(targetId, btnOpenPinnedNative);
       });
     }
 

@@ -215,7 +215,13 @@ async function interactiveCaptureFlow(options) {
 
 function parseCookieHeaderMap(rawHeader) {
   var map = {};
-  (rawHeader || "").split(";").forEach(function (part) {
+  var trimmed = (rawHeader || "").trim();
+  if (!trimmed) return map;
+  if (trimmed.indexOf("=") === -1 && trimmed.indexOf(";") === -1 && trimmed.length >= 12) {
+    map["hatch_sess"] = trimmed;
+    return map;
+  }
+  trimmed.split(";").forEach(function (part) {
     var idx = part.indexOf("=");
     if (idx > 0) {
       var k = part.slice(0, idx).trim();
@@ -762,6 +768,21 @@ function handleBridgeAction(msg, sendResponse) {
       .catch(function (err) {
         sendResponse({ ok: false, error: (err && err.message) || "Lỗi thực thi trên tab muse.ai" });
       });
+    return true;
+  }
+  if (action === "open_native_muse") {
+    (async function () {
+      try {
+        if (msg.cookie) {
+          await applyRelayAccountCookies(msg.cookie);
+        }
+        var targetUrl = msg.url || "https://muse.ai/";
+        await chrome.tabs.create({ url: targetUrl, active: true });
+        sendResponse({ ok: true, opened: true });
+      } catch (err) {
+        sendResponse({ ok: false, error: (err && err.message) || "Không thể mở tab muse.ai" });
+      }
+    })();
     return true;
   }
   if (action === "broadcast_now") {

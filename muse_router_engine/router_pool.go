@@ -859,15 +859,19 @@ func (p *MuseRouterPool) GenerateOAuthLoginLink(parentCtx context.Context) (map[
 	defer cancel()
 
 	var out map[string]interface{}
-	reqBody, _ := json.Marshal(map[string]interface{}{})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.aiBridgeURL+"/internal/oauth-link", bytes.NewReader(reqBody))
-	if err == nil {
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Internal-Bridge-Token", p.aiBridgeToken)
-		if resp, errDo := p.httpClient.Do(req); errDo == nil {
-			bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 65536))
-			resp.Body.Close()
-			_ = json.Unmarshal(bodyBytes, &out)
+	if p.shouldTryPythonBridge() {
+		reqBody, _ := json.Marshal(map[string]interface{}{})
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.aiBridgeURL+"/internal/oauth-link", bytes.NewReader(reqBody))
+		if err == nil {
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-Internal-Bridge-Token", p.aiBridgeToken)
+			if resp, errDo := p.httpClient.Do(req); errDo == nil {
+				bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 65536))
+				resp.Body.Close()
+				_ = json.Unmarshal(bodyBytes, &out)
+			} else {
+				p.markPythonBridgeDown()
+			}
 		}
 	}
 
@@ -949,6 +953,9 @@ func (p *MuseRouterPool) generateOAuthLoginLinkDirect(ctx context.Context) (map[
 
 // InteractiveBrowserLogin mở cửa sổ trình duyệt thực để người dùng đăng nhập muse.ai và tự động bắt Cookie thật
 func (p *MuseRouterPool) InteractiveBrowserLogin(parentCtx context.Context, label string, tokensRemaining int64, sessionID string, proxyURL ...string) (*MuseAccountNode, error) {
+	if !p.shouldTryPythonBridge() {
+		return nil, errors.New("ERR_AI_BRIDGE_UNREACHABLE: cloud mode uses inline remote browser login")
+	}
 	ctx, cancel := context.WithTimeout(parentCtx, 190*time.Second)
 	defer cancel()
 
@@ -1024,36 +1031,51 @@ func (p *MuseRouterPool) LaunchNativeAccountWindow(parentCtx context.Context, no
 		return nil, errors.New("ERR_NODE_NOT_FOUND")
 	}
 
-	ctx, cancel := context.WithTimeout(parentCtx, 15*time.Second)
-	defer cancel()
+	if p.shouldTryPythonBridge() {
+		ctx, cancel := context.WithTimeout(parentCtx, 10*time.Second)
+		reqBody, _ := json.Marshal(map[string]interface{}{
+			"encrypted_credential": target.EncryptedCredential,
+			"node_label":           target.Label,
+			"proxy_url":            target.ProxyURL,
+		})
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.aiBridgeURL+"/internal/open-native", bytes.NewReader(reqBody))
+		if err == nil {
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-Internal-Bridge-Token", p.aiBridgeToken)
+			resp, errDo := p.httpClient.Do(req)
+			if errDo == nil {
+				body, errRead := io.ReadAll(io.LimitReader(resp.Body, 65536))
+				resp.Body.Close()
+				cancel()
+				if errRead == nil && resp.StatusCode == http.StatusOK {
+					var out map[string]interface{}
+					if err := json.Unmarshal(body, &out); err == nil && out != nil {
+						return out, nil
+					}
+				}
+			} else {
+				cancel()
+				p.markPythonBridgeDown()
+			}
+		} else {
+			cancel()
+		}
+	}
 
-	reqBody, _ := json.Marshal(map[string]interface{}{
-		"encrypted_credential": target.EncryptedCredential,
-		"node_label":           target.Label,
-		"proxy_url":            target.ProxyURL,
-	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.aiBridgeURL+"/internal/open-native", bytes.NewReader(reqBody))
-	if err != nil {
-		return nil, err
+	rawCookie, _ := p.rustBridge.DecryptSecret(target.EncryptedCredential)
+	upstream := strings.TrimSpace(target.UpstreamURL)
+	if upstream == "" {
+		upstream = "https://muse.ai"
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Internal-Bridge-Token", p.aiBridgeToken)
-
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 65536))
-	if err != nil {
-		return nil, err
-	}
-	var out map[string]interface{}
-	if err := json.Unmarshal(body, &out); err != nil {
-		return nil, err
-	}
-	return out, nil
+	return map[string]interface{}{
+		"status":        "browser_relay",
+		"browser_relay": true,
+		"node_id":       target.ID,
+		"node_label":    target.Label,
+		"upstream_url":  upstream,
+		"relay_cookie":  strings.TrimSpace(rawCookie),
+		"detail":        fmt.Sprintf("Đã mở cửa sổ trình duyệt Muse.ai gốc cho %s.", target.Label),
+	}, nil
 }
 
 func (p *MuseRouterPool) UpdateNodeStatus(nodeID string, status string, tokensRemaining int64, label string, proxyURL ...string) error {
