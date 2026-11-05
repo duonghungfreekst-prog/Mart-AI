@@ -1357,19 +1357,14 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 	// không tải dữ liệu WebSocket nặng của thread cũ và ngăn chặn tuyệt đối việc đọc nhầm tin nhắn cũ của tài khoản.
 	cleanThreadURL := targetOrigin + "/thread/new"
 	_ = wt.Page.Call(ctx, "Page.navigate", map[string]interface{}{"url": cleanThreadURL}, nil)
+	time.Sleep(1800 * time.Millisecond)
 
 	var baseline *cdpMuseSnap
-	for i := 0; i < 30; i++ {
+	for i := 0; i < 25; i++ {
 		snap, errSnap := evalMuseSnap(ctx, wt.Page)
 		if errSnap == nil && snap.HasComposer {
 			baseline = snap
-			// Trên /thread/new, composer sẵn sàng và Count == 0 là trạng thái sạch lý tưởng để bắt đầu
-			if snap.Count == 0 {
-				break
-			}
-			if i >= 5 {
-				break
-			}
+			break
 		}
 		select {
 		case <-ctx.Done():
@@ -1387,13 +1382,13 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 	// Đánh dấu toàn bộ bong bóng .prose và tin nhắn cũ đã có trên DOM trước khi gửi tin nhắn mới,
 	// điền nội dung vào ô nhập và bấm nút Gửi chính thức của Muse.ai
 	promptJSON, _ := json.Marshal(userPrompt)
-	markAndFillJS := fmt.Sprintf(`(function(txt){
+	submitJS := fmt.Sprintf(`(function(txt){
 		window.__martExpectedPrompt = String(txt || '').trim();
 		Array.from(document.querySelectorAll('div.mb-6.flex.flex-col.gap-5, div.flex.flex-col.gap-5, .hatch-chat-groupable-bubble, .prose, div.flex.flex-col.gap-2, [data-message-author-role]')).forEach(function(el){
 			el.setAttribute('data-mart-seen', '1');
 		});
 		var el = document.querySelector('textarea[aria-label="Nhắn tin"], textarea[placeholder="Nhắn tin"], textarea[aria-label="Message"], textarea, [contenteditable="true"]');
-		if (!el) return false;
+		if (!el) return {ok: false, err: "no textarea"};
 		el.focus();
 		if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
 			var proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
@@ -1406,11 +1401,25 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 			document.execCommand('insertText', false, txt);
 			el.dispatchEvent(new InputEvent('input', { bubbles: true, data: txt, inputType: 'insertText' }));
 		}
-		return true;
+
+		var sendBtn = document.querySelector('button[aria-label="Gửi"]:not(:disabled), button[aria-label*="Gửi" i]:not(:disabled), button[aria-label="Send"]:not(:disabled)');
+		if (!sendBtn) {
+			var root = el.parentElement;
+			for (var d = 0; d < 6 && root; d++) {
+				sendBtn = root.querySelector('button[aria-label="Gửi"]:not(:disabled), button[aria-label*="Gửi" i]:not(:disabled), button[aria-label="Send"]:not(:disabled), button[aria-label*="Send" i]:not(:disabled), button[data-testid*="send" i]:not(:disabled), button[type="submit"]:not(:disabled)');
+				if (sendBtn) break;
+				root = root.parentElement;
+			}
+		}
+		if (sendBtn) {
+			sendBtn.click();
+			return {ok: true, clicked: true};
+		}
+		return {ok: true, clicked: false};
 	})(%s)`, string(promptJSON))
 
-	_ = wt.Page.Call(ctx, "Runtime.evaluate", map[string]interface{}{"expression": markAndFillJS}, nil)
-	time.Sleep(250 * time.Millisecond)
+	_ = wt.Page.Call(ctx, "Runtime.evaluate", map[string]interface{}{"expression": submitJS}, nil)
+	time.Sleep(200 * time.Millisecond)
 
 	clickSendOrEnter := func() {
 		clickSendJS := `(function(){
