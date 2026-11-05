@@ -1879,7 +1879,7 @@
 
   function sendExtensionMessage(payload) {
     var act = (payload && payload.action) || "";
-    var timeoutMs = act === "ping" || act === "ping_with_cookie" ? 450 : 95000;
+    var timeoutMs = act === "ping" || act === "ping_with_cookie" ? 3000 : 95000;
 
     return new Promise(function (resolve) {
       var reqId = "mext_" + Date.now() + "_" + ++extReqCounter;
@@ -2454,6 +2454,18 @@
     if (!res || !res.browser_relay) return res;
 
     const ping = await sendExtensionMessage({ action: "ping" });
+    const extensionVersion = String((ping && ping.version) || "0").split(".").map(Number);
+    const requiredVersion = [1, 2, 2];
+    let isExtensionCurrent = true;
+    for (let i = 0; i < requiredVersion.length; i++) {
+      const actual = extensionVersion[i] || 0;
+      if (actual === requiredVersion[i]) continue;
+      isExtensionCurrent = actual > requiredVersion[i];
+      break;
+    }
+    if (ping && ping.ok && !isExtensionCurrent) {
+      throw new Error("Extension Mart AI của bạn là v" + (ping.version || "cũ") + ". Cần cập nhật lên v1.2.2 để gửi lệnh sang Muse.ai.");
+    }
     if (!ping || !ping.ok || !ping.supportsChatRelay) {
       const cancelRes = await apiRequest("/api/chat/relay-complete", {
         method: "POST",

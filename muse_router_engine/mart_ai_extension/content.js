@@ -56,7 +56,7 @@
           event: msg.event || "",
           cookie: msg.cookie || "",
           hasExistingSession: !!msg.hasExistingSession,
-          version: msg.version || "1.2.1",
+          version: msg.version || "1.2.2",
         });
       }
     });
@@ -71,7 +71,7 @@
         event: "MART_EXT_SESSION_READY",
         cookie: resp.cookie || "",
         hasExistingSession: !!resp.hasExistingSession,
-        version: resp.version || "1.2.1",
+        version: resp.version || "1.2.2",
       });
     });
   } catch (_) {}

@@ -28,6 +28,16 @@ function sleepMs(ms) {
   });
 }
 
+function withTimeout(promise, timeoutMs, message) {
+  return new Promise(function (resolve, reject) {
+    var timer = setTimeout(function () { reject(new Error(message)); }, timeoutMs);
+    Promise.resolve(promise).then(
+      function (value) { clearTimeout(timer); resolve(value); },
+      function (error) { clearTimeout(timer); reject(error); }
+    );
+  });
+}
+
 async function broadcastSessionReadyToOpenTabs(injectIfMissing) {
   var cookies = await martCollectMuseCookies();
   if (cookies.sess) {
@@ -47,7 +57,7 @@ async function broadcastSessionReadyToOpenTabs(injectIfMissing) {
                 event: "MART_EXT_SESSION_READY",
                 cookie: cookies.sess ? cookies.header : "",
                 hasExistingSession: !!cookies.sess,
-                version: "1.2.1",
+                version: "1.2.2",
               },
               function () {
                 void chrome.runtime.lastError;
@@ -63,7 +73,7 @@ async function broadcastSessionReadyToOpenTabs(injectIfMissing) {
             event: "MART_EXT_SESSION_READY",
             cookie: cookies.sess ? cookies.header : "",
             hasExistingSession: !!cookies.sess,
-            version: "1.2.1",
+            version: "1.2.2",
           },
           function () {
             void chrome.runtime.lastError;
@@ -554,11 +564,15 @@ function domSubmitMusePrompt(promptText) {
 }
 
 async function evalInTab(tabId, func, args) {
-  var results = await chrome.scripting.executeScript({
-    target: { tabId: tabId },
-    func: func,
-    args: args || [],
-  });
+  var results = await withTimeout(
+    chrome.scripting.executeScript({
+      target: { tabId: tabId },
+      func: func,
+      args: args || [],
+    }),
+    10000,
+    "Muse tab không phản hồi lệnh điều khiển."
+  );
   return results && results[0] ? results[0].result : null;
 }
 
@@ -648,12 +662,19 @@ async function executeMuseChatDirect(prompt, cookieHeader) {
 }
 
 function enqueueMuseChat(prompt, cookieHeader) {
+  function executeWithDeadline() {
+    return withTimeout(
+      executeMuseChatDirect(prompt, cookieHeader),
+      88000,
+      "Hết thời gian chờ tab Muse; hãy mở lại tab Muse rồi gửi lại."
+    );
+  }
   var next = chatLockPromise.then(
     function () {
-      return executeMuseChatDirect(prompt, cookieHeader);
+      return executeWithDeadline();
     },
     function () {
-      return executeMuseChatDirect(prompt, cookieHeader);
+      return executeWithDeadline();
     }
   );
   chatLockPromise = next.catch(function () {});
@@ -664,7 +685,7 @@ function handleBridgeAction(msg, sendResponse) {
   var action = (msg && msg.action) || "";
   if (action === "ping") {
     martCollectMuseCookies().then(function (c) {
-      sendResponse({ ok: true, version: "1.2.1", hasExistingSession: !!c.sess, supportsChatRelay: true });
+      sendResponse({ ok: true, version: "1.2.2", hasExistingSession: !!c.sess, supportsChatRelay: true });
     });
     return true;
   }
@@ -672,7 +693,7 @@ function handleBridgeAction(msg, sendResponse) {
     martCollectMuseCookies().then(function (c) {
       sendResponse({
         ok: true,
-        version: "1.2.1",
+        version: "1.2.2",
         hasExistingSession: !!c.sess,
         supportsChatRelay: true,
         cookie: c.sess ? c.header : "",
