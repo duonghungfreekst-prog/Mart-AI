@@ -1383,6 +1383,13 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 		return "", 0, 0, errors.New("Phiên đăng nhập muse.ai đã hết hạn hoặc trang chưa sẵn sàng — hãy đăng nhập lại tài khoản")
 	}
 
+	baselineLastMd := ""
+	baselineCount := 0
+	if baseline != nil {
+		baselineLastMd = strings.TrimSpace(baseline.LastMd)
+		baselineCount = baseline.Count
+	}
+
 	// Đánh dấu toàn bộ bong bóng .prose và tin nhắn cũ đã có trên DOM trước khi gửi tin nhắn mới,
 	// điền nội dung vào ô nhập và bấm nút Gửi chính thức của Muse.ai
 	promptJSON, _ := json.Marshal(userPrompt)
@@ -1522,13 +1529,18 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 		}
 
 		replyMd := ""
-		if cur.UnseenLastMd != "" && cur.UnseenLastMd != cleanPrompt {
+		// Bảo vệ thép: Tuyệt đối không nhận lại nội dung cũ của baseline (tránh nhầm thread cũ của tài khoản)
+		if cur.UnseenLastMd != "" && cur.UnseenLastMd != cleanPrompt && (baselineLastMd == "" || cur.UnseenLastMd != baselineLastMd) {
 			replyMd = strings.TrimSpace(cur.UnseenLastMd)
-		} else if cur.Count > 0 && cur.LastMd != "" && cur.LastMd != cleanPrompt {
-			// Trên /thread/new, bong bóng assistant duy nhất sinh ra sau khi gửi chính là câu trả lời của prompt này
+		} else if cur.Count > baselineCount && cur.LastMd != "" && cur.LastMd != cleanPrompt && (baselineLastMd == "" || cur.LastMd != baselineLastMd) {
+			// Chỉ khi số bong bóng assistant tăng lên so với trước khi gửi, bong bóng mới sinh ra mới là câu trả lời thật
+			replyMd = strings.TrimSpace(cur.LastMd)
+		} else if cur.IsGenerating && cur.LastMd != "" && cur.LastMd != cleanPrompt && (baselineLastMd == "" || cur.LastMd != baselineLastMd) {
+			// Đang trong tiến trình sinh phản hồi mới
 			replyMd = strings.TrimSpace(cur.LastMd)
 		}
-		if replyMd == "" {
+
+		if replyMd == "" || (baselineLastMd != "" && replyMd == baselineLastMd) {
 			continue
 		}
 
