@@ -194,26 +194,23 @@ const cdpMuseSnapshotJS = `
   var composer = document.querySelector('textarea[aria-label="Message"], textarea[aria-label="Nhắn tin"], textarea, [contenteditable="true"]');
   var compVal = composer ? ((composer.value !== undefined ? composer.value : composer.textContent) || "").trim() : "";
   var isGen = !!document.querySelector('.animate-spin, button[aria-label*="Stop" i], button[aria-label*="Dừng" i], button.stop-button, [data-is-generating="true"], .typing-indicator, .pulse');
-  var rawEls = Array.from(document.querySelectorAll('.prose'));
-  if (rawEls.length === 0) {
-    rawEls = Array.from(document.querySelectorAll('[data-message-author-role="assistant"], div[class*="message-assistant"], .chat-bubble-assistant'));
-  }
-  rawEls = rawEls.filter(function(el) {
+  var rawEls = Array.from(document.querySelectorAll('div.mb-6.flex.flex-col.gap-5, div.flex.flex-col.gap-5, .prose, [data-message-author-role="assistant"], div[class*="message-assistant"], .chat-bubble-assistant')).filter(function(el) {
     return !el.closest('form, textarea, [contenteditable="true"]');
   });
   var leafEls = rawEls.filter(function(el) {
-    return !rawEls.some(function(other) { return other !== el && el.contains(other); });
+    return !rawEls.some(function(parent) { return parent !== el && parent.contains(el); });
   });
   var expectedNorm = String(window.__martExpectedPrompt || "").replace(/\s+/g, " ").trim().toLowerCase();
   var expectedSnippet = expectedNorm.length > 20 ? expectedNorm.slice(0, 20) : expectedNorm;
-  var userCandidates = Array.from(document.querySelectorAll('div.flex.flex-col.gap-2, [data-message-author-role="user"], div[class*="message"]')).filter(function(el) {
+  var userCandidates = Array.from(document.querySelectorAll('.hatch-chat-groupable-bubble, div.flex.flex-col.gap-2, [data-message-author-role="user"], div[class*="message"]')).filter(function(el) {
     if (el.getAttribute("data-mart-seen") === "1") return false;
     if (el.closest('form, textarea, [contenteditable="true"]')) return false;
-    if (el.querySelector('.prose')) return false;
+    if (el.querySelector('.prose, div.mb-6.flex.flex-col.gap-5')) return false;
     var tNorm = (el.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
     if (!tNorm) return false;
     if (expectedSnippet && tNorm.indexOf(expectedSnippet) >= 0) return true;
-    var isUserRole = el.getAttribute("data-message-author-role") === "user" ||
+    var isUserRole = el.classList.contains('hatch-chat-groupable-bubble') ||
+                     el.getAttribute("data-message-author-role") === "user" ||
                      /^(bạn|you|user|[a-zA-Z0-9_\s-]+):/i.test(tNorm);
     return isUserRole;
   });
@@ -1399,10 +1396,10 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 	promptJSON, _ := json.Marshal(userPrompt)
 	markAndFillJS := fmt.Sprintf(`(function(txt){
 		window.__martExpectedPrompt = String(txt || '').trim();
-		Array.from(document.querySelectorAll('.prose, div.flex.flex-col.gap-2, [data-message-author-role]')).forEach(function(el){
+		Array.from(document.querySelectorAll('div.mb-6.flex.flex-col.gap-5, div.flex.flex-col.gap-5, .hatch-chat-groupable-bubble, .prose, div.flex.flex-col.gap-2, [data-message-author-role]')).forEach(function(el){
 			el.setAttribute('data-mart-seen', '1');
 		});
-		var el = document.querySelector('textarea[aria-label="Message"], textarea[aria-label="Nhắn tin"], textarea, [contenteditable="true"]');
+		var el = document.querySelector('textarea[aria-label="Nhắn tin"], textarea[placeholder="Nhắn tin"], textarea[aria-label="Message"], textarea, [contenteditable="true"]');
 		if (!el) return false;
 		el.focus();
 		if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
@@ -1452,9 +1449,10 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 			// 2. Dispatch Enter Event trực tiếp bên trong DOM
 			el.focus();
 			var evOpts = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
-			el.dispatchEvent(new KeyboardEvent("keydown", evOpts));
+			var defaultPrevented = !el.dispatchEvent(new KeyboardEvent("keydown", evOpts));
 			el.dispatchEvent(new KeyboardEvent("keypress", evOpts));
 			el.dispatchEvent(new KeyboardEvent("keyup", evOpts));
+			if (defaultPrevented) return true;
 			return false;
 		})()`
 		var clickRes struct {
@@ -1516,10 +1514,10 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 		}
 
 		replyMd := ""
-		if cur.LastMd != "" && cur.LastMd != baseline.LastMd && cur.LastMd != cleanPrompt {
-			replyMd = strings.TrimSpace(cur.LastMd)
-		} else if cur.UnseenLastMd != "" && cur.UnseenLastMd != baseline.LastMd && cur.UnseenLastMd != cleanPrompt {
+		if cur.UnseenLastMd != "" && cur.UnseenLastMd != baseline.LastMd && cur.UnseenLastMd != cleanPrompt {
 			replyMd = strings.TrimSpace(cur.UnseenLastMd)
+		} else if cur.LastMd != "" && cur.LastMd != baseline.LastMd && cur.LastMd != cleanPrompt {
+			replyMd = strings.TrimSpace(cur.LastMd)
 		}
 		if replyMd == "" {
 			continue
