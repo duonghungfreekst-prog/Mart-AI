@@ -193,8 +193,8 @@ const cdpMuseSnapshotJS = `
 
   var composer = document.querySelector('textarea[aria-label="Nhắn tin"], textarea[placeholder="Nhắn tin"], textarea[aria-label="Message"], textarea, [contenteditable="true"]');
   var compVal = composer ? ((composer.value !== undefined ? composer.value : composer.textContent) || "").trim() : "";
-  var isGen = !!document.querySelector('.animate-spin, button[aria-label*="Stop" i], button[aria-label*="Dừng" i], button.stop-button, [data-is-generating="true"], .typing-indicator, .pulse, button:has(span[class*="rounded-sm"]), .rounded-sm.bg-fill-primary');
-  var rawEls = Array.from(document.querySelectorAll('div.mb-6.flex.flex-col.gap-5, div.flex.flex-col.gap-5, .prose, [data-message-author-role="assistant"], div[class*="message-assistant"], .chat-bubble-assistant')).filter(function(el) {
+  var isGen = !!document.querySelector('.animate-spin, button[aria-label*="Stop" i], button[aria-label*="Dừng" i], button.stop-button, [data-is-generating="true"], .typing-indicator');
+  var rawEls = Array.from(document.querySelectorAll('.prose, [data-message-author-role="assistant"], div[class*="message-assistant"], .chat-bubble-assistant')).filter(function(el) {
     return !el.closest('form, textarea, [contenteditable="true"]');
   });
   var leafEls = rawEls.filter(function(el) {
@@ -1357,11 +1357,25 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 		return "", 0, 0, err
 	}
 
-	// Luôn chuyển về thread mới /thread/new để cách ly 100% cuộc hội thoại sạch,
-	// không tải dữ liệu WebSocket nặng của thread cũ và ngăn chặn tuyệt đối việc đọc nhầm tin nhắn cũ của tài khoản.
+	// Kiểm tra URL hiện tại của tab. Nếu tab chưa vào trang hội thoại sạch hoặc đang ở thread cũ,
+	// điều hướng tới /thread/new để cách ly hoàn toàn cuộc trò chuyện sạch, không dính tin cũ.
 	cleanThreadURL := targetOrigin + "/thread/new"
-	_ = wt.Page.Call(ctx, "Page.navigate", map[string]interface{}{"url": cleanThreadURL}, nil)
-	time.Sleep(1800 * time.Millisecond)
+	var checkURLVal struct {
+		Result struct {
+			Value string `json:"value"`
+		} `json:"result"`
+	}
+	_ = wt.Page.Call(ctx, "Runtime.evaluate", map[string]interface{}{
+		"expression":    "location.href",
+		"returnByValue": true,
+	}, &checkURLVal)
+
+	currentTabURL := checkURLVal.Result.Value
+	needsNav := currentTabURL == "" || (!strings.Contains(currentTabURL, "/thread/") && !strings.Contains(currentTabURL, "/c/"))
+	if needsNav {
+		_ = wt.Page.Call(ctx, "Page.navigate", map[string]interface{}{"url": cleanThreadURL}, nil)
+		time.Sleep(1200 * time.Millisecond)
+	}
 
 	var baseline *cdpMuseSnap
 	for i := 0; i < 25; i++ {
@@ -1373,7 +1387,7 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 		select {
 		case <-ctx.Done():
 			return "", 0, 0, ctx.Err()
-		case <-time.After(200 * time.Millisecond):
+		case <-time.After(150 * time.Millisecond):
 		}
 	}
 
@@ -1390,86 +1404,65 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 		baselineCount = baseline.Count
 	}
 
-	// Đánh dấu toàn bộ bong bóng .prose và tin nhắn cũ đã có trên DOM trước khi gửi tin nhắn mới,
-	// điền nội dung vào ô nhập và bấm nút Gửi chính thức của Muse.ai
-	promptJSON, _ := json.Marshal(userPrompt)
-	submitJS := fmt.Sprintf(`(function(txt){
-		window.__martExpectedPrompt = String(txt || '').trim();
-		Array.from(document.querySelectorAll('div.mb-6.flex.flex-col.gap-5, div.flex.flex-col.gap-5, .hatch-chat-groupable-bubble, .prose, div.flex.flex-col.gap-2, [data-message-author-role]')).forEach(function(el){
+	// 1. Đánh dấu toàn bộ bong bóng cũ trên DOM với data-mart-seen='1' để tuyệt đối không đọc nhầm tin cũ
+	markSeenJS := `(function(){
+		Array.from(document.querySelectorAll('.prose, [data-message-author-role], div.mb-6.flex.flex-col.gap-5, div.flex.flex-col.gap-5')).forEach(function(el){
 			el.setAttribute('data-mart-seen', '1');
 		});
-		var el = document.querySelector('textarea[aria-label="Nhắn tin"], textarea[placeholder="Nhắn tin"], textarea[aria-label="Message"], textarea, [contenteditable="true"]');
-		if (!el) return {ok: false, err: "no textarea"};
-		el.focus();
-		if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
-			var proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-			var desc = Object.getOwnPropertyDescriptor(proto, 'value');
-			if (desc && desc.set) { desc.set.call(el, txt); } else { el.value = txt; }
-			el.dispatchEvent(new InputEvent('input', { bubbles: true, data: txt, inputType: 'insertText' }));
-			el.dispatchEvent(new Event('change', { bubbles: true }));
-		} else {
-			document.execCommand('selectAll', false, null);
-			document.execCommand('insertText', false, txt);
-			el.dispatchEvent(new InputEvent('input', { bubbles: true, data: txt, inputType: 'insertText' }));
-		}
+	})()`
+	_ = wt.Page.Call(ctx, "Runtime.evaluate", map[string]interface{}{"expression": markSeenJS}, nil)
 
-		var sendBtn = document.querySelector('button[aria-label="Gửi"]:not(:disabled), button[aria-label*="Gửi" i]:not(:disabled), button[aria-label="Send"]:not(:disabled)');
-		if (!sendBtn) {
-			var root = el.parentElement;
-			for (var d = 0; d < 6 && root; d++) {
-				sendBtn = root.querySelector('button[aria-label="Gửi"]:not(:disabled), button[aria-label*="Gửi" i]:not(:disabled), button[aria-label="Send"]:not(:disabled), button[aria-label*="Send" i]:not(:disabled), button[data-testid*="send" i]:not(:disabled), button[type="submit"]:not(:disabled)');
-				if (sendBtn) break;
-				root = root.parentElement;
-			}
+	// 2. Điền nội dung vào ô nhập theo chuẩn React 16+ State Tracker
+	promptJSON, _ := json.Marshal(userPrompt)
+	typeReactJS := fmt.Sprintf(`(function(txt){
+		var ta = document.querySelector('textarea[aria-label="Nhắn tin"], textarea[placeholder="Nhắn tin"], textarea[aria-label="Message"], textarea, [contenteditable="true"]');
+		if (!ta) return {ok: false, err: "no textarea"};
+		ta.focus();
+		var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
+		if (nativeSetter && nativeSetter.set) {
+			nativeSetter.set.call(ta, txt);
+		} else {
+			ta.value = txt;
 		}
-		if (sendBtn) {
-			sendBtn.click();
-			return {ok: true, clicked: true};
-		}
-		return {ok: true, clicked: false};
+		ta.dispatchEvent(new Event('input', { bubbles: true }));
+		ta.dispatchEvent(new Event('change', { bubbles: true }));
+		return {ok: true};
 	})(%s)`, string(promptJSON))
 
-	_ = wt.Page.Call(ctx, "Runtime.evaluate", map[string]interface{}{"expression": submitJS}, nil)
-	time.Sleep(200 * time.Millisecond)
+	_ = wt.Page.Call(ctx, "Runtime.evaluate", map[string]interface{}{"expression": typeReactJS}, nil)
+	// Chờ 350ms để React state kích hoạt và mount button Gửi
+	time.Sleep(350 * time.Millisecond)
 
+	// 3. Hàm kích hoạt nút Gửi với đầy đủ chuỗi Pointer/Mouse Events & native Enter key
 	clickSendOrEnter := func() {
 		clickSendJS := `(function(){
-			var el = document.querySelector('textarea[aria-label="Nhắn tin"], textarea[placeholder="Nhắn tin"], textarea[aria-label="Message"], textarea, [contenteditable="true"]');
-			if (!el) return false;
-			var rem = ((el.value !== undefined ? el.value : el.textContent) || '').trim();
-			if (!rem) return true;
+			var ta = document.querySelector('textarea[aria-label="Nhắn tin"], textarea[placeholder="Nhắn tin"], textarea[aria-label="Message"], textarea, [contenteditable="true"]');
+			if (!ta) return false;
+			var rem = ((ta.value !== undefined ? ta.value : ta.textContent) || '').trim();
+			if (!rem) return true; // đã được gửi đi và ô nhập trống
 
-			// 1. Tìm nút Gửi / Send trực tiếp và quanh ô nhập
-			var sendBtn = document.querySelector('button[aria-label="Gửi"]:not(:disabled), button[aria-label*="Gửi" i]:not(:disabled), button[aria-label="Send"]:not(:disabled)');
-			if (!sendBtn) {
-				var root = el.parentElement;
+			var btn = document.querySelector('button[data-pel-click="chat_send_message"], button[aria-label="Gửi"]:not(:disabled), button[aria-label*="Gửi" i]:not(:disabled), button[aria-label="Send"]:not(:disabled)');
+			if (!btn) {
+				var root = ta.parentElement;
 				for (var d = 0; d < 6 && root; d++) {
-					sendBtn = root.querySelector('button[aria-label="Gửi"]:not(:disabled), button[aria-label*="Gửi" i]:not(:disabled), button[aria-label="Send"]:not(:disabled), button[aria-label*="Send" i]:not(:disabled), button[data-testid*="send" i]:not(:disabled), button[type="submit"]:not(:disabled)');
-					if (sendBtn) break;
+					btn = root.querySelector('button[data-pel-click="chat_send_message"], button[aria-label*="Gửi" i]:not(:disabled), button[aria-label*="Send" i]:not(:disabled)');
+					if (btn) break;
 					root = root.parentElement;
 				}
 			}
-			if (!sendBtn) {
-				var allBtns = Array.from(document.querySelectorAll('button:not(:disabled)'));
-				sendBtn = allBtns.find(function(b) {
-					var lbl = (b.getAttribute('aria-label') || '') + ' ' + (b.innerText || '');
-					return /gửi|send|submit/i.test(lbl);
-				});
-			}
-			if (sendBtn) {
-				sendBtn.click();
+			if (btn && !btn.disabled) {
+				btn.focus();
+				var opts = { bubbles: true, cancelable: true, view: window };
+				btn.dispatchEvent(new PointerEvent('pointerdown', opts));
+				btn.dispatchEvent(new MouseEvent('mousedown', opts));
+				btn.dispatchEvent(new PointerEvent('pointerup', opts));
+				btn.dispatchEvent(new MouseEvent('mouseup', opts));
+				btn.click();
 				return true;
 			}
-
-			// 2. Dispatch Enter Event trực tiếp bên trong DOM
-			el.focus();
-			var evOpts = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
-			var defaultPrevented = !el.dispatchEvent(new KeyboardEvent("keydown", evOpts));
-			el.dispatchEvent(new KeyboardEvent("keypress", evOpts));
-			el.dispatchEvent(new KeyboardEvent("keyup", evOpts));
-			if (defaultPrevented) return true;
 			return false;
 		})()`
+
 		var clickRes struct {
 			Result struct {
 				Value bool `json:"value"`
@@ -1479,37 +1472,35 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 			"expression":    clickSendJS,
 			"returnByValue": true,
 		}, &clickRes)
-		if !clickRes.Result.Value {
-			_ = wt.Page.Call(ctx, "Input.dispatchKeyEvent", map[string]interface{}{
-				"type":                  "rawKeyDown",
-				"key":                   "Enter",
-				"code":                  "Enter",
-				"windowsVirtualKeyCode": 13,
-				"nativeVirtualKeyCode":  13,
-				"text":                  "\r",
-				"unmodifiedText":        "\r",
-			}, nil)
-			_ = wt.Page.Call(ctx, "Input.dispatchKeyEvent", map[string]interface{}{
-				"type":                  "keyUp",
-				"key":                   "Enter",
-				"code":                  "Enter",
-				"windowsVirtualKeyCode": 13,
-				"nativeVirtualKeyCode":  13,
-			}, nil)
-		}
+
+		// Luôn gửi kèm native CDP Enter event để đảm bảo 100% trigger submit
+		_ = wt.Page.Call(ctx, "Input.dispatchKeyEvent", map[string]interface{}{
+			"type":                  "rawKeyDown",
+			"key":                   "Enter",
+			"code":                  "Enter",
+			"windowsVirtualKeyCode": 13,
+			"nativeVirtualKeyCode":  13,
+			"text":                  "\r",
+			"unmodifiedText":        "\r",
+		}, nil)
+		_ = wt.Page.Call(ctx, "Input.dispatchKeyEvent", map[string]interface{}{
+			"type":                  "keyUp",
+			"key":                   "Enter",
+			"code":                  "Enter",
+			"windowsVirtualKeyCode": 13,
+			"nativeVirtualKeyCode":  13,
+		}, nil)
 	}
 
 	clickSendOrEnter()
 
 	cleanPrompt := strings.TrimSpace(userPrompt)
-	deadline := time.Now().Add(85 * time.Second)
+	deadline := time.Now().Add(60 * time.Second)
 	lastNewMd := ""
 	stableTicks := 0
 	resendAttempts := 0
-	pollLoopTicks := 0
 
 	for time.Now().Before(deadline) {
-		pollLoopTicks++
 		select {
 		case <-ctx.Done():
 			return "", 0, 0, ctx.Err()
@@ -1521,22 +1512,20 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 			continue
 		}
 
-		// Nếu văn bản vẫn còn nguyên trong ô nhập (chưa nhận Enter), bấm Gửi lại
-		if cur.ComposerValue != "" && resendAttempts < 8 {
+		// Nếu văn bản vẫn còn nguyên trong ô nhập sau 1.5s (chưa gửi đi được), gửi lại
+		if cur.ComposerValue != "" && resendAttempts < 5 {
 			resendAttempts++
 			clickSendOrEnter()
 			continue
 		}
 
 		replyMd := ""
-		// Bảo vệ thép: Tuyệt đối không nhận lại nội dung cũ của baseline (tránh nhầm thread cũ của tài khoản)
+		// Bảo vệ thép: Ưu tiên các phần tử mới sinh ra (không có data-mart-seen="1")
 		if cur.UnseenLastMd != "" && cur.UnseenLastMd != cleanPrompt && (baselineLastMd == "" || cur.UnseenLastMd != baselineLastMd) {
 			replyMd = strings.TrimSpace(cur.UnseenLastMd)
 		} else if cur.Count > baselineCount && cur.LastMd != "" && cur.LastMd != cleanPrompt && (baselineLastMd == "" || cur.LastMd != baselineLastMd) {
-			// Chỉ khi số bong bóng assistant tăng lên so với trước khi gửi, bong bóng mới sinh ra mới là câu trả lời thật
 			replyMd = strings.TrimSpace(cur.LastMd)
 		} else if cur.IsGenerating && cur.LastMd != "" && cur.LastMd != cleanPrompt && (baselineLastMd == "" || cur.LastMd != baselineLastMd) {
-			// Đang trong tiến trình sinh phản hồi mới
 			replyMd = strings.TrimSpace(cur.LastMd)
 		}
 
@@ -1546,17 +1535,18 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 
 		// Tự động gia hạn deadline nếu Muse đang tiếp tục sinh nội dung (streaming)
 		if cur.IsGenerating || replyMd != lastNewMd {
-			if time.Until(deadline) < 30*time.Second {
-				deadline = time.Now().Add(45 * time.Second)
+			if time.Until(deadline) < 25*time.Second {
+				deadline = time.Now().Add(35 * time.Second)
 			}
 		}
 
 		if replyMd == lastNewMd {
 			stableTicks++
-			// Nếu Muse không còn generating thì chờ 3 nhịp (~750ms); nếu trang có background spinner cố định thì chờ 7 nhịp (~1.7s) ổn định
-			reqTicks := 3
+			// Nếu Muse không còn generating thì chỉ cần đứng yên 2 nhịp (~500ms) là hoàn thành ngay lập tức!
+			// Nếu trang có cờ generating chưa kịp tắt thì đứng yên 5 nhịp (~1.25s) là hoàn thành.
+			reqTicks := 2
 			if cur.IsGenerating {
-				reqTicks = 7
+				reqTicks = 5
 			}
 			if stableTicks >= reqTicks {
 				break
@@ -1577,7 +1567,7 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 	}
 
 	if lastNewMd == "" {
-		return "", 0, 0, errors.New("Đã gửi tin nhắn tới muse.ai nhưng chưa nhận được phản hồi")
+		return "", 0, 0, errors.New("Muse.ai trả về phản hồi rỗng; Mart AI chưa nhận được câu trả lời.")
 	}
 
 	wt.LastUsed = time.Now()

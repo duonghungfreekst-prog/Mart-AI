@@ -1922,11 +1922,13 @@ async function handleSend(text){
   var receivedAnyChunk = false;
 
   try {
+    var authTok = localStorage.getItem("mart_jwt_token") || "";
     var headers = {
       "Content-Type": "application/json",
       "Accept": "text/event-stream, application/json",
       "X-Mart-Client": "web"
     };
+    if(authTok) headers["Authorization"] = "Bearer " + authTok;
 
     var reqBody = {
       prompt: text,
@@ -2017,7 +2019,19 @@ async function handleSend(text){
               updateUsage();
               addActivity(title, "Hoàn thành câu trả lời");
               saveToHistory(title, finalReply.slice(0, 60));
-              fetchThreads();
+              (async function initSession(){
+  try {
+    var tok = localStorage.getItem("mart_jwt_token");
+    if(!tok){
+      var r = await fetch("/api/auth/session", { cache: "no-store" });
+      if(r.ok){
+        var d = await r.json();
+        if(d && d.token) localStorage.setItem("mart_jwt_token", d.token);
+      }
+    }
+  } catch(e){}
+})();
+fetchThreads();
             } catch(e){}
           } else if(evType === "error"){
             var eMsg = "Lỗi khi xử lý phản hồi";
