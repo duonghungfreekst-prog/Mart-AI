@@ -14,11 +14,13 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -1425,8 +1427,27 @@ func main() {
 		MaxHeaderBytes:    1 << 20, // [FIX #4] gioi han header 1MB
 	}
 
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		LogError("Server exited with error: %v", err)
-		os.Exit(1)
+	serverErr := make(chan error, 1)
+	go func() {
+		serverErr <- srv.ListenAndServe()
+	}()
+
+	shutdownSignals, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+
+	select {
+	case err := <-serverErr:
+		if err != nil && err != http.ErrServerClosed {
+			LogError("Server exited with error: %v", err)
+			os.Exit(1)
+		}
+	case <-shutdownSignals.Done():
+		LogInfo("Shutdown signal received; draining active HTTP requests")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			LogWarn("Graceful shutdown timed out: %v; forcing server close", err)
+			_ = srv.Close()
+		}
 	}
 }

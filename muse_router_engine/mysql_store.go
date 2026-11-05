@@ -756,8 +756,8 @@ func (s *MySQLStore) LoadAccounts() ([]*MuseAccountNode, error) {
 	return nodes, rows.Err()
 }
 
-// SyncAllAccounts đồng bộ danh sách tài khoản hiện tại vào bảng muse_accounts trong MySQL.
-// Đồng bộ 2 chiều toàn diện: tự động dọn dẹp các tài khoản thừa (đã bị xóa khỏi pool) và upsert các node đang hoạt động.
+// SyncAllAccounts upserts the supplied accounts without deleting records absent
+// from a process-local snapshot. Use DeleteAccount for explicit deletions.
 func (s *MySQLStore) SyncAllAccounts(nodes []*MuseAccountNode) error {
 	s.mu.RLock()
 	db := s.db
@@ -766,60 +766,14 @@ func (s *MySQLStore) SyncAllAccounts(nodes []*MuseAccountNode) error {
 		return errors.New("mysql db not open")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
 	if len(nodes) == 0 {
-		_, err := db.ExecContext(ctx, `DELETE FROM muse_accounts`)
-		if err == nil {
-			s.invalidateStatusCache()
-		}
-		return err
+		return nil
 	}
 
-	// 1. Dọn dẹp triệt để các tài khoản đã bị xóa khỏi pool (không còn trong nodes)
-	activeIDs := make([]interface{}, 0, len(nodes))
-	activeFPs := make([]interface{}, 0, len(nodes))
-	idPlaceholders := make([]string, 0, len(nodes))
-	fpPlaceholders := make([]string, 0, len(nodes))
-
-	for _, n := range nodes {
-		if n != nil && n.ID != "" {
-			activeIDs = append(activeIDs, n.ID)
-			idPlaceholders = append(idPlaceholders, "?")
-			if n.Fingerprint != "" {
-				activeFPs = append(activeFPs, n.Fingerprint)
-				fpPlaceholders = append(fpPlaceholders, "?")
-			}
-		}
-	}
-
-	if len(activeIDs) > 0 {
-		var deleteQuery string
-		var deleteArgs []interface{}
-
-		if len(activeFPs) > 0 {
-			deleteQuery = fmt.Sprintf(
-				"DELETE FROM muse_accounts WHERE id NOT IN (%s) AND (fingerprint = '' OR fingerprint NOT IN (%s))",
-				strings.Join(idPlaceholders, ","),
-				strings.Join(fpPlaceholders, ","),
-			)
-			deleteArgs = append(deleteArgs, activeIDs...)
-			deleteArgs = append(deleteArgs, activeFPs...)
-		} else {
-			deleteQuery = fmt.Sprintf(
-				"DELETE FROM muse_accounts WHERE id NOT IN (%s)",
-				strings.Join(idPlaceholders, ","),
-			)
-			deleteArgs = append(deleteArgs, activeIDs...)
-		}
-
-		if _, err := db.ExecContext(ctx, deleteQuery, deleteArgs...); err != nil {
-			LogError("MySQL cleanup stale accounts error: %v", err)
-		}
-	}
-
-	// 2. Upsert toàn bộ danh sách tài khoản hợp lệ
+	// Upsert the supplied records only. A process-local snapshot may be stale
+	// (for example after a Render restart or with multiple instances); deleting
+	// every row absent from that snapshot would erase newer TiDB records. Explicit
+	// account deletion is handled by DeleteAccount.
 	for _, n := range nodes {
 		if n != nil && n.ID != "" {
 			if err := s.UpsertAccount(n); err != nil {
@@ -1119,6 +1073,12 @@ func (s *MySQLStore) SaveThreadWithMessages(t *ChatThread) error {
 		if err != nil {
 			return err
 		}
+	}
+	// Remove messages that were removed from a thread. Upserting only current
+	// indices leaves trailing rows behind when a thread is edited or truncated.
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM chat_messages WHERE thread_id = ? AND seq_num >= ?`, t.ID, len(t.Messages)); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(); err != nil {

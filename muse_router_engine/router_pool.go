@@ -416,30 +416,11 @@ func normalizeAccountIndices(nodes []*MuseAccountNode) {
 			n.StatusDetail = "Đang hoạt động (Đồng bộ trực tiếp)"
 		}
 		if n.Status == "ready" || n.Status == "running" {
-			if n.TokensQuota <= 0 || n.TokensQuota == 1000000 {
-				n.TokensQuota = 1000000000
-			}
-			if n.TokensRemaining <= 0 || n.TokensRemaining < 1000000 {
-				rem := n.TokensQuota - n.TokensUsed
-				if rem < 0 {
-					rem = 0
-				}
-				n.TokensRemaining = rem
-			}
 			if n.FreePlanLabel == "" {
 				n.FreePlanLabel = "Gói miễn phí"
 			}
-			if n.FreePlanValue == "Đang hoạt động" && n.FreePlanPercent == 5 {
-				n.FreePlanPercent = 0
-				n.FreePlanValue = "Đã dùng 0%"
-			}
 			if n.FreePlanValue == "" {
-				pct := n.FreePlanPercent
-				if pct < 0 {
-					pct = 0
-					n.FreePlanPercent = 0
-				}
-				n.FreePlanValue = fmt.Sprintf("Đã dùng %d%%", pct)
+				n.FreePlanValue = "Chưa lấy được dữ liệu từ Muse.ai"
 			}
 			if n.FreePlanSubtitle == "" {
 				n.FreePlanSubtitle = "Giới hạn hàng tuần được đồng bộ trực tiếp với muse.ai"
@@ -448,7 +429,7 @@ func normalizeAccountIndices(nodes []*MuseAccountNode) {
 				n.TopupLabel = "Token bổ sung"
 			}
 			if n.TopupValue == "" {
-				n.TopupValue = "Đã dùng 0% (còn 1 tỷ token)"
+				n.TopupValue = "Chưa lấy được dữ liệu từ Muse.ai"
 			}
 			if n.TopupSubtitle == "" {
 				n.TopupSubtitle = "Không bao giờ hết hạn"
@@ -588,30 +569,11 @@ func (p *MuseRouterPool) GetSummary() RouterSummary {
 		copyNode := *n
 		copyNode.EncryptedCredential = ""
 		if copyNode.Status == "ready" || copyNode.Status == "running" {
-			if copyNode.TokensQuota <= 0 || copyNode.TokensQuota == 1000000 {
-				copyNode.TokensQuota = 1000000000
-			}
-			if copyNode.TokensRemaining <= 0 || copyNode.TokensRemaining < 1000000 {
-				rem := copyNode.TokensQuota - copyNode.TokensUsed
-				if rem < 0 {
-					rem = 0
-				}
-				copyNode.TokensRemaining = rem
-			}
 			if copyNode.FreePlanLabel == "" {
 				copyNode.FreePlanLabel = "Gói miễn phí"
 			}
-			if copyNode.FreePlanValue == "Đang hoạt động" && copyNode.FreePlanPercent == 5 {
-				copyNode.FreePlanPercent = 0
-				copyNode.FreePlanValue = "Đã dùng 0%"
-			}
 			if copyNode.FreePlanValue == "" {
-				pct := copyNode.FreePlanPercent
-				if pct < 0 {
-					pct = 0
-					copyNode.FreePlanPercent = 0
-				}
-				copyNode.FreePlanValue = fmt.Sprintf("Đã dùng %d%%", pct)
+				copyNode.FreePlanValue = "Chưa lấy được dữ liệu từ Muse.ai"
 			}
 			if copyNode.FreePlanSubtitle == "" {
 				copyNode.FreePlanSubtitle = "Giới hạn hàng tuần được đồng bộ trực tiếp với muse.ai"
@@ -620,7 +582,7 @@ func (p *MuseRouterPool) GetSummary() RouterSummary {
 				copyNode.TopupLabel = "Token bổ sung"
 			}
 			if copyNode.TopupValue == "" {
-				copyNode.TopupValue = "Đã dùng 0% (còn 1 tỷ token)"
+				copyNode.TopupValue = "Chưa lấy được dữ liệu từ Muse.ai"
 			}
 			if copyNode.TopupSubtitle == "" {
 				copyNode.TopupSubtitle = "Không bao giờ hết hạn"
@@ -1365,14 +1327,9 @@ func (p *MuseRouterPool) WakeAndProbeNode(parentCtx context.Context, nodeID stri
 				n.LatencyMs = int(lat)
 			}
 			if tok, ok := result["tokens_remaining"].(float64); ok && tok >= 0 {
-				if int64(tok) > n.TokensQuota {
-					n.TokensQuota = int64(tok)
-				}
-				rem := n.TokensQuota - n.TokensUsed
-				if rem < 0 {
-					rem = 0
-				}
-				n.TokensRemaining = rem
+				// Muse.ai reports the current balance; local chat usage is tracked
+				// separately and must not be deducted from this value a second time.
+				n.TokensRemaining = int64(tok)
 			}
 			if hs, ok := result["has_hatch_sess"].(bool); ok {
 				n.HasHatchSess = hs
@@ -1502,21 +1459,22 @@ func (p *MuseRouterPool) wakeAndProbeNodeDirect(ctx context.Context, target *Mus
 	}
 	_ = json.Unmarshal(verBody, &verData)
 
-	subCtx, cancelSub := context.WithTimeout(ctx, 6*time.Second)
+	// Subscription lookup may need to refresh Muse.ai's rotating Next.js action
+	// ID from its current page/chunks when a cached action ID is stale.
+	subCtx, cancelSub := context.WithTimeout(ctx, 12*time.Second)
 	subInfo := p.fetchRealMuseSubscriptionGo(subCtx, upstream, cookieHeader, verData.DeploymentID)
 	cancelSub()
 
 	tokRem := subInfo.TokensRemaining
-	if tokRem <= 0 {
-		tokRem = float64(target.TokensRemaining)
-	}
-	if tokRem <= 0 {
-		tokRem = 1000000000
+	detail := fmt.Sprintf("Đã đồng bộ Muse.ai (%dms · %s)", int(latMs), subInfo.FreePlanValue)
+	if !subInfo.Fetched {
+		detail = fmt.Sprintf("Đăng nhập Muse.ai thành công (%dms), nhưng chưa đọc được dữ liệu mức sử dụng; hãy thử đồng bộ lại", int(latMs))
 	}
 	return map[string]interface{}{
 		"status":             "ready",
 		"latency_ms":         latMs,
 		"tokens_remaining":   tokRem,
+		"subscription_data_available": subInfo.Fetched,
 		"has_hatch_sess":     hasSess,
 		"has_hatch_gw":       hasGw,
 		"free_plan_label":    subInfo.FreePlanLabel,
@@ -1528,11 +1486,12 @@ func (p *MuseRouterPool) wakeAndProbeNodeDirect(ctx context.Context, target *Mus
 		"topup_subtitle":     subInfo.TopupSubtitle,
 		"topup_percent":      float64(subInfo.TopupPercent),
 		"device_profile":     computeDeterministicDeviceProfile(target.Fingerprint),
-		"detail":             fmt.Sprintf("Đã đồng bộ trực tiếp muse.ai (%dms · %s)", int(latMs), subInfo.FreePlanValue),
+		"detail":             detail,
 	}, nil
 }
 
 type museSubscriptionParsed struct {
+	Fetched          bool
 	FreePlanLabel    string
 	FreePlanValue    string
 	FreePlanSubtitle string
@@ -1612,6 +1571,10 @@ func (p *MuseRouterPool) callMuseSubscriptionAction(ctx context.Context, upstrea
 			continue
 		}
 		sub := payload.Subscription
+		if sub.Usage == nil && strings.TrimSpace(sub.UsageRowValueLabel) == "" &&
+			strings.TrimSpace(sub.TopupRowValueLabel) == "" && sub.TopupBalance == 0 && sub.TopupTotal == 0 {
+			continue
+		}
 		pctUsed := 0
 		if sub.Usage != nil {
 			pctUsed = int(math.Round(sub.Usage.PercentUsed))
@@ -1639,7 +1602,7 @@ func (p *MuseRouterPool) callMuseSubscriptionAction(ctx context.Context, upstrea
 		}
 		topVal := strings.TrimSpace(strings.ReplaceAll(sub.TopupRowValueLabel, "\u00a0", " "))
 		if topVal == "" {
-			topVal = "Đã dùng 0% (còn 1 tỷ token)"
+			topVal = "Chưa lấy được dữ liệu từ Muse.ai"
 		}
 		topSub := strings.TrimSpace(sub.BillingSubtitle)
 		if topSub == "" {
@@ -1654,14 +1617,12 @@ func (p *MuseRouterPool) callMuseSubscriptionAction(ctx context.Context, upstrea
 				topPct = 100
 			}
 		}
-		tokRem := float64(1000000000)
-		lowerTopVal := strings.ToLower(topVal)
-		if strings.Contains(lowerTopVal, "1 tỷ") || strings.Contains(lowerTopVal, "1b") {
-			tokRem = 1000000000
-		} else if sub.TopupBalance > 0 {
-			tokRem = sub.TopupBalance * 25
+		tokRem := float64(0)
+		if sub.TopupBalance > 0 {
+			tokRem = sub.TopupBalance
 		}
 		return &museSubscriptionParsed{
+			Fetched:          true,
 			FreePlanLabel:    freeLbl,
 			FreePlanValue:    freeVal,
 			FreePlanSubtitle: freeSub,
@@ -1677,12 +1638,6 @@ func (p *MuseRouterPool) callMuseSubscriptionAction(ctx context.Context, upstrea
 }
 
 func (p *MuseRouterPool) discoverMuseSubActionID(ctx context.Context, upstream, cookieHeader string) string {
-	if p.cache != nil {
-		if _, recentlyChecked := p.cache.Get("muse_sub_action_probed"); recentlyChecked {
-			return ""
-		}
-		p.cache.Set("muse_sub_action_probed", true, 3*time.Minute)
-	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, upstream+"/", nil)
 	if err != nil {
 		return ""
@@ -1749,14 +1704,14 @@ func (p *MuseRouterPool) discoverMuseSubActionID(ctx context.Context, upstream, 
 func (p *MuseRouterPool) fetchRealMuseSubscriptionGo(ctx context.Context, upstream, cookieHeader, deployID string) museSubscriptionParsed {
 	def := museSubscriptionParsed{
 		FreePlanLabel:    "Gói miễn phí",
-		FreePlanValue:    "Đã dùng 0%",
-		FreePlanSubtitle: "Giới hạn hàng tuần được đồng bộ trực tiếp với muse.ai",
+		FreePlanValue:    "Chưa lấy được dữ liệu từ Muse.ai",
+		FreePlanSubtitle: "Muse.ai chưa trả dữ liệu usage; hãy thử đồng bộ lại",
 		FreePlanPercent:  0,
 		TopupLabel:       "Token bổ sung",
-		TopupValue:       "Đã dùng 0% (còn 1 tỷ token)",
+		TopupValue:       "Chưa lấy được dữ liệu từ Muse.ai",
 		TopupSubtitle:    "Không bao giờ hết hạn",
 		TopupPercent:     0,
-		TokensRemaining:  1000000000,
+		TokensRemaining:  0,
 	}
 
 	actionID := "409b972cbb33d3e372f4ca9d3c8332677217064f62"

@@ -581,37 +581,96 @@ class WarmBrowserSessionManager:
                 return "";
             }
             const tag = n.tagName.toLowerCase();
+            if (["button", "svg", "style", "script", "input", "textarea"].includes(tag)) return "";
+            const children = () => Array.from(n.childNodes).map(c => nodeToMd(c, listDepth)).join("");
             if (tag === "strong" || tag === "b") {
-                return "**" + Array.from(n.childNodes).map(c => nodeToMd(c, listDepth)).join("") + "**";
+                return "**" + children() + "**";
             }
             if (tag === "em" || tag === "i") {
-                return "*" + Array.from(n.childNodes).map(c => nodeToMd(c, listDepth)).join("") + "*";
+                return "*" + children() + "*";
             }
             if (tag === "code" && (!n.parentElement || n.parentElement.tagName.toLowerCase() !== "pre")) {
                 return "`" + (n.textContent || "") + "`";
             }
             if (tag === "pre") {
-                return "\\n```\\n" + (n.textContent || "").trim() + "\\n```\\n";
+                const code = n.querySelector("code");
+                const codeText = (code ? code.textContent : n.textContent || "").replace(/\\n$/, "");
+                const langMatch = code && String(code.className || "").match(/language-([a-zA-Z0-9_+-]+)/i);
+                const lang = langMatch ? langMatch[1] : "";
+                return "\\n\\n```" + lang + "\\n" + codeText + "\\n```\\n\\n";
+            }
+            if (tag === "video" || tag === "audio") {
+                let src = n.currentSrc || n.getAttribute("src") || "";
+                if (!src) {
+                    const source = n.querySelector("source[src]");
+                    if (source) src = source.src || source.getAttribute("src") || "";
+                }
+                try { src = new URL(src, document.baseURI).href; } catch (_) { return children(); }
+                if (!src.startsWith("https://")) return children();
+                if (tag === "video") {
+                    let poster = n.getAttribute("poster") || "";
+                    if (poster) {
+                        try { poster = new URL(poster, document.baseURI).href; } catch (_) { poster = ""; }
+                    }
+                    return "\\n\\n![video" + (poster ? " poster=\\\"" + poster + "\\\"" : "") + "](" + src + ")\\n\\n";
+                }
+                return "\\n\\n[audio](" + src + ")\\n\\n";
+            }
+            if (tag === "iframe") {
+                let src = n.getAttribute("src") || "";
+                try { src = new URL(src, document.baseURI).href; } catch (_) { return ""; }
+                return src.startsWith("https://") ? "\\n\\n[embed-video](" + src + ")\\n\\n" : "";
+            }
+            if (tag === "table") {
+                const rows = Array.from(n.querySelectorAll("tr"));
+                const mdRows = [];
+                rows.forEach((tr, idx) => {
+                    const cells = Array.from(tr.querySelectorAll("th,td"));
+                    if (!cells.length) return;
+                    const vals = cells.map(cell => Array.from(cell.childNodes).map(c => nodeToMd(c, listDepth)).join("").trim().replace(/\\|/g, "\\\\|").replace(/\\n+/g, " "));
+                    mdRows.push("| " + vals.join(" | ") + " |");
+                    if (idx === 0) mdRows.push("| " + vals.map(() => "---").join(" | ") + " |");
+                });
+                return mdRows.length ? "\\n\\n" + mdRows.join("\\n") + "\\n\\n" : "";
+            }
+            if (tag === "blockquote") {
+                return "\\n\\n" + children().trim().split("\\n").map(line => "> " + line).join("\\n") + "\\n\\n";
+            }
+            if (tag === "a") {
+                const text = children().trim();
+                const href = n.href || "";
+                if (!href.startsWith("https://")) return text;
+                return "[" + (text || href) + "](" + href + ")";
             }
             if (tag === "ul" || tag === "ol") {
-                return "\\n" + Array.from(n.children).map(c => nodeToMd(c, listDepth + 1)).join("");
+                return "\\n" + Array.from(n.children).map((li, idx) => {
+                    const marker = tag === "ol" ? (idx + 1) + ". " : "- ";
+                    const indent = listDepth > 0 ? "  ".repeat(listDepth) : "";
+                    const body = Array.from(li.childNodes).map(c => nodeToMd(c, listDepth + 1)).join("").trim();
+                    return indent + marker + body;
+                }).join("\\n") + "\\n\\n";
             }
             if (tag === "li") {
                 const indent = listDepth > 1 ? "  ".repeat(listDepth - 1) : "";
-                const body = Array.from(n.childNodes).map(c => nodeToMd(c, listDepth)).join("").trim();
+                const body = children().trim();
                 return indent + "- " + body + "\\n";
             }
-            if (tag === "p" || tag === "div" || tag === "h1" || tag === "h2" || tag === "h3" || tag === "h4") {
-                const inner = Array.from(n.childNodes).map(c => nodeToMd(c, listDepth)).join("").trim();
+            if (/^h[1-6]$/.test(tag)) {
+                const level = Number(tag.slice(1));
+                return "\\n\\n" + "#".repeat(level) + " " + children().trim() + "\\n\\n";
+            }
+            if (tag === "p" || tag === "div") {
+                const inner = children().trim();
                 return inner ? inner + "\\n\\n" : "";
             }
             if (tag === "br") {
                 return "\\n";
             }
+            if (tag === "hr") return "\\n\\n---\\n\\n";
             if (tag === "img" && n.src) {
                 return "\\n![" + (n.alt || "Hình ảnh") + "](" + n.src + ")\\n";
             }
-            return Array.from(n.childNodes).map(c => nodeToMd(c, listDepth)).join("");
+            return children();
         }
         const els = Array.from(document.querySelectorAll('.prose'));
         const count = els.length;
@@ -1448,7 +1507,7 @@ class MuseUpstreamClient:
                 tok_rem = int(sub_info.get("tokens_remaining") or 0)
                 if tok_rem <= 0:
                     extracted_tok = self._extract_tokens_from_shell(client, base_url, req_headers)
-                    tok_rem = extracted_tok if (extracted_tok is not None and extracted_tok > 0) else 1000000000
+                    tok_rem = extracted_tok if (extracted_tok is not None and extracted_tok > 0) else 0
                 logger.info(
                     "Real muse.ai session verified for node=%s deploy=%s profile=%s latency=%dms free=%s topup=%s",
                     sanitize_log_str(node_id),
@@ -1459,18 +1518,23 @@ class MuseUpstreamClient:
                     sanitize_log_str(str(sub_info.get("topup_value", ""))),
                 )
                 shield_tag = "Proxy riêng" if clean_proxy else f"Cô lập {dev_profile['device_id']}"
+                usage_available = bool(sub_info.get("subscription_data_available", False))
+                sync_detail = f"Đã xác thực Muse.ai ({shield_tag} · {latency_ms}ms)"
+                if not usage_available:
+                    sync_detail = f"Đăng nhập Muse.ai thành công ({latency_ms}ms), nhưng chưa đọc được dữ liệu usage; hãy thử đồng bộ lại"
                 return {
                     "reachable": True,
                     "authenticated": True,
                     "http_status": 200,
                     "latency_ms": latency_ms,
                     "tokens_remaining": tok_rem,
+                    "subscription_data_available": usage_available,
                     "free_plan_label": str(sub_info.get("free_plan_label", "Gói miễn phí")),
-                    "free_plan_value": str(sub_info.get("free_plan_value", "Đã dùng 0%")),
+                    "free_plan_value": str(sub_info.get("free_plan_value", "Chưa lấy được dữ liệu từ Muse.ai")),
                     "free_plan_subtitle": str(sub_info.get("free_plan_subtitle", "Giới hạn hàng tuần được đồng bộ trực tiếp với muse.ai")),
                     "free_plan_percent": int(sub_info.get("free_plan_percent", 0)),
                     "topup_label": str(sub_info.get("topup_label", "Token bổ sung")),
-                    "topup_value": str(sub_info.get("topup_value", "Đã dùng 0% (còn 1 tỷ token)")),
+                    "topup_value": str(sub_info.get("topup_value", "Chưa lấy được dữ liệu từ Muse.ai")),
                     "topup_subtitle": str(sub_info.get("topup_subtitle", "Không bao giờ hết hạn")),
                     "topup_percent": int(sub_info.get("topup_percent", 0)),
                     "has_hatch_sess": "hatch_sess" in cookie_map,
@@ -1479,7 +1543,7 @@ class MuseUpstreamClient:
                     "deployment_id": str(deploy_id),
                     "status": "ready",
                     "device_profile": str(dev_profile["summary_label"]),
-                    "detail": f"Đã đồng bộ ({shield_tag} · {latency_ms}ms)",
+                    "detail": sync_detail,
                 }
 
             err_excerpt = ver_resp.text[:160].strip()
@@ -1530,14 +1594,15 @@ class MuseUpstreamClient:
         """
         result: Dict[str, object] = {
             "free_plan_label": "Gói miễn phí",
-            "free_plan_value": "Đã dùng 0%",
-            "free_plan_subtitle": "Giới hạn hàng tuần được đồng bộ trực tiếp với muse.ai",
+            "free_plan_value": "Chưa lấy được dữ liệu từ Muse.ai",
+            "free_plan_subtitle": "Muse.ai chưa trả dữ liệu usage; hãy thử đồng bộ lại",
             "free_plan_percent": 0,
             "topup_label": "Token bổ sung",
-            "topup_value": "Đã dùng 0% (còn 1 tỷ token)",
+            "topup_value": "Chưa lấy được dữ liệu từ Muse.ai",
             "topup_subtitle": "Không bao giờ hết hạn",
             "topup_percent": 0,
-            "tokens_remaining": 1000000000,
+            "tokens_remaining": 0,
+            "subscription_data_available": False,
         }
         try:
             action_url = f"{base_url}/?dpl={deploy_id}" if deploy_id and deploy_id != "verified" else f"{base_url}/"
@@ -1567,13 +1632,16 @@ class MuseUpstreamClient:
                         sub = parsed.get("subscription") if isinstance(parsed, dict) else None
                         if isinstance(sub, dict):
                             usage = sub.get("usage") or {}
+                            if not usage and not sub.get("usageRowValueLabel") and not sub.get("topupRowValueLabel") and not sub.get("topupBalance") and not sub.get("topupTotal"):
+                                continue
+                            result["subscription_data_available"] = True
                             pct_used = int(usage.get("percentUsed") or 0) if isinstance(usage, dict) else 0
                             result["free_plan_label"] = str(sub.get("usageRowLabel") or "Gói miễn phí")
                             result["free_plan_value"] = str(sub.get("usageRowValueLabel") or f"Đã dùng {pct_used}%")
                             result["free_plan_subtitle"] = str(sub.get("statusSubtitle") or "Giới hạn hàng tuần")
                             result["free_plan_percent"] = pct_used
                             result["topup_label"] = str(sub.get("topupRowLabel") or "Token bổ sung")
-                            topup_val_lbl = str(sub.get("topupRowValueLabel") or "Đã dùng 0% (còn 1 tỷ token)").replace("\xa0", " ")
+                            topup_val_lbl = str(sub.get("topupRowValueLabel") or "Chưa lấy được dữ liệu từ Muse.ai").replace("\xa0", " ")
                             result["topup_value"] = topup_val_lbl
                             result["topup_subtitle"] = str(sub.get("billingSubtitle") or "Không bao giờ hết hạn")
 
@@ -1582,10 +1650,8 @@ class MuseUpstreamClient:
                             if top_tot > 0:
                                 top_pct = max(0, min(100, int(round(((top_tot - top_bal) / float(top_tot)) * 100))))
                                 result["topup_percent"] = top_pct
-                            if "1 tỷ" in topup_val_lbl.lower() or "1b" in topup_val_lbl.lower():
-                                result["tokens_remaining"] = 1000000000
-                            elif top_bal > 0:
-                                result["tokens_remaining"] = top_bal * 25
+                            if top_bal > 0:
+                                result["tokens_remaining"] = top_bal
                             break
         except Exception as exc:
             logger.debug("Subscription usage action inspect warning: %s", sanitize_log_str(str(exc)))
