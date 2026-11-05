@@ -169,7 +169,10 @@ func maskDatabaseURL(rawURL string) string {
 	if err != nil {
 		return "mysql://***"
 	}
-	return fmt.Sprintf("mysql://%s:***@%s:%s/%s?ssl-mode=REQUIRED", cfg.User, cfg.Host, cfg.Port, cfg.Database)
+	if cfg.UseTLS {
+		return fmt.Sprintf("mysql://%s:***@%s:%s/%s?ssl-mode=REQUIRED", cfg.User, cfg.Host, cfg.Port, cfg.Database)
+	}
+	return fmt.Sprintf("mysql://%s:***@%s:%s/%s", cfg.User, cfg.Host, cfg.Port, cfg.Database)
 }
 
 func withMySQLDatabaseName(rawURL string, dbName string) string {
@@ -314,7 +317,7 @@ func NewLibSQLStore(dataDir string, customURL string, authToken string) (*LibSQL
 		targetURL = LoadEncryptedCloudSQLConfig(dataDir)
 	}
 	if targetURL == "" {
-		return nil, errors.New("chưa cấu hình chuỗi kết nối Aiven MySQL Cloud (mysql://...)")
+		return nil, errors.New("chua cau hinh chuoi ket noi MySQL / TiDB Cloud (mysql://...)")
 	}
 
 	isTestDir := !isProductionDataDir(dataDir) && strings.TrimSpace(customURL) == ""

@@ -1,0 +1,26 @@
+================================================================================
+  MUSEROUTER - GOI CAI DAT SERVER XAMPP (LOCAL / VPS WINDOWS)
+================================================================================
+
+1. YEU CAU HE THONG:
+   - Windows 10 / 11 / Windows Server (64-bit)
+   - Da cai dat XAMPP (Apache Friends) tai: C:\xampp\
+   - Python 3.10+ (neu muon chay kem Python AI Bridge)
+
+2. CAI DAT & KHOI DONG:
+   Buoc 1: Mo XAMPP Control Panel -> Nhan [Start] tai muc MySQL (cong 3306).
+   Buoc 2: Vao phpMyAdmin (http://localhost/phpmyadmin), tao 1 database co ten:
+           muse_router (Bang ma: utf8mb4_unicode_ci)
+           *Luu y: Code se tu dong khoi tao toan bo 9 bang du lieu khi khoi dong.
+
+   Buoc 3: Nhan chuot phai vao file "install_service.bat" -> Chon [Run as administrator].
+   Buoc 4: Nhap phim [1] va Enter de cai dat Windows Service tu dong chay ngam.
+
+3. TRUY CAP HE THONG:
+   - Web Tool Studio: http://127.0.0.1:8088
+   - OpenAI Gateway:  http://127.0.0.1:8088/v1/chat/completions
+
+4. CAP NHAT PHIEN BAN MOI (UPDATE):
+   - Khi co file zip cap nhat moi: Mo "install_service.bat" (Run as administrator) -> Chon [6].
+   - Nhap duong dan file zip de he thong tu backup, giai nen va restart service.
+================================================================================

@@ -18,8 +18,12 @@ threads.json
 *.bak
 *.tmp
 *.log
+*~
+*.exe~
 
 # Build artifacts & caches
+*.zip
+LINK_KHACH_TRUY_CAP.txt
 muse_router.exe
 muse_router_engine/muse_router.exe
 muse_router_engine/test_*/

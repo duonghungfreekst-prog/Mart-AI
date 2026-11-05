@@ -94,7 +94,9 @@ func parseMySQLConnectionURL(rawURL string) (*mysqlDSNConfig, error) {
 	tlsParam := strings.ToLower(strings.TrimSpace(q.Get("tls")))
 	useTLS := sslMode == "REQUIRED" || sslMode == "VERIFY_CA" || sslMode == "VERIFY_IDENTITY" ||
 		tlsParam == "true" || tlsParam == "skip-verify" || tlsParam == "preferred" ||
-		strings.Contains(strings.ToLower(host), "aivencloud.com")
+		strings.Contains(strings.ToLower(host), "aivencloud.com") ||
+		strings.Contains(strings.ToLower(host), "tidbcloud.com") ||
+		strings.Contains(strings.ToLower(host), "tidb")
 
 	return &mysqlDSNConfig{
 		User:     user,

@@ -5,10 +5,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -19,6 +21,98 @@ var actorCtxKey = actorCtxKeyType{}
 var validUsernameRegex = regexp.MustCompile(`^[a-zA-Z0-9_.-]{3,32}$`)
 
 const DefaultAdminPassword = "Admin@123456"
+
+// ============================================================================
+// [FIX #1] RATE LIMITER CHONG BRUTE FORCE LOGIN (5 lan sai / 15 phut / IP)
+// ============================================================================
+
+type loginAttemptRecord struct {
+	count     int
+	lockedAt  time.Time
+	firstFail time.Time
+}
+
+var (
+	loginAttempts   = make(map[string]*loginAttemptRecord)
+	loginAttemptsMu sync.Mutex
+)
+
+const (
+	maxLoginAttempts  = 5               // So lan sai toi da truoc khi bi khoa
+	loginLockDuration = 15 * time.Minute // Thoi gian khoa IP sau khi vuot qua nguong
+	loginWindowReset  = 15 * time.Minute // Window dem so lan sai
+)
+
+// getClientIP lay IP thuc cua client, uu tien X-Real-IP / X-Forwarded-For
+func getClientIP(r *http.Request) string {
+	if ip := r.Header.Get("X-Real-IP"); ip != "" {
+		return strings.TrimSpace(ip)
+	}
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+		parts := strings.SplitN(fwd, ",", 2)
+		return strings.TrimSpace(parts[0])
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// checkLoginRateLimit kiem tra xem IP co dang bi khoa khong
+// Tra ve (bi_khoa bool, con_bao_nhieu_giay int)
+func checkLoginRateLimit(ip string) (blocked bool, retryAfterSec int) {
+	loginAttemptsMu.Lock()
+	defer loginAttemptsMu.Unlock()
+
+	rec, ok := loginAttempts[ip]
+	if !ok {
+		return false, 0
+	}
+	// Het window → reset
+	if time.Since(rec.firstFail) > loginWindowReset && rec.lockedAt.IsZero() {
+		delete(loginAttempts, ip)
+		return false, 0
+	}
+	// Dang trong thoi gian bi khoa
+	if !rec.lockedAt.IsZero() {
+		elapsed := time.Since(rec.lockedAt)
+		if elapsed < loginLockDuration {
+			remaining := loginLockDuration - elapsed
+			return true, int(remaining.Seconds()) + 1
+		}
+		// Het thoi gian khoa → reset
+		delete(loginAttempts, ip)
+		return false, 0
+	}
+	return false, 0
+}
+
+// recordLoginFail ghi nhan mot lan dang nhap sai tu IP nay
+func recordLoginFail(ip string) {
+	loginAttemptsMu.Lock()
+	defer loginAttemptsMu.Unlock()
+
+	rec, ok := loginAttempts[ip]
+	if !ok {
+		rec = &loginAttemptRecord{firstFail: time.Now()}
+		loginAttempts[ip] = rec
+	}
+	rec.count++
+	if rec.count >= maxLoginAttempts {
+		rec.lockedAt = time.Now()
+		LogWarn("Login brute-force detected from IP %s — locked for %v", SanitizeLog(ip), loginLockDuration)
+	}
+}
+
+// recordLoginSuccess xoa lich su sai khi dang nhap thanh cong
+func recordLoginSuccess(ip string) {
+	loginAttemptsMu.Lock()
+	defer loginAttemptsMu.Unlock()
+	delete(loginAttempts, ip)
+}
+
+// ============================================================================
 
 type RequestActor struct {
 	UserID        string `json:"id"`
@@ -439,7 +533,7 @@ func (a *ServerApp) handleUserRegister(w http.ResponseWriter, r *http.Request) {
 
 	a.cache.Set("usr_active:"+userID, true, 60*time.Second)
 
-	token, err := a.jwtMgr.IssueUserToken(userID, username, displayName, targetRole, 168*time.Hour)
+	token, err := a.jwtMgr.IssueUserToken(userID, username, displayName, targetRole, 24*time.Hour)
 	if err != nil {
 		LogError("IssueUserToken error: %v", err)
 		WriteJSONError(w, http.StatusInternalServerError, "ERR_TOKEN_ISSUE_FAILED")
@@ -464,6 +558,15 @@ func (a *ServerApp) handleUserLogin(w http.ResponseWriter, r *http.Request) {
 		WriteJSONError(w, http.StatusMethodNotAllowed, "ERR_METHOD_NOT_ALLOWED")
 		return
 	}
+
+	// [FIX #1] Kiem tra rate limit truoc khi xu ly bat ky gi
+	clientIP := getClientIP(r)
+	if blocked, retryAfter := checkLoginRateLimit(clientIP); blocked {
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		WriteJSONError(w, http.StatusTooManyRequests, "ERR_TOO_MANY_ATTEMPTS")
+		return
+	}
+
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -495,7 +598,7 @@ func (a *ServerApp) handleUserLogin(w http.ResponseWriter, r *http.Request) {
 		// Dự phòng cho tài khoản admin nếu vừa khởi tạo hoặc dùng MART_ADMIN_PASSWORD
 		expectedAdminPw := nonEmptyStr(adminPassword(), DefaultAdminPassword)
 		if username == "admin" && ConstantTimeStringEquals(req.Password, expectedAdminPw) {
-			token, errTok := a.jwtMgr.IssueUserToken("admin", "admin", "Quản trị viên (Admin)", "admin", 168*time.Hour)
+			token, errTok := a.jwtMgr.IssueUserToken("admin", "admin", "Quản trị viên (Admin)", "admin", 24*time.Hour) // [FIX #3] TTL 24h
 			if errTok != nil {
 				WriteJSONError(w, http.StatusInternalServerError, "ERR_TOKEN_ISSUE_FAILED")
 				return
@@ -512,6 +615,7 @@ func (a *ServerApp) handleUserLogin(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		recordLoginFail(clientIP)
 		WriteJSONError(w, http.StatusUnauthorized, "Sai tên đăng nhập hoặc mật khẩu.")
 		return
 	}
@@ -529,6 +633,7 @@ func (a *ServerApp) handleUserLogin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !pwValid {
+		recordLoginFail(clientIP)
 		WriteJSONError(w, http.StatusUnauthorized, "Sai tên đăng nhập hoặc mật khẩu.")
 		return
 	}
@@ -540,9 +645,10 @@ func (a *ServerApp) handleUserLogin(w http.ResponseWriter, r *http.Request) {
 	go func(st *LibSQLStore, ts, uid string) {
 		_, _ = st.ExecuteSQL("UPDATE mart_users SET last_login_at = ? WHERE id = ?", []interface{}{ts, uid})
 	}(store, nowStr, userID)
+	recordLoginSuccess(clientIP) // [FIX #1] Reset brute-force counter khi dang nhap thanh cong
 	a.cache.Set("usr_active:"+userID, true, 60*time.Second)
 
-	token, err := a.jwtMgr.IssueUserToken(userID, username, displayName, role, 168*time.Hour)
+	token, err := a.jwtMgr.IssueUserToken(userID, username, displayName, role, 24*time.Hour)
 	if err != nil {
 		WriteJSONError(w, http.StatusInternalServerError, "ERR_TOKEN_ISSUE_FAILED")
 		return
@@ -614,7 +720,7 @@ func (a *ServerApp) handleAdminUnlockLogin(w http.ResponseWriter, r *http.Reques
 		}(store, nowStr)
 	}
 
-	token, err := a.jwtMgr.IssueUserToken("admin", "admin", adminDisplayName, "admin", 168*time.Hour)
+	token, err := a.jwtMgr.IssueUserToken("admin", "admin", adminDisplayName, "admin", 24*time.Hour)
 	if err != nil {
 		WriteJSONError(w, http.StatusInternalServerError, "ERR_TOKEN_ISSUE_FAILED")
 		return
@@ -725,7 +831,7 @@ func (a *ServerApp) handleUserChangePassword(w http.ResponseWriter, r *http.Requ
 		WriteJSONError(w, http.StatusInternalServerError, "ERR_UPDATE_PASSWORD_FAILED")
 		return
 	}
-	token, _ := a.jwtMgr.IssueUserToken(targetID, targetUsername, newName, targetRole, 168*time.Hour)
+	token, _ := a.jwtMgr.IssueUserToken(targetID, targetUsername, newName, targetRole, 24*time.Hour)
 	WriteJSONResponse(w, http.StatusOK, map[string]interface{}{
 		"updated": true,
 		"token":   token,

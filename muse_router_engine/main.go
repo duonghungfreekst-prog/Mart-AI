@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/rand"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -31,17 +33,31 @@ type ServerApp struct {
 }
 
 func NewServerApp(dataDir string) (*ServerApp, error) {
+	// [FIX #2] MUSE_VAULT_MASTER_KEY bat buoc — khong con hard-code fallback
 	masterKey := os.Getenv("MUSE_VAULT_MASTER_KEY")
 	if masterKey == "" {
-		masterKey = "muse_router_default_vault_2026_key"
+		// Sinh key ngau nhien an toan cho session nay (khong luu disk)
+		// Canh bao: moi lan khoi dong lai se doi key -> vault encrypt lai tu dong
+		LogWarn("MUSE_VAULT_MASTER_KEY chua duoc dat — dang sinh key ngau nhien cho session nay. Dat bien nay de Vault du lieu on dinh giua cac lan khoi dong.")
+		keyBytes := make([]byte, 32)
+		if _, err := rand.Read(keyBytes); err != nil {
+			return nil, fmt.Errorf("khong the sinh session master key: %w", err)
+		}
+		masterKey = hex.EncodeToString(keyBytes)
 	}
 	aiBridgeURL := os.Getenv("MUSE_AI_BRIDGE_URL")
 	if aiBridgeURL == "" {
 		aiBridgeURL = "http://127.0.0.1:18089"
 	}
+	// [FIX #2] aiBridgeToken — khong con hard-code; sinh ngau nhien neu thieu
 	aiBridgeToken := os.Getenv("MUSE_INTERNAL_BRIDGE_TOKEN")
 	if aiBridgeToken == "" {
-		aiBridgeToken = "muse_bridge_internal_token_2026"
+		LogWarn("MUSE_INTERNAL_BRIDGE_TOKEN chua duoc dat — dang sinh token ngau nhien cho session nay.")
+		tokenBytes := make([]byte, 24)
+		if _, err := rand.Read(tokenBytes); err != nil {
+			return nil, fmt.Errorf("khong the sinh bridge token: %w", err)
+		}
+		aiBridgeToken = hex.EncodeToString(tokenBytes)
 	}
 
 	cache := NewTTLCache()
@@ -1279,7 +1295,14 @@ func main() {
 	defer app.pool.Shutdown()
 
 	addr := host + ":" + port
-	if adminPassword() == "" && (os.Getenv("PORT") != "" || os.Getenv("RENDER") != "") {
+	// [FIX #5] Canh bao ro rang khi MART_ADMIN_PASSWORD trong - bat ky moi truong nao
+	if adminPassword() == "" {
+		if os.Getenv("PORT") != "" || os.Getenv("RENDER") != "" {
+			LogWarn("!!!NGUY HIEM!!! MART_ADMIN_PASSWORD chua duoc dat: web dang mo cong khai!")
+		} else {
+			LogWarn("MART_ADMIN_PASSWORD chua duoc dat: hien dang chay khong xac thuc. Dat bien nay de bao ve.")
+		}
+		// block cu khong ap dung nua
 		LogWarn("MART_ADMIN_PASSWORD chưa được đặt: web đang mở công khai và API /api/accounts/ingest bị tắt")
 	}
 	LogInfo("MuseRouter Engine & Web Studio started at http://%s", addr)
@@ -1288,9 +1311,10 @@ func main() {
 		Addr:              addr,
 		Handler:           app.Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       200 * time.Second,
-		WriteTimeout:      200 * time.Second,
+		ReadTimeout:       210 * time.Second, // [FIX #4] tuong minh 210s cho chat stream
+		WriteTimeout:      210 * time.Second,
 		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20, // [FIX #4] gioi han header 1MB
 	}
 
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

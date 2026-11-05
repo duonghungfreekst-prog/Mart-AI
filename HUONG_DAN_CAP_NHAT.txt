@@ -1,0 +1,28 @@
+================================================================================
+  MUSEROUTER - GOI CAP NHAT HE THONG HOAN CHINH (UPDATE PACKAGE)
+  Phien ban: Antigravity Polyglot v2.4 (Security & Auto Tunnel Patch)
+  Ngay dong goi: 04/11/2026
+================================================================================
+
+1. NHUNG DIEM MOI TRONG BAN CAP NHAT NAY:
+   - Bao mat: Rate Limiting chong Brute Force login (5 lan sai/15p/IP).
+   - Bao mat: Xoa toan bo secret key hardcode, sinh key ma hoa an toan.
+   - Bao mat: Chuan hoa JWT Token TTL 24 gio, MaxHeaderBytes 1MB.
+   - Ket noi: Tuong thich hoan hao XAMPP MySQL localhost:3306 khong SSL.
+   - Tu dong: Cloudflare Tunnel tu dong chay ngam khi khoi dong server.
+   - Tu dong: Tu dong ghi link HTTPS cho khach vao file LINK_KHACH_TRUY_CAP.txt.
+   - Dieu khien: Trung tam All-in-One tich hop ca Apache, MySQL va MuseRouter.
+
+2. HUONG DAN CAP NHAT TREN MAY DANG CHAY:
+   Cach 1 (Khuyen dung - An toan 100% co tu dong sao luu):
+     Buoc 1: Mo file [ CAI_DAT_VA_QUAN_LY_ALL_IN_ONE.bat ] (hoac install_service.bat).
+     Buoc 2: Chon phim [8] (Cap nhat he thong qua file .zip).
+     Buoc 3: Keo tha file "MuseRouter_Update_Latest.zip" nay vao cua so roi nhan Enter.
+     -> He thong se tu dong dung dich vu, backup ban cu, giai nen de len va restart lai!
+
+   Cach 2 (Thu cong):
+     - Dung he thong (chay DUNG_TAT_CA.bat).
+     - Giai nen toan bo noi dung file zip nay de truc tiep len thu muc goc cua du an.
+     - Du lieu database MySQL khong bi anh huong.
+     - Chay lai KHOI_DONG_NHANH_PORTABLE.bat hoac CAI_DAT_VA_QUAN_LY_ALL_IN_ONE.bat.
+================================================================================
