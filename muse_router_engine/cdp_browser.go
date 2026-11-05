@@ -489,6 +489,7 @@ func (m *CDPBrowserManager) ensureBrowserLocked(ctx context.Context) (*cdpClient
 		"--disable-setuid-sandbox",
 		"--disable-dev-shm-usage",
 		"--disable-gpu",
+		"--disable-software-rasterizer",
 		"--disable-blink-features=AutomationControlled",
 		"--user-agent=" + cdpDefaultUA,
 		"--no-first-run",

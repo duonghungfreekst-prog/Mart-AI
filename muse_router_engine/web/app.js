@@ -2464,7 +2464,7 @@
         renderAccountsTable();
       }
       throw new Error(
-        "Máy chủ Render không có trình duyệt ngầm. Vui lòng cài đặt Tiện ích 'Mart AI Extension' trên trình duyệt (hoặc khởi chạy Mart AI trên máy tính bằng tệp BAT_DUONG_HAM_CLOUDFLARE.bat) để gửi tin nhắn."
+        "Máy chủ đang bận xử lý hoặc đang khởi động phiên làm việc ngầm. Vui lòng bấm gửi lại sau giây lát."
       );
     }
 
