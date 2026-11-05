@@ -218,13 +218,17 @@ const cdpMuseSnapshotJS = `
   var userTurnSent = !!lastUnseenUserEl;
   var mdList = [];
   var unseenMdList = [];
-  for (var i = 0; i < leafEls.length; i++) {
-    var m = nodeToMd(leafEls[i], 0).replace(/\n{3,}/g, "\n\n").trim();
+  var targetEls = leafEls.length > 0 ? leafEls : rawEls;
+  for (var i = 0; i < targetEls.length; i++) {
+    var m = nodeToMd(targetEls[i], 0).replace(/\n{3,}/g, "\n\n").trim();
+    if (!m) {
+      m = (targetEls[i].innerText || targetEls[i].textContent || "").trim();
+    }
     if (m.length > 0) {
       mdList.push(m);
-      if (leafEls[i].getAttribute("data-mart-seen") !== "1") {
+      if (targetEls[i].getAttribute("data-mart-seen") !== "1") {
         if (lastUnseenUserEl) {
-          if (Boolean(lastUnseenUserEl.compareDocumentPosition(leafEls[i]) & 4)) {
+          if (Boolean(lastUnseenUserEl.compareDocumentPosition(targetEls[i]) & 4)) {
             unseenMdList.push(m);
           }
         } else {
@@ -1791,9 +1795,6 @@ func (m *CDPBrowserManager) InspectWarmTab(parentCtx context.Context, req CDPIns
 	if err != nil {
 		return nil, fmt.Errorf("Lỗi giải mã thông tin tài khoản: %w", err)
 	}
-
-	m.chatMu.Lock()
-	defer m.chatMu.Unlock()
 
 	ctx, cancel := context.WithTimeout(parentCtx, 45*time.Second)
 	defer cancel()
