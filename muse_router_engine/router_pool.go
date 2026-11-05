@@ -1798,6 +1798,7 @@ func (p *MuseRouterPool) RouteAndExecuteChatForOwner(
 	userPrompt string,
 	attachments []ChatAttachment,
 	idempotencyKey string,
+	onChunk ...func(chunkType string, data map[string]interface{}),
 ) (map[string]interface{}, error) {
 	if idempotencyKey != "" {
 		cacheKey := "idem:" + ownerID + ":" + idempotencyKey
@@ -1884,9 +1885,27 @@ func (p *MuseRouterPool) RouteAndExecuteChatForOwner(
 				errMsg = errDirect.Error()
 			} else if candidate.HasHatchSess {
 				if p.cdpManager != nil && p.cdpManager.HasBrowserAvailable() {
-					replyCDP, tokCDP, latCDP, errCDP := p.cdpManager.ExecuteMuseChat(parentCtx, candidate, userPrompt)
+					var onChunkCDP func(delta string, fullText string)
+					if len(onChunk) > 0 && onChunk[0] != nil {
+						onChunkCDP = func(delta string, fullText string) {
+							onChunk[0]("delta", map[string]interface{}{
+								"thread_id":   resolvedThreadID,
+								"turn_id":     turnID,
+								"delta":       delta,
+								"content":     fullText,
+								"routed_node": candidate.Label,
+								"node_id":     candidate.ID,
+								"done":        false,
+							})
+						}
+					}
+					replyCDP, tokCDP, latCDP, errCDP := p.cdpManager.ExecuteMuseChat(parentCtx, candidate, userPrompt, onChunkCDP)
 					if errCDP == nil {
-						return p.CompleteBrowserRelayTurn(resolvedThreadID, turnID, candidate.ID, model, replyCDP, tokCDP, latCDP, "")
+						resRelay, errRelay := p.CompleteBrowserRelayTurn(resolvedThreadID, turnID, candidate.ID, model, replyCDP, tokCDP, latCDP, "")
+						if errRelay == nil && len(onChunk) > 0 && onChunk[0] != nil {
+							onChunk[0]("done", resRelay)
+						}
+						return resRelay, errRelay
 					}
 					LogWarn("CDP server-side chat error on %s: %v", candidate.Label, errCDP)
 					p.unmarkNodeRunningKeepReady(candidate.ID)
@@ -1984,6 +2003,9 @@ func (p *MuseRouterPool) RouteAndExecuteChatForOwner(
 
 		if idempotencyKey != "" {
 			p.cache.Set("idem:"+ownerID+":"+idempotencyKey, result, 5*time.Minute)
+		}
+		if len(onChunk) > 0 && onChunk[0] != nil {
+			onChunk[0]("done", result)
 		}
 		return result, nil
 	}
