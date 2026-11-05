@@ -1627,7 +1627,7 @@ function actionsBar(getText, canRegen){
     }
     if(a==="like"){ b.classList.toggle("liked"); var d = bar.querySelector('[data-a="dislike"]'); if(d) d.classList.remove("disliked"); if(b.classList.contains("liked")) toast("Cảm ơn phản hồi của bạn"); }
     if(a==="dislike"){ b.classList.toggle("disliked"); var l = bar.querySelector('[data-a="like"]'); if(l) l.classList.remove("liked"); if(b.classList.contains("disliked")) toast("Đã ghi nhận — Mart sẽ trả lời tốt hơn"); }
-    if(a==="regen"){ if(lastUserText) brainReply(lastUserText, true); }
+    if(a==="regen"){ if(lastUserText) handleSend(lastUserText); }
   });
   return bar;
 }
@@ -1788,6 +1788,32 @@ function showTyping(){
 }
 function hideTyping(){ if(workPhaseTimer){ clearInterval(workPhaseTimer); workPhaseTimer = null; } var t = $("#typingRow"); if(t) t.remove(); }
 
+function startConversation(){
+  if(!started){ started = true; welcomeEl.style.display = "none"; }
+}
+
+function setTitle(t){
+  var el = $("#chatTitle");
+  if(el) el.textContent = t;
+}
+
+var FLOWS = {
+  code:    { title:"Hàm debounce trong JavaScript", user:"Viết hàm debounce trong JavaScript giúp mình, kèm ví dụ sử dụng" },
+  write:   { title:"Viết email xin nghỉ phép", user:"Viết giúp mình email xin nghỉ phép lịch sự" },
+  analyze: { title:"So sánh React và Vue", user:"So sánh React và Vue giúp mình, nên chọn cái nào?" },
+  explain: { title:"Giải thích đệ quy cho người mới", user:"Giải thích đệ quy cho người mới giúp mình, dễ hiểu thôi" }
+};
+
+function runFlow(key){
+  var f = FLOWS[key]; if(!f) return;
+  closeDrawers();
+  handleSend(f.user);
+}
+
+stopBtn.addEventListener("click", function(){
+  if(streaming) streaming.cancelled = true;
+});
+
 /* ===== LOGIC KẾT NỐI THẬT VỚI MART AI BACKEND (100% CHAT STREAMING & THREADS THẬT) ===== */
 
 function wireCodeCopy(scope){
@@ -1937,6 +1963,9 @@ async function handleSend(text){
   if(!text || !text.trim() || isSending) return;
   text = text.trim();
   isSending = true;
+  stopBtn.classList.add("show");
+  sendBtn.style.display = "none";
+  streaming = { cancelled: false };
   startConversation();
   addUserMsg(text);
   lastUserText = text;
@@ -1989,8 +2018,16 @@ async function handleSend(text){
       var buffer = "";
 
       while(true){
+        if(streaming && streaming.cancelled){
+          try { await reader.cancel(); } catch(e){}
+          break;
+        }
         var chunk = await reader.read();
         if(chunk.done) break;
+        if(streaming && streaming.cancelled){
+          try { await reader.cancel(); } catch(e){}
+          break;
+        }
         buffer += decoder.decode(chunk.value, { stream: true });
         var parts = buffer.split("\n\n");
         buffer = parts.pop();
@@ -2085,6 +2122,9 @@ async function handleSend(text){
     toast(err.message || "Không thể gửi tin nhắn");
   } finally {
     isSending = false;
+    streaming = null;
+    stopBtn.classList.remove("show");
+    sendBtn.style.display = "";
   }
 }
 
