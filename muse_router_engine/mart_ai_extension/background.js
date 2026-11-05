@@ -646,10 +646,10 @@ async function evalInTab(tabId, func, args) {
   return results && results[0] ? results[0].result : null;
 }
 
-async function executeMuseChatDirect(prompt, cookieHeader) {
+async function executeMuseChatDirect(prompt, cookieHeader, forceReload) {
   var startTs = Date.now();
   var switched = await applyRelayAccountCookies(cookieHeader || "");
-  var tabId = await ensureMuseWorkerTab(switched);
+  var tabId = await ensureMuseWorkerTab(switched || Boolean(forceReload));
 
   // Chờ composer sẵn sàng & lịch sử .prose qua Noise WebSocket tải xong hoàn toàn
   var baseline = null;
@@ -744,10 +744,10 @@ async function executeMuseChatDirect(prompt, cookieHeader) {
   };
 }
 
-function enqueueMuseChat(prompt, cookieHeader) {
+function enqueueMuseChat(prompt, cookieHeader, forceReload) {
   function executeWithDeadline() {
     return withTimeout(
-      executeMuseChatDirect(prompt, cookieHeader),
+      executeMuseChatDirect(prompt, cookieHeader, forceReload),
       88000,
       "Hết thời gian chờ tab Muse; hãy mở lại tab Muse rồi gửi lại."
     );
@@ -797,7 +797,7 @@ function handleBridgeAction(msg, sendResponse) {
     return true;
   }
   if (action === "execute_muse_chat") {
-    enqueueMuseChat(msg.prompt || "", msg.cookie || "")
+    enqueueMuseChat(msg.prompt || "", msg.cookie || "", Boolean(msg.forceReload))
       .then(sendResponse)
       .catch(function (err) {
         sendResponse({ ok: false, error: (err && err.message) || "Lỗi thực thi trên tab muse.ai" });

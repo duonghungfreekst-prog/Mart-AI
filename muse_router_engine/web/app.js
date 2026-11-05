@@ -2030,9 +2030,8 @@
     }
     if (ev.data.__mart_ext_push === true && ev.data.event === "MART_EXT_SESSION_READY") {
       state.hasMartExtension = true;
-      if (isExtVersionAtLeast(ev.data.version, "1.2.4")) {
-        state.canRelayChatViaExtension = true;
-      }
+      state.canRelayChatViaExtension = true;
+      state.extVersion = ev.data.version || "1.2.2";
       var modal = document.getElementById("martCloudExtModal");
       if (modal && modal.parentNode) modal.remove();
       refreshCloudExtensionBanner();
@@ -2049,7 +2048,8 @@
       .then(function (p) {
         if (p && p.ok && p.supportsChatRelay !== false) {
           state.hasMartExtension = true;
-          state.canRelayChatViaExtension = isExtVersionAtLeast(p.version, "1.2.4");
+          state.canRelayChatViaExtension = true;
+          state.extVersion = p.version || "1.2.2";
         }
       })
       .catch(function () {});
@@ -2604,6 +2604,35 @@
       throw new Error(errMsg);
     }
 
+    let finalContent = String(relayOut.content || "").trim();
+    // BẢO VỆ CHỐNG LẤY NHẦM TIN NHẮN CŨ:
+    // Kiểm tra tin nhắn assistant gần nhất trong thread
+    const curThread = (state.threads || []).find(function(t) { return t.id === (res.thread_id || state.activeThreadId); });
+    let lastAssistantContent = "";
+    if (curThread && Array.isArray(curThread.messages)) {
+      for (let m = curThread.messages.length - 1; m >= 0; m--) {
+        if (curThread.messages[m].role === "assistant" && curThread.messages[m].content) {
+          lastAssistantContent = curThread.messages[m].content.trim();
+          break;
+        }
+      }
+    }
+    if (lastAssistantContent && finalContent === lastAssistantContent) {
+      console.warn("[MART RELAY] Phat hien Extension tra ve trung tin nhan cu. Tu dong yeu cau lam moi tab de lay phan hoi moi...");
+      if (typeof onProgress === "function") {
+        onProgress(65, "Đang làm mới phiên Muse.ai để nhận câu trả lời mới...");
+      }
+      const retryOut = await sendExtensionMessage({
+        action: "execute_muse_chat",
+        prompt: res.prompt || "",
+        cookie: res.relay_cookie || "",
+        forceReload: true,
+      });
+      if (retryOut && retryOut.ok && retryOut.content && retryOut.content.trim() !== lastAssistantContent) {
+        finalContent = retryOut.content.trim();
+      }
+    }
+
     const completed = await apiRequest("/api/chat/relay-complete", {
       method: "POST",
       body: {
@@ -2611,7 +2640,7 @@
         turn_id: res.turn_id || "",
         node_id: res.node_id || "",
         model: res.model || "",
-        reply: relayOut.content,
+        reply: finalContent,
         tokens_used: relayOut.tokens_used || 0,
         latency_ms: relayOut.latency_ms || 1000,
       },
