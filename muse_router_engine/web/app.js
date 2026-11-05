@@ -2009,7 +2009,7 @@
 
   function isExtVersionAtLeast(ver, minVer) {
     var a = String(ver || "0.0.0").split(".").map(function (x) { return parseInt(x, 10) || 0; });
-    var b = String(minVer || "1.2.4").split(".").map(function (x) { return parseInt(x, 10) || 0; });
+    var b = String(minVer || "1.2.2").split(".").map(function (x) { return parseInt(x, 10) || 0; });
     for (var i = 0; i < 3; i++) {
       var av = a[i] || 0;
       var bv = b[i] || 0;

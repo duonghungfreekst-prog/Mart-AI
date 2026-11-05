@@ -57,7 +57,7 @@ async function broadcastSessionReadyToOpenTabs(injectIfMissing) {
                 event: "MART_EXT_SESSION_READY",
                 cookie: cookies.sess ? cookies.header : "",
                 hasExistingSession: !!cookies.sess,
-                version: "1.2.4",
+                version: "1.2.5",
               },
               function () {
                 void chrome.runtime.lastError;
@@ -73,7 +73,7 @@ async function broadcastSessionReadyToOpenTabs(injectIfMissing) {
             event: "MART_EXT_SESSION_READY",
             cookie: cookies.sess ? cookies.header : "",
             hasExistingSession: !!cookies.sess,
-            version: "1.2.4",
+            version: "1.2.5",
           },
           function () {
             void chrome.runtime.lastError;
@@ -584,9 +584,6 @@ function domSubmitMusePrompt(promptText) {
 
   return new Promise(function (resolve) {
     setTimeout(function () {
-      Array.from(document.querySelectorAll(".prose, div.flex.flex-col.gap-2, [data-message-author-role]")).forEach(function (p) {
-        p.setAttribute("data-mart-seen", "1");
-      });
       function tryClickSendButton() {
         var root = el.parentElement;
         for (var d = 0; d < 5 && root; d++) {
@@ -703,17 +700,23 @@ async function executeMuseChatDirect(prompt, cookieHeader, forceReload) {
     var cur = await evalInTab(tabId, domReadMuseSnapshot, []);
     if (!cur) continue;
 
-    var replyMd = (cur.unseenLastMd || "").trim();
-    if (!replyMd && cur.count > baseline.count && cur.lastMd !== baseline.lastMd) {
+    var replyMd = "";
+    if (cur.lastMd && cur.lastMd !== baseline.lastMd && cur.lastMd !== cleanPrompt) {
       replyMd = (cur.lastMd || "").trim();
+    } else if (cur.unseenLastMd && cur.unseenLastMd !== baseline.lastMd && cur.unseenLastMd !== cleanPrompt) {
+      replyMd = (cur.unseenLastMd || "").trim();
     }
-    if (!replyMd || replyMd === baseline.lastMd || replyMd === cleanPrompt) {
+    if (!replyMd) {
+      if (cur.composerValue && refillAttempts < 4) {
+        refillAttempts++;
+        await evalInTab(tabId, domSubmitMusePrompt, [prompt]);
+      }
       continue;
     }
 
     if (replyMd === lastNewMd) {
       stableTicks += 1;
-      var reqTicks = cur.isGenerating ? 8 : 4;
+      var reqTicks = cur.isGenerating ? 7 : 3;
       if (stableTicks >= reqTicks) {
         break;
       }
@@ -762,7 +765,7 @@ function handleBridgeAction(msg, sendResponse) {
   var action = (msg && msg.action) || "";
   if (action === "ping") {
     martCollectMuseCookies().then(function (c) {
-      sendResponse({ ok: true, version: "1.2.4", hasExistingSession: !!c.sess, supportsChatRelay: true });
+      sendResponse({ ok: true, version: "1.2.5", hasExistingSession: !!c.sess, supportsChatRelay: true });
     });
     return true;
   }
@@ -770,7 +773,7 @@ function handleBridgeAction(msg, sendResponse) {
     martCollectMuseCookies().then(function (c) {
       sendResponse({
         ok: true,
-        version: "1.2.4",
+        version: "1.2.5",
         hasExistingSession: !!c.sess,
         supportsChatRelay: true,
         cookie: c.sess ? c.header : "",

@@ -1343,7 +1343,7 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 	defer m.chatMu.Unlock()
 
 	startTs := time.Now()
-	ctx, cancel := context.WithTimeout(parentCtx, 75*time.Second)
+	ctx, cancel := context.WithTimeout(parentCtx, 28*time.Second)
 	defer cancel()
 
 	targetOrigin := strings.TrimRight(strings.TrimSpace(candidate.UpstreamURL), "/")
@@ -1428,9 +1428,6 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 			if (!el) return false;
 			var rem = ((el.value !== undefined ? el.value : el.textContent) || '').trim();
 			if (!rem) return true;
-			Array.from(document.querySelectorAll('.prose, div.flex.flex-col.gap-2, [data-message-author-role]')).forEach(function(p){
-				p.setAttribute('data-mart-seen', '1');
-			});
 			var root = el.parentElement;
 			for (var d = 0; d < 5 && root; d++) {
 				var sendBtn = root.querySelector('button[aria-label="Gửi"]:not(:disabled), button[aria-label*="Gửi" i]:not(:disabled), button[aria-label="Send"]:not(:disabled), button[aria-label*="Send" i]:not(:disabled), button[data-testid*="send" i]:not(:disabled)');
@@ -1474,7 +1471,7 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 	clickSendOrEnter()
 
 	cleanPrompt := strings.TrimSpace(userPrompt)
-	deadline := time.Now().Add(75 * time.Second)
+	deadline := time.Now().Add(25 * time.Second)
 	lastNewMd := ""
 	stableTicks := 0
 	resendAttempts := 0
@@ -1498,20 +1495,22 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 			continue
 		}
 
-		replyMd := strings.TrimSpace(cur.UnseenLastMd)
-		if replyMd == "" && cur.Count > baseline.Count && cur.LastMd != baseline.LastMd {
+		replyMd := ""
+		if cur.LastMd != "" && cur.LastMd != baseline.LastMd && cur.LastMd != cleanPrompt {
 			replyMd = strings.TrimSpace(cur.LastMd)
+		} else if cur.UnseenLastMd != "" && cur.UnseenLastMd != baseline.LastMd && cur.UnseenLastMd != cleanPrompt {
+			replyMd = strings.TrimSpace(cur.UnseenLastMd)
 		}
-		if replyMd == "" || replyMd == baseline.LastMd || replyMd == cleanPrompt {
+		if replyMd == "" {
 			continue
 		}
 
 		if replyMd == lastNewMd {
 			stableTicks++
-			// Nếu Muse không còn generating thì chờ 4 nhịp (~1s); nếu trang có background spinner cố định thì chờ 8 nhịp (~2s) ổn định
-			reqTicks := 4
+			// Nếu Muse không còn generating thì chờ 3 nhịp (~750ms); nếu trang có background spinner cố định thì chờ 7 nhịp (~1.7s) ổn định
+			reqTicks := 3
 			if cur.IsGenerating {
-				reqTicks = 8
+				reqTicks = 7
 			}
 			if stableTicks >= reqTicks {
 				break

@@ -1889,10 +1889,9 @@ func (p *MuseRouterPool) RouteAndExecuteChatForOwner(
 	for _, candidate := range candidates {
 		p.markNodeRunning(candidate.ID)
 		startTs := time.Now()
-		// Trên Cloud (không có Python Bridge local) và máy chủ không có sẵn Chromium Headless (CDP),
-		// nếu trình duyệt người dùng có cài Mart AI Extension thì mới gửi qua Extension ngay lập tức.
-		// Nếu máy chủ có sẵn Chromium Headless (p.cdpManager.HasBrowserAvailable()), ưu tiên chạy CDP trực tiếp trên máy chủ!
-		if !skipClientRelay && forceClientRelay && candidate.AuthType == "cookie" && candidate.HasHatchSess && !p.shouldTryPythonBridge() && (p.cdpManager == nil || !p.cdpManager.HasBrowserAvailable()) {
+		// Nếu trình duyệt người dùng có cài Mart AI Extension (forceClientRelay=true), ưu tiên gửi qua Extension ngay lập tức!
+		// Extension chạy trên máy người dùng, IP người dùng, tab Muse thật, không tốn RAM 512MB trên Render Cloud.
+		if !skipClientRelay && forceClientRelay && candidate.AuthType == "cookie" && candidate.HasHatchSess && !p.shouldTryPythonBridge() {
 			LogInfo("Routing web chat through client browser relay for node %s", candidate.ID)
 			return p.prepareBrowserRelayResponse(candidate, resolvedThreadID, turnID, model, userPrompt)
 		}
@@ -1968,7 +1967,7 @@ func (p *MuseRouterPool) RouteAndExecuteChatForOwner(
 						return p.CompleteBrowserRelayTurn(resolvedThreadID, turnID, candidate.ID, model, replyCDP, tokCDP, latCDP, "")
 					}
 					LogWarn("CDP server-side chat error on %s: %v", candidate.Label, errCDP)
-					if !skipClientRelay && forceClientRelay {
+					if !skipClientRelay {
 						LogInfo("Falling back from CDP error to client browser relay on %s", candidate.Label)
 						return p.prepareBrowserRelayResponse(candidate, resolvedThreadID, turnID, model, userPrompt)
 					}
