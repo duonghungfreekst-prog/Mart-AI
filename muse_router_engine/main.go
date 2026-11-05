@@ -553,6 +553,7 @@ func (a *ServerApp) Routes() http.Handler {
 			Workspace       string           `json:"workspace"`
 			Prompt          string           `json:"prompt"`
 			Attachments     []ChatAttachment `json:"attachments"`
+			Stream          bool             `json:"stream"`
 		}
 		if err := a.readJSONBody(r, &req); err != nil {
 			WriteJSONError(w, http.StatusBadRequest, "ERR_INVALID_INPUT")
@@ -564,6 +565,54 @@ func (a *ServerApp) Routes() http.Handler {
 			preferredNode = "auto"
 		}
 		idemKey := r.Header.Get("X-Idempotency-Key")
+
+		// Hỗ trợ Server-Sent Events (SSE) Streaming thời gian thực
+		wantsStream := strings.Contains(r.Header.Get("Accept"), "text/event-stream") || req.Stream
+		flusher, canFlush := w.(http.Flusher)
+
+		if wantsStream && canFlush {
+			w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-cache, no-transform")
+			w.Header().Set("Connection", "keep-alive")
+			w.Header().Set("X-Accel-Buffering", "no")
+			flusher.Flush()
+
+			onStreamChunk := func(chunkType string, data map[string]interface{}) {
+				jsonData, err := json.Marshal(data)
+				if err == nil {
+					fmt.Fprintf(w, "event: %s\ndata: %s\n\n", chunkType, string(jsonData))
+					flusher.Flush()
+				}
+			}
+
+			res, err := a.pool.RouteAndExecuteChatForOwner(
+				r.Context(),
+				actor.OwnerScope(),
+				req.ThreadID,
+				preferredNode,
+				req.Model,
+				req.Workspace,
+				req.Prompt,
+				req.Attachments,
+				idemKey,
+				onStreamChunk,
+			)
+			if err != nil {
+				errData, _ := json.Marshal(map[string]string{"error": err.Error()})
+				fmt.Fprintf(w, "event: error\ndata: %s\n\n", string(errData))
+				flusher.Flush()
+				return
+			}
+			if actor.Role == "admin" {
+				res["summary"] = a.pool.GetSummary()
+			} else {
+				res["summary"] = a.pool.GetPublicSummary()
+			}
+			doneBytes, _ := json.Marshal(res)
+			fmt.Fprintf(w, "event: done\ndata: %s\n\n", string(doneBytes))
+			flusher.Flush()
+			return
+		}
 		res, err := a.pool.RouteAndExecuteChatForOwner(
 			r.Context(),
 			actor.OwnerScope(),
