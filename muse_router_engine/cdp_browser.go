@@ -204,6 +204,20 @@ const cdpMuseSnapshotJS = `
   var leafEls = rawEls.filter(function(el) {
     return !rawEls.some(function(other) { return other !== el && el.contains(other); });
   });
+  var expectedNorm = String(window.__martExpectedPrompt || "").replace(/\s+/g, " ").trim().toLowerCase();
+  var expectedPrefix = expectedNorm.slice(0, 28);
+  var userCandidates = Array.from(document.querySelectorAll('div.flex.flex-col.gap-2, [data-message-author-role="user"]')).filter(function(el) {
+    if (el.getAttribute("data-mart-seen") === "1") return false;
+    if (el.closest('form, textarea, [contenteditable="true"]')) return false;
+    if (el.querySelector('.prose')) return false;
+    var tNorm = (el.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+    var isUserPrefix = tNorm.indexOf("bạn:") === 0 || tNorm.indexOf("you:") === 0 || el.getAttribute("data-message-author-role") === "user";
+    if (!isUserPrefix) return false;
+    if (expectedPrefix && tNorm.indexOf(expectedPrefix) === -1) return false;
+    return true;
+  });
+  var lastUnseenUserEl = userCandidates.length > 0 ? userCandidates[userCandidates.length - 1] : null;
+  var userTurnSent = !!lastUnseenUserEl;
   var mdList = [];
   var unseenMdList = [];
   for (var i = 0; i < leafEls.length; i++) {
@@ -211,7 +225,13 @@ const cdpMuseSnapshotJS = `
     if (m.length > 0) {
       mdList.push(m);
       if (leafEls[i].getAttribute("data-mart-seen") !== "1") {
-        unseenMdList.push(m);
+        if (lastUnseenUserEl) {
+          if (Boolean(lastUnseenUserEl.compareDocumentPosition(leafEls[i]) & 4)) {
+            unseenMdList.push(m);
+          }
+        } else if (!expectedPrefix) {
+          unseenMdList.push(m);
+        }
       }
     }
   }
@@ -223,6 +243,7 @@ const cdpMuseSnapshotJS = `
     hasComposer: !!composer,
     composerValue: compVal,
     isGenerating: isGen,
+    userTurnSent: userTurnSent,
     count: count,
     lastMd: lastMd,
     unseenCount: unseenCount,
@@ -1176,6 +1197,7 @@ type cdpMuseSnap struct {
 	HasComposer   bool   `json:"hasComposer"`
 	ComposerValue string `json:"composerValue"`
 	IsGenerating  bool   `json:"isGenerating"`
+	UserTurnSent  bool   `json:"userTurnSent"`
 	Count         int    `json:"count"`
 	LastMd        string `json:"lastMd"`
 	UnseenCount   int    `json:"unseenCount"`
@@ -1344,7 +1366,7 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 			// Khi mới mở trang muse.ai, SSR render <textarea> ngay ở ~300ms nhưng lịch sử .prose qua Noise WebSocket
 			// mất ~3.0-3.8 giây mới tải xong. Không bao giờ chốt baseline khi Count == 0 trước 18 nhịp (~4.5s).
 			if snap.Count > 0 {
-				if snap.Count == prevCnt && snap.LastMd == prevMd && !snap.IsGenerating {
+				if snap.Count == prevCnt && snap.LastMd == prevMd {
 					stableBaseTicks++
 					if stableBaseTicks >= 2 {
 						break
@@ -1352,7 +1374,7 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 				} else {
 					stableBaseTicks = 0
 				}
-			} else if i >= 18 && !snap.IsGenerating {
+			} else if i >= 18 {
 				break
 			}
 			prevCnt = snap.Count
@@ -1371,11 +1393,12 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 		return "", 0, 0, errors.New("Phiên đăng nhập muse.ai đã hết hạn hoặc trang chưa sẵn sàng — hãy đăng nhập lại tài khoản")
 	}
 
-	// Đánh dấu toàn bộ bong bóng .prose cũ đã có trên DOM trước khi gửi tin nhắn mới,
+	// Đánh dấu toàn bộ bong bóng .prose và tin nhắn cũ đã có trên DOM trước khi gửi tin nhắn mới,
 	// điền nội dung vào ô nhập và bấm nút Gửi chính thức của Muse.ai
 	promptJSON, _ := json.Marshal(userPrompt)
 	markAndFillJS := fmt.Sprintf(`(function(txt){
-		Array.from(document.querySelectorAll('.prose')).forEach(function(el){
+		window.__martExpectedPrompt = String(txt || '').trim();
+		Array.from(document.querySelectorAll('.prose, div.flex.flex-col.gap-2, [data-message-author-role]')).forEach(function(el){
 			el.setAttribute('data-mart-seen', '1');
 		});
 		var el = document.querySelector('textarea[aria-label="Message"], textarea[aria-label="Nhắn tin"], textarea, [contenteditable="true"]');
@@ -1400,13 +1423,13 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 
 	clickSendOrEnter := func() {
 		clickSendJS := `(function(){
-			Array.from(document.querySelectorAll('.prose')).forEach(function(p){
-				p.setAttribute('data-mart-seen', '1');
-			});
 			var el = document.querySelector('textarea[aria-label="Message"], textarea[aria-label="Nhắn tin"], textarea, [contenteditable="true"]');
 			if (!el) return false;
 			var rem = ((el.value !== undefined ? el.value : el.textContent) || '').trim();
 			if (!rem) return true;
+			Array.from(document.querySelectorAll('.prose, div.flex.flex-col.gap-2, [data-message-author-role]')).forEach(function(p){
+				p.setAttribute('data-mart-seen', '1');
+			});
 			var root = el.parentElement;
 			for (var d = 0; d < 5 && root; d++) {
 				var sendBtn = root.querySelector('button[aria-label="Gửi"]:not(:disabled), button[aria-label*="Gửi" i]:not(:disabled), button[aria-label="Send"]:not(:disabled), button[aria-label*="Send" i]:not(:disabled), button[data-testid*="send" i]:not(:disabled)');
@@ -1454,6 +1477,8 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 	lastNewMd := ""
 	stableTicks := 0
 	resendAttempts := 0
+	noUserTurnTicks := 0
+	refillAttempts := 0
 
 	for time.Now().Before(deadline) {
 		select {
@@ -1468,42 +1493,36 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 		}
 
 		// Nếu văn bản vẫn còn nguyên trong ô nhập (do WebSocket vừa mới kết nối xong), bấm Gửi lại
-		if cur.ComposerValue != "" && lastNewMd == "" && resendAttempts < 8 {
-			resendAttempts++
-			clickSendOrEnter()
+		if !cur.UserTurnSent {
+			noUserTurnTicks++
+			if cur.ComposerValue != "" && resendAttempts < 8 {
+				resendAttempts++
+				clickSendOrEnter()
+				continue
+			}
+			if noUserTurnTicks >= 6 && refillAttempts < 5 {
+				refillAttempts++
+				noUserTurnTicks = 0
+				_ = wt.Page.Call(ctx, "Runtime.evaluate", map[string]interface{}{"expression": markAndFillJS}, nil)
+				time.Sleep(150 * time.Millisecond)
+				clickSendOrEnter()
+			}
 			continue
 		}
 
 		replyMd := strings.TrimSpace(cur.UnseenLastMd)
-		if replyMd == "" && cur.Count > baseline.Count && cur.LastMd != baseline.LastMd {
-			replyMd = strings.TrimSpace(cur.LastMd)
-		}
-		if replyMd == "" || replyMd == baseline.LastMd || replyMd == cleanPrompt {
-			continue
-		}
-
-		// Nếu Muse.ai đang trong trạng thái sinh nội dung / render video (spinning/generating), không bao giờ ngắt sớm!
-		if cur.IsGenerating {
-			if replyMd != lastNewMd {
-				delta := ""
-				if strings.HasPrefix(replyMd, lastNewMd) {
-					delta = replyMd[len(lastNewMd):]
-				} else {
-					delta = replyMd
-				}
-				lastNewMd = replyMd
-				if len(onChunk) > 0 && onChunk[0] != nil && delta != "" {
-					onChunk[0](delta, replyMd)
-				}
-			}
-			stableTicks = 0
+		if replyMd == "" || replyMd == cleanPrompt {
 			continue
 		}
 
 		if replyMd == lastNewMd {
 			stableTicks++
-			// Chờ 5 nhịp liên tiếp (~1.25 giây) không đổi SAU KHI Muse đã ngừng generating để gom trọn vẹn video/code/XML
-			if stableTicks >= 5 {
+			// Nếu Muse không còn generating thì chờ 4 nhịp (~1s); nếu trang có background spinner cố định thì chờ 8 nhịp (~2s) ổn định
+			reqTicks := 4
+			if cur.IsGenerating {
+				reqTicks = 8
+			}
+			if stableTicks >= reqTicks {
 				break
 			}
 		} else {

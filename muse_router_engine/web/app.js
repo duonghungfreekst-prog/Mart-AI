@@ -94,6 +94,7 @@
     bgActive: false,
     pendingChatCount: 0,
     hasMartExtension: false,
+    canRelayChatViaExtension: false,
     activeTurnIds: {},
   };
 
@@ -2006,6 +2007,18 @@
     }
   }
 
+  function isExtVersionAtLeast(ver, minVer) {
+    var a = String(ver || "0.0.0").split(".").map(function (x) { return parseInt(x, 10) || 0; });
+    var b = String(minVer || "1.2.4").split(".").map(function (x) { return parseInt(x, 10) || 0; });
+    for (var i = 0; i < 3; i++) {
+      var av = a[i] || 0;
+      var bv = b[i] || 0;
+      if (av > bv) return true;
+      if (av < bv) return false;
+    }
+    return true;
+  }
+
   window.addEventListener("message", function (ev) {
     if (ev.source !== window || !ev.data) return;
     if (ev.data.__mart_ext_resp === true && ev.data.reqId) {
@@ -2017,6 +2030,9 @@
     }
     if (ev.data.__mart_ext_push === true && ev.data.event === "MART_EXT_SESSION_READY") {
       state.hasMartExtension = true;
+      if (isExtVersionAtLeast(ev.data.version, "1.2.4")) {
+        state.canRelayChatViaExtension = true;
+      }
       var modal = document.getElementById("martCloudExtModal");
       if (modal && modal.parentNode) modal.remove();
       refreshCloudExtensionBanner();
@@ -2033,6 +2049,7 @@
       .then(function (p) {
         if (p && p.ok && p.supportsChatRelay !== false) {
           state.hasMartExtension = true;
+          state.canRelayChatViaExtension = isExtVersionAtLeast(p.version, "1.2.4");
         }
       })
       .catch(function () {});
@@ -3049,14 +3066,14 @@
         "Content-Type": "application/json",
         "Accept": "text/event-stream, application/json",
         "X-Mart-Client": "web",
-        "X-Mart-Ext-Relay": state.hasMartExtension ? "1" : "0",
+        "X-Mart-Ext-Relay": state.canRelayChatViaExtension ? "1" : "0",
       };
       if (state.jwtToken) {
         headers["Authorization"] = "Bearer " + state.jwtToken;
       }
       const reqBody = Object.assign(
         {
-          client_relay_capable: Boolean(state.hasMartExtension),
+          client_relay_capable: Boolean(state.canRelayChatViaExtension),
         },
         payload,
         { stream: true }

@@ -1080,6 +1080,7 @@ func TestSSEChatSendNeverCorruptedByGzipAndCleansPendingTurn(t *testing.T) {
 		t.Fatalf("EncryptSecret: %v", err)
 	}
 	app.pool.mu.Lock()
+	app.pool.cdpManager = nil
 	app.pool.nodes = append(app.pool.nodes, &MuseAccountNode{
 		ID:                  "node-sse-test",
 		NodeIndex:           1,
@@ -1170,4 +1171,5 @@ func TestSSEChatSendNeverCorruptedByGzipAndCleansPendingTurn(t *testing.T) {
 	}
 	app.pool.mu.RUnlock()
 }
+
 

@@ -1889,9 +1889,10 @@ func (p *MuseRouterPool) RouteAndExecuteChatForOwner(
 	for _, candidate := range candidates {
 		p.markNodeRunning(candidate.ID)
 		startTs := time.Now()
-		// Trên Cloud (không có Python Bridge local), nếu trình duyệt người dùng có cài Mart AI Extension,
-		// ưu tiên gửi qua Extension để lệnh thực thi trực tiếp trên phiên trình duyệt của người dùng.
-		if !skipClientRelay && forceClientRelay && candidate.AuthType == "cookie" && candidate.HasHatchSess && !p.shouldTryPythonBridge() {
+		// Trên Cloud (không có Python Bridge local) và máy chủ không có sẵn Chromium Headless (CDP),
+		// nếu trình duyệt người dùng có cài Mart AI Extension thì mới gửi qua Extension ngay lập tức.
+		// Nếu máy chủ có sẵn Chromium Headless (p.cdpManager.HasBrowserAvailable()), ưu tiên chạy CDP trực tiếp trên máy chủ!
+		if !skipClientRelay && forceClientRelay && candidate.AuthType == "cookie" && candidate.HasHatchSess && !p.shouldTryPythonBridge() && (p.cdpManager == nil || !p.cdpManager.HasBrowserAvailable()) {
 			LogInfo("Routing web chat through client browser relay for node %s", candidate.ID)
 			return p.prepareBrowserRelayResponse(candidate, resolvedThreadID, turnID, model, userPrompt)
 		}

@@ -57,7 +57,7 @@ async function broadcastSessionReadyToOpenTabs(injectIfMissing) {
                 event: "MART_EXT_SESSION_READY",
                 cookie: cookies.sess ? cookies.header : "",
                 hasExistingSession: !!cookies.sess,
-                version: "1.2.3",
+                version: "1.2.4",
               },
               function () {
                 void chrome.runtime.lastError;
@@ -73,7 +73,7 @@ async function broadcastSessionReadyToOpenTabs(injectIfMissing) {
             event: "MART_EXT_SESSION_READY",
             cookie: cookies.sess ? cookies.header : "",
             hasExistingSession: !!cookies.sess,
-            version: "1.2.3",
+            version: "1.2.4",
           },
           function () {
             void chrome.runtime.lastError;
@@ -495,6 +495,20 @@ function domReadMuseSnapshot() {
   var leafEls = rawEls.filter(function (el) {
     return !rawEls.some(function (other) { return other !== el && el.contains(other); });
   });
+  var expectedNorm = String(window.__martExpectedPrompt || "").replace(/\s+/g, " ").trim().toLowerCase();
+  var expectedPrefix = expectedNorm.slice(0, 28);
+  var userCandidates = Array.from(document.querySelectorAll('div.flex.flex-col.gap-2, [data-message-author-role="user"]')).filter(function (el) {
+    if (el.getAttribute("data-mart-seen") === "1") return false;
+    if (el.closest('form, textarea, [contenteditable="true"]')) return false;
+    if (el.querySelector(".prose")) return false;
+    var tNorm = (el.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+    var isUserPrefix = tNorm.indexOf("bạn:") === 0 || tNorm.indexOf("you:") === 0 || el.getAttribute("data-message-author-role") === "user";
+    if (!isUserPrefix) return false;
+    if (expectedPrefix && tNorm.indexOf(expectedPrefix) === -1) return false;
+    return true;
+  });
+  var lastUnseenUserEl = userCandidates.length > 0 ? userCandidates[userCandidates.length - 1] : null;
+  var userTurnSent = !!lastUnseenUserEl;
   var mdList = [];
   var unseenMdList = [];
   for (var i = 0; i < leafEls.length; i++) {
@@ -502,7 +516,13 @@ function domReadMuseSnapshot() {
     if (m.length > 0) {
       mdList.push(m);
       if (leafEls[i].getAttribute("data-mart-seen") !== "1") {
-        unseenMdList.push(m);
+        if (lastUnseenUserEl) {
+          if (Boolean(lastUnseenUserEl.compareDocumentPosition(leafEls[i]) & 4)) {
+            unseenMdList.push(m);
+          }
+        } else if (!expectedPrefix) {
+          unseenMdList.push(m);
+        }
       }
     }
   }
@@ -514,6 +534,7 @@ function domReadMuseSnapshot() {
     hasComposer: !!composer,
     composerValue: compVal,
     isGenerating: isGen,
+    userTurnSent: userTurnSent,
     count: count,
     lastMd: lastMd,
     unseenCount: unseenCount,
@@ -524,7 +545,8 @@ function domReadMuseSnapshot() {
 
 // Hàm chạy bên trong trang https://muse.ai: điền prompt vào composer và nhấn gửi
 function domSubmitMusePrompt(promptText) {
-  Array.from(document.querySelectorAll(".prose")).forEach(function (p) {
+  window.__martExpectedPrompt = String(promptText || "").trim();
+  Array.from(document.querySelectorAll(".prose, div.flex.flex-col.gap-2, [data-message-author-role]")).forEach(function (p) {
     p.setAttribute("data-mart-seen", "1");
   });
   var composers = Array.from(document.querySelectorAll('textarea, [contenteditable="true"]')).filter(function (item) {
@@ -561,7 +583,7 @@ function domSubmitMusePrompt(promptText) {
 
   return new Promise(function (resolve) {
     setTimeout(function () {
-      Array.from(document.querySelectorAll(".prose")).forEach(function (p) {
+      Array.from(document.querySelectorAll(".prose, div.flex.flex-col.gap-2, [data-message-author-role]")).forEach(function (p) {
         p.setAttribute("data-mart-seen", "1");
       });
       function tryClickSendButton() {
@@ -639,7 +661,7 @@ async function executeMuseChatDirect(prompt, cookieHeader) {
     if (snap && snap.hasComposer) {
       baseline = snap;
       if (snap.count > 0) {
-        if (snap.count === prevCnt && snap.lastMd === prevMd && !snap.isGenerating) {
+        if (snap.count === prevCnt && snap.lastMd === prevMd) {
           stableBaseTicks += 1;
           if (stableBaseTicks >= 2) {
             break;
@@ -647,7 +669,7 @@ async function executeMuseChatDirect(prompt, cookieHeader) {
         } else {
           stableBaseTicks = 0;
         }
-      } else if (w >= 18 && !snap.isGenerating) {
+      } else if (w >= 18) {
         break;
       }
       prevCnt = snap.count;
@@ -672,31 +694,33 @@ async function executeMuseChatDirect(prompt, cookieHeader) {
   var lastNewMd = "";
   var stableTicks = 0;
   var cleanPrompt = (prompt || "").trim();
+  var noUserTurnTicks = 0;
+  var refillAttempts = 0;
 
   while (Date.now() < deadline) {
     await sleepMs(260);
     var cur = await evalInTab(tabId, domReadMuseSnapshot, []);
     if (!cur) continue;
 
-    var replyMd = (cur.unseenLastMd || "").trim();
-    if (!replyMd && cur.count > baseline.count && cur.lastMd !== baseline.lastMd) {
-      replyMd = (cur.lastMd || "").trim();
-    }
-    if (!replyMd || replyMd === baseline.lastMd || replyMd === cleanPrompt) {
+    if (!cur.userTurnSent) {
+      noUserTurnTicks += 1;
+      if (noUserTurnTicks >= 6 && refillAttempts < 5) {
+        refillAttempts += 1;
+        noUserTurnTicks = 0;
+        await evalInTab(tabId, domSubmitMusePrompt, [prompt]);
+      }
       continue;
     }
 
-    // Nếu Muse đang sinh câu trả lời hoặc render video/media (isGenerating = true), tiếp tục chờ
-    if (cur.isGenerating) {
-      lastNewMd = replyMd;
-      stableTicks = 0;
+    var replyMd = (cur.unseenLastMd || "").trim();
+    if (!replyMd || replyMd === cleanPrompt) {
       continue;
     }
 
     if (replyMd === lastNewMd) {
       stableTicks += 1;
-      // Chờ ít nhất 5 nhịp (~1.3s) ổn định sau khi Muse đã ngừng generating để bắt trọn vẹn media
-      if (stableTicks >= 5) {
+      var reqTicks = cur.isGenerating ? 8 : 4;
+      if (stableTicks >= reqTicks) {
         break;
       }
     } else {
@@ -744,7 +768,7 @@ function handleBridgeAction(msg, sendResponse) {
   var action = (msg && msg.action) || "";
   if (action === "ping") {
     martCollectMuseCookies().then(function (c) {
-      sendResponse({ ok: true, version: "1.2.3", hasExistingSession: !!c.sess, supportsChatRelay: true });
+      sendResponse({ ok: true, version: "1.2.4", hasExistingSession: !!c.sess, supportsChatRelay: true });
     });
     return true;
   }
@@ -752,7 +776,7 @@ function handleBridgeAction(msg, sendResponse) {
     martCollectMuseCookies().then(function (c) {
       sendResponse({
         ok: true,
-        version: "1.2.3",
+        version: "1.2.4",
         hasExistingSession: !!c.sess,
         supportsChatRelay: true,
         cookie: c.sess ? c.header : "",
