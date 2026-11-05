@@ -200,8 +200,8 @@ func (p *MuseRouterPool) CompleteBrowserRelayTurn(
 		latencyMs,
 		int(tokensUsed),
 	)
-	if p.libsqlStore != nil && updatedThread != nil {
-		p.libsqlStore.RecordRoutingTelemetry(
+	if p.mysqlStore != nil && updatedThread != nil {
+		p.mysqlStore.RecordRoutingTelemetry(
 			updatedThread.ID,
 			nodeID,
 			nodeLabel,

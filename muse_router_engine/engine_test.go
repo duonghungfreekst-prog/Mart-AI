@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -116,8 +117,8 @@ func TestZeroFakeNodesAndRealVaultEncryption(t *testing.T) {
 	if err := json.Unmarshal(recLibStatus.Body.Bytes(), &libStatus); err != nil {
 		t.Fatalf("Failed to parse LibSQLStatusResponse: %v", err)
 	}
-	if !libStatus.Connected || libStatus.JournalMode != "WAL" {
-		t.Fatalf("Expected connected libSQL in WAL mode, got connected=%v mode=%s", libStatus.Connected, libStatus.JournalMode)
+	if !libStatus.Connected || (libStatus.JournalMode != "WAL" && libStatus.JournalMode != "InnoDB (ACID)") {
+		t.Fatalf("Expected connected database, got connected=%v mode=%s", libStatus.Connected, libStatus.JournalMode)
 	}
 
 	// Tạo một đoạn chat và truy vấn trực tiếp qua chuẩn giao thức Hrana v2 Pipeline (/v2/pipeline)
@@ -669,22 +670,35 @@ func TestMultiUserAccountIsolationAndSQL40Standard(t *testing.T) {
 
 func TestAivenMySQLPushAndLiveSync(t *testing.T) {
 	mysqlURL := strings.TrimSpace(os.Getenv("MUSE_PUSH_MYSQL_URL"))
+	if mysqlURL == "" {
+		mysqlURL = strings.TrimSpace(os.Getenv("DATABASE_URL"))
+	}
 	prodDataDir := filepath.Join("..", "data")
 	if mysqlURL == "" {
-		mysqlURL = LoadEncryptedCloudSQLConfig(prodDataDir)
+		enc := LoadEncryptedCloudSQLConfig(prodDataDir)
+		if enc != "" && !strings.Contains(enc, "aivencloud.com") {
+			mysqlURL = enc
+		}
 	}
 	if mysqlURL == "" {
-		t.Skip("Skipping live Aiven MySQL sync test (no MUSE_PUSH_MYSQL_URL or sql40_cloud.enc)")
+		conn, err := net.DialTimeout("tcp", "127.0.0.1:3306", 500*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			mysqlURL = "mysql://root:@127.0.0.1:3306/muse_router"
+		}
+	}
+	if mysqlURL == "" {
+		t.Skip("Skipping live MySQL sync test (no DATABASE_URL or local MySQL)")
 	}
 
 	if err := SaveEncryptedCloudSQLConfig(prodDataDir, mysqlURL); err != nil {
 		t.Fatalf("SaveEncryptedCloudSQLConfig failed: %v", err)
 	}
 
-	// Mở kho Aiven MySQL Cloud trực tiếp qua TLS 1.2+ (100% không dùng SQLite hay libSQL)
-	remoteStore, err := NewLibSQLStore(prodDataDir, mysqlURL, "")
+	// Mở kho MySQL / TiDB Cloud trực tiếp qua TLS 1.2+ hoặc Local MySQL
+	remoteStore, err := NewMySQLStore(prodDataDir, mysqlURL, "")
 	if err != nil {
-		t.Fatalf("Connect to Aiven MySQL failed: %v", err)
+		t.Fatalf("Connect to MySQL failed: %v", err)
 	}
 	defer remoteStore.Close()
 
@@ -730,9 +744,9 @@ func TestAivenMySQLPushAndLiveSync(t *testing.T) {
 			t.Logf("Schema Size: %v", r)
 		}
 	}
-	// Dọn sạch database kiểm thử tạm nếu tồn tại để tiết kiệm dung lượng Aiven
+	// Giữ database test sạch sẽ
 	if remoteStore.db != nil {
-		_, _ = remoteStore.db.Exec("DROP DATABASE IF EXISTS muse_router_test")
+		remoteStore.resetTestTables()
 	}
 }
 

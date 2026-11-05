@@ -196,7 +196,7 @@ func NewRS256JWTManagerWithKeyFile(cache *TTLCache, keyPath string, masterKey st
 
 // SyncWithSQLStore đồng bộ khóa ký JWT RS256 (đã mã hóa AES-256-CTR+HMAC-SHA256) lên cơ sở dữ liệu SQL40 / Aiven MySQL
 // để các phiên đăng nhập trên Render Cloud không bị mất hiệu lực khi container khởi động lại.
-func (m *RS256JWTManager) SyncWithSQLStore(store *LibSQLStore, masterKey string) {
+func (m *RS256JWTManager) SyncWithSQLStore(store *MySQLStore, masterKey string) {
 	if m == nil || store == nil || masterKey == "" {
 		return
 	}

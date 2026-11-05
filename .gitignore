@@ -5,6 +5,7 @@
 *.key
 *.crt
 *.pfx
+*.enc
 data/
 *.db
 *.db-shm

@@ -108,6 +108,8 @@ type RouterSummary struct {
 	RoutingStrategy   string             `json:"routing_strategy"`
 	AutoFailover      bool               `json:"auto_failover"`
 	MemAllocMB        uint64             `json:"mem_alloc_mb"`
+	DatabaseDriver    string             `json:"database_driver"`
+	DatabaseURL       string             `json:"database_url"`
 	LibSQLDriver      string             `json:"libsql_driver"`
 	LibSQLURL         string             `json:"libsql_url"`
 	Nodes             []*MuseAccountNode `json:"nodes"`
@@ -125,7 +127,7 @@ type MuseRouterPool struct {
 	bridgeDownUntilMs int64
 	vaultPath         string
 	threadsPath       string
-	libsqlStore       *LibSQLStore
+	mysqlStore        *MySQLStore
 	rustBridge        *RustCoreBridge
 	cache             *TTLCache
 	jobQueue          chan func()
@@ -171,11 +173,13 @@ func NewMuseRouterPool(
 	threadsPath := filepath.Join(dataDir, "sessions_store.json")
 	legacyThreadsPath := filepath.Join(dataDir, "threads.json")
 
-	libStore, err := NewLibSQLStore(dataDir, "", "")
+	sqlStore, err := NewMySQLStore(dataDir, "", "")
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize embedded libSQL store: %w", err)
+		return nil, fmt.Errorf("failed to initialize MySQL store: %w", err)
 	}
-	libStore.MigrateLegacyJSONIfNeeded(vaultPath, threadsPath, legacyThreadsPath)
+	if sqlStore != nil {
+		sqlStore.MigrateLegacyJSONIfNeeded(vaultPath, threadsPath, legacyThreadsPath)
+	}
 
 	pool := &MuseRouterPool{
 		nodes:         make([]*MuseAccountNode, 0),
@@ -184,7 +188,7 @@ func NewMuseRouterPool(
 		autoFailover:  true,
 		vaultPath:     vaultPath,
 		threadsPath:   threadsPath,
-		libsqlStore:   libStore,
+		mysqlStore:    sqlStore,
 		rustBridge:    rustBridge,
 		cache:         cache,
 		jobQueue:      make(chan func(), BoundedQueueSize),
@@ -318,13 +322,17 @@ func (p *MuseRouterPool) Shutdown() {
 	if p.cdpManager != nil {
 		p.cdpManager.Shutdown()
 	}
-	if p.libsqlStore != nil {
-		_ = p.libsqlStore.Close()
+	if p.mysqlStore != nil {
+		_ = p.mysqlStore.Close()
 	}
 }
 
-func (p *MuseRouterPool) GetLibSQLStore() *LibSQLStore {
-	return p.libsqlStore
+func (p *MuseRouterPool) GetMySQLStore() *MySQLStore {
+	return p.mysqlStore
+}
+
+func (p *MuseRouterPool) GetLibSQLStore() *MySQLStore {
+	return p.mysqlStore
 }
 
 func FormatTokenCount(tokens int64) string {
@@ -459,12 +467,12 @@ func (p *MuseRouterPool) loadVault() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.libsqlStore != nil {
-		loaded, err := p.libsqlStore.LoadAccounts()
+	if p.mysqlStore != nil {
+		loaded, err := p.mysqlStore.LoadAccounts()
 		if err == nil {
 			normalizeAccountIndices(loaded)
 			p.nodes = loaded
-			LogInfo("Loaded %d Muse accounts directly from SQL40 (%s)", len(p.nodes), maskDatabaseURL(p.libsqlStore.dbURL))
+			LogInfo("Loaded %d Muse accounts directly from SQL40 (%s)", len(p.nodes), maskDatabaseURL(p.mysqlStore.dbURL))
 			_ = p.syncBackupJSONLocked()
 			return nil
 		}
@@ -485,8 +493,8 @@ func (p *MuseRouterPool) loadVault() error {
 	}
 	normalizeAccountIndices(loaded)
 	p.nodes = loaded
-	if p.libsqlStore != nil {
-		_ = p.libsqlStore.SyncAllAccounts(p.nodes)
+	if p.mysqlStore != nil {
+		_ = p.mysqlStore.SyncAllAccounts(p.nodes)
 	}
 	return nil
 }
@@ -501,8 +509,8 @@ func (p *MuseRouterPool) syncBackupJSONLocked() error {
 
 func (p *MuseRouterPool) saveVaultLocked() error {
 	normalizeAccountIndices(p.nodes)
-	if p.libsqlStore != nil {
-		if err := p.libsqlStore.SyncAllAccounts(p.nodes); err != nil {
+	if p.mysqlStore != nil {
+		if err := p.mysqlStore.SyncAllAccounts(p.nodes); err != nil {
 			LogError("libSQL SyncAllAccounts error: %v", err)
 			return err
 		}
@@ -514,8 +522,8 @@ func (p *MuseRouterPool) loadThreads() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.libsqlStore != nil {
-		loaded, err := p.libsqlStore.LoadThreadsWithMessages()
+	if p.mysqlStore != nil {
+		loaded, err := p.mysqlStore.LoadThreadsWithMessages()
 		if err == nil {
 			p.threads = loaded
 			return nil
@@ -528,9 +536,9 @@ func (p *MuseRouterPool) loadThreads() error {
 }
 
 func (p *MuseRouterPool) saveThreadsLocked() error {
-	if p.libsqlStore != nil {
+	if p.mysqlStore != nil {
 		for _, t := range p.threads {
-			if err := p.libsqlStore.SaveThreadWithMessages(t); err != nil {
+			if err := p.mysqlStore.SaveThreadWithMessages(t); err != nil {
 				LogError("libSQL SaveThreadWithMessages error: %v", err)
 				return err
 			}
@@ -547,8 +555,8 @@ func (p *MuseRouterPool) saveSingleThreadLocked(target *ChatThread) error {
 	if target == nil {
 		return nil
 	}
-	if p.libsqlStore != nil {
-		if err := p.libsqlStore.SaveThreadWithMessages(target); err != nil {
+	if p.mysqlStore != nil {
+		if err := p.mysqlStore.SaveThreadWithMessages(target); err != nil {
 			LogError("libSQL SaveThreadWithMessages error: %v", err)
 			return err
 		}
@@ -648,12 +656,12 @@ func (p *MuseRouterPool) GetSummary() RouterSummary {
 		qCnt = 0
 	}
 
-	libDriver := "sql40-mysql"
-	libURL := ""
-	if p.libsqlStore != nil {
-		p.libsqlStore.mu.RLock()
-		libURL = maskDatabaseURL(p.libsqlStore.dbURL)
-		p.libsqlStore.mu.RUnlock()
+	dbDriver := "mysql"
+	dbURL := ""
+	if p.mysqlStore != nil {
+		p.mysqlStore.mu.RLock()
+		dbURL = maskDatabaseURL(p.mysqlStore.dbURL)
+		p.mysqlStore.mu.RUnlock()
 	}
 
 	return RouterSummary{
@@ -671,8 +679,10 @@ func (p *MuseRouterPool) GetSummary() RouterSummary {
 		RoutingStrategy:   p.strategy,
 		AutoFailover:      p.autoFailover,
 		MemAllocMB:        allocMB,
-		LibSQLDriver:      libDriver,
-		LibSQLURL:         libURL,
+		DatabaseDriver:    dbDriver,
+		DatabaseURL:       dbURL,
+		LibSQLDriver:      dbDriver,
+		LibSQLURL:         dbURL,
 		Nodes:             safeNodes,
 	}
 }
@@ -680,6 +690,8 @@ func (p *MuseRouterPool) GetSummary() RouterSummary {
 // GetPublicSummary trả về tóm tắt trạng thái Pool cho tài khoản người dùng thường (ẩn chi tiết Node/Cookie/Proxy nội bộ của Admin).
 func (p *MuseRouterPool) GetPublicSummary() RouterSummary {
 	sum := p.GetSummary()
+	sum.DatabaseURL = ""
+	sum.LibSQLURL = ""
 	sum.LibSQLURL = ""
 	sum.Nodes = []*MuseAccountNode{}
 	return sum
@@ -852,13 +864,13 @@ func (p *MuseRouterPool) GenerateOAuthLoginLink(parentCtx context.Context) (map[
 		out = directOut
 	}
 
-	if p.libsqlStore != nil {
+	if p.mysqlStore != nil {
 		sessID, _ := out["session_id"].(string)
 		loginURL, _ := out["login_url"].(string)
 		stateVal, _ := out["state"].(string)
 		appIDVal, _ := out["app_id"].(string)
 		redirectVal, _ := out["redirect_uri"].(string)
-		_ = p.libsqlStore.SaveOAuthSession(sessID, loginURL, stateVal, appIDVal, redirectVal)
+		_ = p.mysqlStore.SaveOAuthSession(sessID, loginURL, stateVal, appIDVal, redirectVal)
 	}
 	return out, nil
 }
@@ -1123,8 +1135,8 @@ func (p *MuseRouterPool) DeleteNode(nodeID string) error {
 		return errors.New("ERR_NODE_NOT_FOUND")
 	}
 	p.nodes = append(p.nodes[:idx], p.nodes[idx+1:]...)
-	if p.libsqlStore != nil {
-		_ = p.libsqlStore.DeleteAccount(nodeID)
+	if p.mysqlStore != nil {
+		_ = p.mysqlStore.DeleteAccount(nodeID)
 	}
 	return p.saveVaultLocked()
 }
@@ -1957,8 +1969,8 @@ func (p *MuseRouterPool) RouteAndExecuteChatForOwner(
 			int(tokensUsed),
 		)
 
-		if p.libsqlStore != nil && updatedThread != nil {
-			p.libsqlStore.RecordRoutingTelemetry(
+		if p.mysqlStore != nil && updatedThread != nil {
+			p.mysqlStore.RecordRoutingTelemetry(
 				updatedThread.ID,
 				candidate.ID,
 				candidate.Label,
@@ -2437,8 +2449,8 @@ func (p *MuseRouterPool) DeleteThreadForOwner(ownerID string, threadID string) e
 		return errors.New("ERR_THREAD_NOT_FOUND")
 	}
 	p.threads = append(p.threads[:idx], p.threads[idx+1:]...)
-	if p.libsqlStore != nil {
-		_ = p.libsqlStore.DeleteThread(threadID)
+	if p.mysqlStore != nil {
+		_ = p.mysqlStore.DeleteThread(threadID)
 	}
 	return nil
 }

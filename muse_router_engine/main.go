@@ -75,7 +75,7 @@ func NewServerApp(dataDir string) (*ServerApp, error) {
 	if err != nil {
 		return nil, err
 	}
-	jwtMgr.SyncWithSQLStore(pool.GetLibSQLStore(), masterKey)
+	jwtMgr.SyncWithSQLStore(pool.GetMySQLStore(), masterKey)
 
 	app := &ServerApp{
 		pool:       pool,
@@ -489,9 +489,9 @@ func (a *ServerApp) Routes() http.Handler {
 			WriteJSONError(w, http.StatusMethodNotAllowed, "ERR_METHOD_NOT_ALLOWED")
 			return
 		}
-		store := a.pool.GetLibSQLStore()
+		store := a.pool.GetMySQLStore()
 		if store == nil {
-			WriteJSONError(w, http.StatusServiceUnavailable, "ERR_LIBSQL_NOT_INITIALIZED")
+			WriteJSONError(w, http.StatusServiceUnavailable, "ERR_DATABASE_NOT_INITIALIZED")
 			return
 		}
 		threadID := r.URL.Query().Get("thread_id")
@@ -596,7 +596,7 @@ func (a *ServerApp) Routes() http.Handler {
 
 	// 4.5. Cơ sở dữ liệu chuẩn SQL40 trực tiếp cho hệ thống Web (Status / SQL Query / Config / Pipeline)
 	handleSQLStatus := func(w http.ResponseWriter, r *http.Request) {
-		store := a.pool.GetLibSQLStore()
+		store := a.pool.GetMySQLStore()
 		if store == nil {
 			WriteJSONError(w, http.StatusServiceUnavailable, "ERR_SQL_NOT_INITIALIZED")
 			return
@@ -604,6 +604,7 @@ func (a *ServerApp) Routes() http.Handler {
 		WriteJSONResponse(w, http.StatusOK, store.GetStatus())
 	}
 	mux.HandleFunc("/api/sql/status", handleSQLStatus)
+	mux.HandleFunc("/api/mysql/status", handleSQLStatus)
 	mux.HandleFunc("/api/libsql/status", handleSQLStatus)
 
 	handleSQLQuery := func(w http.ResponseWriter, r *http.Request) {
@@ -619,7 +620,7 @@ func (a *ServerApp) Routes() http.Handler {
 			WriteJSONError(w, http.StatusBadRequest, "ERR_INVALID_INPUT")
 			return
 		}
-		store := a.pool.GetLibSQLStore()
+		store := a.pool.GetMySQLStore()
 		if store == nil {
 			WriteJSONError(w, http.StatusServiceUnavailable, "ERR_SQL_NOT_INITIALIZED")
 			return
@@ -632,6 +633,7 @@ func (a *ServerApp) Routes() http.Handler {
 		WriteJSONResponse(w, http.StatusOK, qRes)
 	}
 	mux.HandleFunc("/api/sql/query", handleSQLQuery)
+	mux.HandleFunc("/api/mysql/query", handleSQLQuery)
 	mux.HandleFunc("/api/libsql/query", handleSQLQuery)
 
 	handleSQLConfig := func(w http.ResponseWriter, r *http.Request) {
@@ -647,7 +649,7 @@ func (a *ServerApp) Routes() http.Handler {
 			WriteJSONError(w, http.StatusBadRequest, "ERR_INVALID_INPUT")
 			return
 		}
-		store := a.pool.GetLibSQLStore()
+		store := a.pool.GetMySQLStore()
 		if store == nil {
 			WriteJSONError(w, http.StatusServiceUnavailable, "ERR_SQL_NOT_INITIALIZED")
 			return
@@ -661,7 +663,36 @@ func (a *ServerApp) Routes() http.Handler {
 		WriteJSONResponse(w, http.StatusOK, store.GetStatus())
 	}
 	mux.HandleFunc("/api/sql/config", handleSQLConfig)
+	mux.HandleFunc("/api/mysql/config", handleSQLConfig)
 	mux.HandleFunc("/api/libsql/config", handleSQLConfig)
+
+	mux.HandleFunc("/api/admin/migrate-to-mysql", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			WriteJSONError(w, http.StatusMethodNotAllowed, "ERR_METHOD_NOT_ALLOWED")
+			return
+		}
+		store := a.pool.GetMySQLStore()
+		if store == nil || store.db == nil {
+			WriteJSONError(w, http.StatusServiceUnavailable, "ERR_DATABASE_NOT_INITIALIZED")
+			return
+		}
+		dataDir := a.pool.vaultPath
+		if dataDir != "" {
+			dataDir = filepath.Dir(dataDir)
+		}
+		store.MigrateLegacyJSONIfNeeded(
+			filepath.Join(dataDir, "accounts_vault.json"),
+			filepath.Join(dataDir, "sessions_store.json"),
+			filepath.Join(dataDir, "threads.json"),
+		)
+		_ = a.pool.loadVault()
+		_ = a.pool.loadThreads()
+		WriteJSONResponse(w, http.StatusOK, map[string]interface{}{
+			"status":    "ok",
+			"message":   "Đã di chuyển và đồng bộ toàn bộ dữ liệu vào MySQL / TiDB Cloud thành công",
+			"db_status": store.GetStatus(),
+		})
+	})
 
 	handleHranaPipeline := func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -673,14 +704,15 @@ func (a *ServerApp) Routes() http.Handler {
 			WriteJSONError(w, http.StatusBadRequest, "ERR_INVALID_HRANA_PIPELINE")
 			return
 		}
-		store := a.pool.GetLibSQLStore()
+		store := a.pool.GetMySQLStore()
 		if store == nil {
-			WriteJSONError(w, http.StatusServiceUnavailable, "ERR_LIBSQL_NOT_INITIALIZED")
+			WriteJSONError(w, http.StatusServiceUnavailable, "ERR_DATABASE_NOT_INITIALIZED")
 			return
 		}
 		WriteJSONResponse(w, http.StatusOK, store.ExecuteHranaPipeline(req))
 	}
 	mux.HandleFunc("/v2/pipeline", handleHranaPipeline)
+	mux.HandleFunc("/api/mysql/pipeline", handleHranaPipeline)
 	mux.HandleFunc("/api/libsql/pipeline", handleHranaPipeline)
 
 	// 4.6. Tasks API — chạy batch task độc lập qua Token Pool
@@ -702,9 +734,9 @@ func (a *ServerApp) Routes() http.Handler {
 			WriteJSONError(w, http.StatusBadRequest, "ERR_EMPTY_PROMPT")
 			return
 		}
-		store := a.pool.GetLibSQLStore()
+		store := a.pool.GetMySQLStore()
 		if store == nil {
-			WriteJSONError(w, http.StatusServiceUnavailable, "ERR_LIBSQL_NOT_INITIALIZED")
+			WriteJSONError(w, http.StatusServiceUnavailable, "ERR_DATABASE_NOT_INITIALIZED")
 			return
 		}
 		actor := a.resolveActor(r)
@@ -805,9 +837,9 @@ func (a *ServerApp) Routes() http.Handler {
 			WriteJSONError(w, http.StatusBadRequest, "ERR_TOO_MANY_TASKS_MAX_10")
 			return
 		}
-		store := a.pool.GetLibSQLStore()
+		store := a.pool.GetMySQLStore()
 		if store == nil {
-			WriteJSONError(w, http.StatusServiceUnavailable, "ERR_LIBSQL_NOT_INITIALIZED")
+			WriteJSONError(w, http.StatusServiceUnavailable, "ERR_DATABASE_NOT_INITIALIZED")
 			return
 		}
 

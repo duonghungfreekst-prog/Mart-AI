@@ -13,7 +13,7 @@
 | **Giữ chỗ dòng trống & trả lời đúng vị trí** | Gửi liên tiếp nhiều câu hỏi không bị khóa nút gửi; mỗi câu hỏi tạo dòng trống ngay bên dưới và điền câu trả lời đúng vào vị trí của câu hỏi đó (`turn_id`) |
 | **Tự động đồng bộ toàn diện** | Tự động đồng bộ Token & Mức sử dụng (`Gói miễn phí %`, `Token bổ sung`) khi khởi động, định kỳ mỗi 45s, sau mỗi câu hỏi và khi mở Cài đặt; tự động đồng bộ kết quả làm việc nền từ Muse gốc về đúng câu hỏi |
 | **Chống ban IP & Cô lập vân tay** | `SameIPPacer` + cô lập `datr`, Canvas, WebGL, AudioContext và Device Profile cố định theo từng tài khoản |
-| **libSQL nhúng (WAL)** | Lưu trữ toàn bộ tài khoản mã hóa, lịch sử chat, tài liệu, bộ nhớ, nhiệm vụ tại local |
+| **MySQL / TiDB Cloud (InnoDB)** | Lưu trữ toàn bộ tài khoản mã hóa, người dùng, lịch sử chat, tài liệu, bộ nhớ, nhiệm vụ qua giao thức MySQL (TiDB Serverless TLS 1.2+ hoặc Local MySQL) |
 | **Chat đa phương tiện & Giọng nói** | Ô nhập tự giãn cao/ngang theo nội dung, Markdown chuẩn gốc, đính kèm ảnh (`Ctrl+V`), nhập giọng nói tiếng Việt |
 | **OpenAI-Compatible Gateway** | Endpoint `/v1/chat/completions` tương thích chuẩn OpenAI cho các công cụ bên thứ 3 |
 
@@ -31,8 +31,8 @@ muse_router_ai (Python)    muse_router_core (Rust DLL)
 muse.ai (Token Pool thật)
 ```
 
-**Database:** libSQL WAL · 8 bảng:
-`muse_accounts` · `chat_threads` · `chat_messages` · `oauth_sessions` · `routing_telemetry` · `muse_documents` · `muse_memories` · `muse_tasks`
+**Database:** MySQL / TiDB Cloud · 9 bảng:
+`mart_users` · `muse_accounts` · `chat_threads` · `chat_messages` · `oauth_sessions` · `routing_telemetry` · `muse_documents` · `muse_memories` · `muse_tasks`
 
 ---
 
@@ -133,7 +133,7 @@ f:\tools muse ai\
 ├── muse_router_core\       Rust Core
 │   └── muse_router_core.dll
 ├── data\
-│   └── muse_router.libsql.db   Database chính
+│   └── sql40_cloud.enc         Cấu hình MySQL Cloud mã hóa AES-256
 ├── run_muse_router.bat     Chạy thủ công
 └── install_service.bat     Cài Windows Service
 ```

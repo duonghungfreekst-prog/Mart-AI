@@ -999,15 +999,15 @@
               </div>
             </div>
 
-          <!-- BẢNG ĐIỀU KHIỂN & TRUY VẤN TRỰC TIẾP CƠ SỞ DỮ LIỆU CHUẨN SQL40 & AIVEN MYSQL -->
+          <!-- BẢNG ĐIỀU KHIỂN & TRUY VẤN TRỰC TIẾP CƠ SỞ DỮ LIỆU MYSQL / TIDB CLOUD -->
           <div class="clean-card" id="libsqlStudioCard" style="margin-top:28px;">
             <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
               <div>
                 <h2 style="font-size:0.98rem;font-weight:700;color:#171717;">
-                  🗄️ Cơ Sở Dữ Liệu Chuẩn SQL40 &amp; Aiven MySQL Cloud (TLS 1.2+)
+                  🗄️ Cơ Sở Dữ Liệu MySQL / TiDB Serverless Cloud (TLS 1.2+)
                 </h2>
                 <p style="font-size:0.82rem;color:#737373;margin-top:2px;" id="libsqlStatusSubtext">
-                  Toàn bộ tài khoản, đoạn chat, tin nhắn, tài liệu, bộ nhớ, nhiệm vụ, phiên OAuth và nhật ký điều phối được đồng bộ trực tiếp trên chuẩn <code>SQL40 / Aiven MySQL</code>.
+                  Toàn bộ tài khoản, đoạn chat, tin nhắn, tài liệu, bộ nhớ, nhiệm vụ, phiên OAuth và nhật ký điều phối được lưu trữ và đồng bộ 100% trên <code>MySQL / TiDB Cloud</code>.
                 </p>
               </div>
               <div style="display:flex;gap:6px;flex-wrap:wrap;" id="libsqlTablePills">
@@ -1032,26 +1032,29 @@
               </div>
             </div>
 
-            <!-- Cấu hình URL kết nối SQL40 -->
+            <!-- Cấu hình URL kết nối MySQL / TiDB Cloud -->
             <form id="libsqlConfigForm" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px;">
               <div style="flex:2;min-width:240px;">
                 <label for="libsqlUrlInput" style="display:block;font-size:11.5px;font-weight:600;color:#475569;margin-bottom:4px;">
-                  Chuỗi kết nối SQL40 / Aiven MySQL Cloud (<code>mysql://...</code> TLS 1.2+)
+                  Chuỗi kết nối MySQL / TiDB Cloud (<code>mysql://...</code> TLS 1.2+ hoặc Local XAMPP)
                 </label>
-                <input type="text" id="libsqlUrlInput" class="clean-input" style="font-family:var(--font-mono);font-size:12px;" placeholder="mysql://avnadmin:***@mysql-e6c6d1e-cautao446-005a.l.aivencloud.com:25313/defaultdb?ssl-mode=REQUIRED">
+                <input type="text" id="libsqlUrlInput" class="clean-input" style="font-family:var(--font-mono);font-size:12px;" placeholder="mysql://<prefix>.root:<password>@gateway01.<region>.prod.aws.tidbcloud.com:4000/<dbname>?ssl-mode=REQUIRED">
               </div>
               <div style="flex:1;min-width:160px;">
                 <label for="libsqlTokenInput" style="display:block;font-size:11.5px;font-weight:600;color:#475569;margin-bottom:4px;">
-                  Auth Token (nếu dùng kết nối từ xa)
+                  Tùy chọn Token / Key
                 </label>
-                <input type="password" id="libsqlTokenInput" class="clean-input" style="font-family:var(--font-mono);font-size:12px;" placeholder="Để trống với chế độ file nhúng">
+                <input type="password" id="libsqlTokenInput" class="clean-input" style="font-family:var(--font-mono);font-size:12px;" placeholder="Để trống với kết nối chuẩn">
               </div>
               <button type="submit" class="muse-outline-btn" id="btnApplyLibsqlConfig" style="min-height:36px;">
-                🔄 Kết nối SQL40
+                🔄 Kết nối MySQL / TiDB
+              </button>
+              <button type="button" class="muse-outline-btn" id="btnMigrateToMySQL" style="min-height:36px;border-color:#0284c7;color:#0284c7;">
+                📥 Di chuyển dữ liệu Local -> MySQL
               </button>
             </form>
 
-            <!-- Ô chạy truy vấn SQL40 trực tiếp -->
+            <!-- Ô chạy truy vấn MySQL trực tiếp -->
             <form id="libsqlQueryForm" style="display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap;">
               <textarea
                 id="libsqlSqlInput"
@@ -1060,7 +1063,7 @@
                 style="flex:1;min-width:260px;font-family:var(--font-mono);font-size:12.5px;"
               >SELECT id, node_index, label, status, fingerprint, total_requests, latency_ms, last_used_at, status_detail FROM muse_accounts ORDER BY node_index ASC;</textarea>
               <button type="submit" class="muse-solid-btn" id="btnRunLibsqlQuery" style="min-height:42px;">
-                ▶️ Thực thi qua SQL40 Engine
+                ▶️ Thực thi qua MySQL Engine
               </button>
             </form>
 

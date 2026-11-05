@@ -378,7 +378,7 @@
   async function refreshLibSQLStatus() {
     if (!state.currentUser || state.currentUser.role !== "admin") return;
     try {
-      const st = await apiRequest("/api/libsql/status");
+      const st = await apiRequest("/api/sql/status");
       const sideBadge = document.getElementById("sideLibsqlBadge");
       if (sideBadge) {
         const tblSummary = (st.tables || [])
@@ -387,9 +387,9 @@
           })
           .join(" • ");
         sideBadge.textContent =
-          (st.engine_version || "libSQL") +
+          (st.engine_version || "MySQL") +
           " (" +
-          (st.journal_mode || "WAL") +
+          (st.journal_mode || "InnoDB") +
           ") — " +
           (st.database_url || "") +
           (tblSummary ? " [" + tblSummary + "]" : "");
@@ -411,14 +411,14 @@
           "Đang kết nối trực tiếp: <code>" +
           escapeHtml(st.database_url || "") +
           "</code> • Chế độ: <strong>" +
-          escapeHtml(st.journal_mode || "WAL") +
+          escapeHtml(st.journal_mode || "InnoDB") +
           "</strong> • Engine: <strong>" +
-          escapeHtml(st.engine_version || "libSQL") +
+          escapeHtml(st.engine_version || "MySQL") +
           "</strong> • Các bảng: " +
           escapeHtml(tblCounts);
       }
     } catch (err) {
-      console.warn("LibSQL status check warning:", err);
+      console.warn("MySQL status check warning:", err);
     }
   }
 
@@ -432,7 +432,7 @@
       const res = await libsqlClient.execute(sqlText, []);
       if (metaEl) {
         metaEl.textContent =
-          "✅ Giao thức chuẩn libSQL Hrana v2 (/v2/pipeline) • " +
+          "✅ Thực thi trực tiếp qua MySQL / TiDB Engine • " +
           res.rows.length +
           " dòng trả về • " +
           res.rowsAffected +
@@ -3243,21 +3243,39 @@
         const btnEl = document.getElementById("btnApplyLibsqlConfig");
         if (btnEl) btnEl.disabled = true;
         try {
-          await apiRequest("/api/libsql/config", {
+          await apiRequest("/api/sql/config", {
             method: "POST",
             body: {
               database_url: urlEl ? urlEl.value.trim() : "",
               auth_token: tokEl ? tokEl.value.trim() : "",
             },
           });
-          showToast("✅ Đã kết nối & đồng bộ Cơ sở dữ liệu LibSQL thành công!");
+          showToast("✅ Đã kết nối & đồng bộ Cơ sở dữ liệu MySQL / TiDB Cloud thành công!");
           await refreshLibSQLStatus();
           await refreshRouterState(true);
           await loadThreads();
         } catch (err) {
-          showToast("Lỗi cấu hình LibSQL: " + err.message);
+          showToast("Lỗi cấu hình MySQL: " + err.message);
         } finally {
           if (btnEl) btnEl.disabled = false;
+        }
+      });
+    }
+
+    const btnMigrate = document.getElementById("btnMigrateToMySQL");
+    if (btnMigrate) {
+      btnMigrate.addEventListener("click", async function () {
+        btnMigrate.disabled = true;
+        try {
+          const res = await apiRequest("/api/admin/migrate-to-mysql", { method: "POST" });
+          showToast(res.message || "✅ Đã di chuyển toàn bộ dữ liệu vào MySQL thành công!");
+          await refreshLibSQLStatus();
+          await refreshRouterState(true);
+          await loadThreads();
+        } catch (err) {
+          showToast("Lỗi di chuyển dữ liệu: " + err.message);
+        } finally {
+          btnMigrate.disabled = false;
         }
       });
     }

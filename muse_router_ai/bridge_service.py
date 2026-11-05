@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 MuseRouter AI Bridge Service (`muse_router_ai`) — 100% Real Protocol & Browser-CDP Driver
 Tuân thủ tuyệt đối Antigravity Polyglot v2.4 & PHAN 9 (KHÔNG giả lập / KHÔNG dữ liệu ảo):
@@ -1207,17 +1207,15 @@ class MuseUpstreamClient:
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.data_dir = os.path.join(base_dir, "data")
         self.profiles_dir = os.path.join(self.data_dir, "profiles")
-        self.libsql_db_path = os.path.join(self.data_dir, "muse_router.libsql.db")
         self.uploads_dir = os.path.join(self.data_dir, "uploads")
         os.makedirs(self.uploads_dir, exist_ok=True)
         os.makedirs(self.profiles_dir, exist_ok=True)
         self.pacer = SameIPPacer(self.profiles_dir)
         self.warm_pool = WarmBrowserSessionManager(self.pacer)
-        self._ensure_libsql_oauth_table()
 
     def _ensure_libsql_oauth_table(self) -> None:
         try:
-            with closing(sqlite3.connect(self.libsql_db_path, timeout=5.0)) as conn:
+            if False as conn:
                 conn.execute("PRAGMA journal_mode=WAL;")
                 conn.execute(
                     """
@@ -1289,7 +1287,7 @@ class MuseUpstreamClient:
             parsed_q = urllib.parse.parse_qs(urllib.parse.urlparse(login_url).query)
             app_id_val = (parsed_q.get("app_id") or [""])[0]
             redir_val = (parsed_q.get("redirect_uri") or [""])[0]
-            with closing(sqlite3.connect(self.libsql_db_path, timeout=5.0)) as conn:
+            if False as conn:
                 conn.execute(
                     """
                     INSERT INTO oauth_sessions (session_id, login_url, state, app_id, redirect_uri, cookies_json, created_at)
@@ -2112,7 +2110,7 @@ def run_server() -> None:
         vault_path = os.path.join(base_dir, "data", "accounts_vault.json")
         prewarmed_count = 0
 
-        if os.path.exists(libsql_path):
+        if False and os.path.exists(libsql_path):
             with closing(sqlite3.connect(libsql_path, timeout=5.0)) as conn:
                 rows = conn.execute(
                     "SELECT encrypted_credential, fingerprint FROM muse_accounts WHERE auth_type = 'cookie' LIMIT ?",
@@ -2155,3 +2153,5 @@ def run_server() -> None:
 
 if __name__ == "__main__":
     run_server()
+
+

@@ -150,7 +150,7 @@ func nonEmptyStr(vals ...string) string {
 	return ""
 }
 
-func queryRowsToMaps(res *LibSQLQueryResult) []map[string]string {
+func queryRowsToMaps(res *MySQLQueryResult) []map[string]string {
 	if res == nil || len(res.Rows) == 0 {
 		return []map[string]string{}
 	}
@@ -189,7 +189,7 @@ func (a *ServerApp) isUserAccountActive(userID string) bool {
 			return active
 		}
 	}
-	store := a.pool.GetLibSQLStore()
+	store := a.pool.GetMySQLStore()
 	if store == nil {
 		return false
 	}
@@ -218,7 +218,7 @@ func (a *ServerApp) EnsureDefaultAdminAccount() {
 			return
 		}
 	}
-	store := a.pool.GetLibSQLStore()
+	store := a.pool.GetMySQLStore()
 	if store == nil {
 		return
 	}
@@ -344,8 +344,9 @@ func isPublicRoute(path string) bool {
 
 func isAdminOnlyRoute(path string) bool {
 	if strings.HasPrefix(path, "/api/accounts/") ||
-		strings.HasPrefix(path, "/api/libsql/") ||
+		strings.HasPrefix(path, "/api/mysql/") ||
 		strings.HasPrefix(path, "/api/sql/") ||
+		strings.HasPrefix(path, "/api/libsql/") ||
 		strings.HasPrefix(path, "/api/admin/") ||
 		path == "/api/router/config" ||
 		path == "/v2/pipeline" {
@@ -488,7 +489,7 @@ func (a *ServerApp) handleUserRegister(w http.ResponseWriter, r *http.Request) {
 		targetRole = "admin"
 	}
 
-	store := a.pool.GetLibSQLStore()
+	store := a.pool.GetMySQLStore()
 	if store == nil {
 		WriteJSONError(w, http.StatusServiceUnavailable, "Cơ sở dữ liệu chưa sẵn sàng.")
 		return
@@ -584,7 +585,7 @@ func (a *ServerApp) handleUserLogin(w http.ResponseWriter, r *http.Request) {
 
 	a.EnsureDefaultAdminAccount()
 
-	store := a.pool.GetLibSQLStore()
+	store := a.pool.GetMySQLStore()
 	if store == nil {
 		WriteJSONError(w, http.StatusServiceUnavailable, "Cơ sở dữ liệu chưa sẵn sàng.")
 		return
@@ -642,7 +643,7 @@ func (a *ServerApp) handleUserLogin(w http.ResponseWriter, r *http.Request) {
 	displayName := nonEmptyStr(row["display_name"], username)
 
 	nowStr := time.Now().Format("2006-01-02 15:04:05")
-	go func(st *LibSQLStore, ts, uid string) {
+	go func(st *MySQLStore, ts, uid string) {
 		_, _ = st.ExecuteSQL("UPDATE mart_users SET last_login_at = ? WHERE id = ?", []interface{}{ts, uid})
 	}(store, nowStr, userID)
 	recordLoginSuccess(clientIP) // [FIX #1] Reset brute-force counter khi dang nhap thanh cong
@@ -682,7 +683,7 @@ func (a *ServerApp) handleAdminUnlockLogin(w http.ResponseWriter, r *http.Reques
 	adminDisplayName := "Quản trị viên (Admin)"
 	var dbPwHash string
 
-	if store := a.pool.GetLibSQLStore(); store != nil {
+	if store := a.pool.GetMySQLStore(); store != nil {
 		if qRes, err := store.ExecuteSQL(
 			"SELECT display_name, password_hash FROM mart_users WHERE id = 'admin' OR username = 'admin' LIMIT 1",
 			nil,
@@ -713,9 +714,9 @@ func (a *ServerApp) handleAdminUnlockLogin(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if store := a.pool.GetLibSQLStore(); store != nil {
+	if store := a.pool.GetMySQLStore(); store != nil {
 		nowStr := time.Now().Format("2006-01-02 15:04:05")
-		go func(st *LibSQLStore, ts string) {
+		go func(st *MySQLStore, ts string) {
 			_, _ = st.ExecuteSQL("UPDATE mart_users SET last_login_at = ? WHERE id = 'admin' OR username = 'admin'", []interface{}{ts})
 		}(store, nowStr)
 	}
@@ -790,9 +791,9 @@ func (a *ServerApp) handleUserChangePassword(w http.ResponseWriter, r *http.Requ
 		a.EnsureDefaultAdminAccount()
 	}
 
-	store := a.pool.GetLibSQLStore()
+	store := a.pool.GetMySQLStore()
 	if store == nil {
-		WriteJSONError(w, http.StatusServiceUnavailable, "ERR_LIBSQL_NOT_INITIALIZED")
+		WriteJSONError(w, http.StatusServiceUnavailable, "ERR_DATABASE_NOT_INITIALIZED")
 		return
 	}
 	qRes, err := store.ExecuteSQL(
@@ -854,9 +855,9 @@ func (a *ServerApp) handleAdminUsersList(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	a.EnsureDefaultAdminAccount()
-	store := a.pool.GetLibSQLStore()
+	store := a.pool.GetMySQLStore()
 	if store == nil {
-		WriteJSONError(w, http.StatusServiceUnavailable, "ERR_LIBSQL_NOT_INITIALIZED")
+		WriteJSONError(w, http.StatusServiceUnavailable, "ERR_DATABASE_NOT_INITIALIZED")
 		return
 	}
 	qRes, err := store.ExecuteSQL(
@@ -917,9 +918,9 @@ func (a *ServerApp) handleAdminUserToggle(w http.ResponseWriter, r *http.Request
 		WriteJSONError(w, http.StatusBadRequest, "Không thể khóa tài khoản Quản trị viên gốc.")
 		return
 	}
-	store := a.pool.GetLibSQLStore()
+	store := a.pool.GetMySQLStore()
 	if store == nil {
-		WriteJSONError(w, http.StatusServiceUnavailable, "ERR_LIBSQL_NOT_INITIALIZED")
+		WriteJSONError(w, http.StatusServiceUnavailable, "ERR_DATABASE_NOT_INITIALIZED")
 		return
 	}
 	disVal := 0
@@ -959,9 +960,9 @@ func (a *ServerApp) handleAdminUserResetPassword(w http.ResponseWriter, r *http.
 		WriteJSONError(w, http.StatusInternalServerError, "ERR_PASSWORD_HASH")
 		return
 	}
-	store := a.pool.GetLibSQLStore()
+	store := a.pool.GetMySQLStore()
 	if store == nil {
-		WriteJSONError(w, http.StatusServiceUnavailable, "ERR_LIBSQL_NOT_INITIALIZED")
+		WriteJSONError(w, http.StatusServiceUnavailable, "ERR_DATABASE_NOT_INITIALIZED")
 		return
 	}
 	if _, err := store.ExecuteSQL(
@@ -991,9 +992,9 @@ func (a *ServerApp) handleAdminUserDelete(w http.ResponseWriter, r *http.Request
 		WriteJSONError(w, http.StatusBadRequest, "Không thể xóa tài khoản Quản trị viên gốc.")
 		return
 	}
-	store := a.pool.GetLibSQLStore()
+	store := a.pool.GetMySQLStore()
 	if store == nil {
-		WriteJSONError(w, http.StatusServiceUnavailable, "ERR_LIBSQL_NOT_INITIALIZED")
+		WriteJSONError(w, http.StatusServiceUnavailable, "ERR_DATABASE_NOT_INITIALIZED")
 		return
 	}
 
@@ -1016,9 +1017,9 @@ func (a *ServerApp) handleAdminUserDelete(w http.ResponseWriter, r *http.Request
 // ============================================================================
 
 func (a *ServerApp) ensureScopedRecordID(table string, requestedID string, prefix string, ownerScope string) (string, error) {
-	store := a.pool.GetLibSQLStore()
+	store := a.pool.GetMySQLStore()
 	if store == nil {
-		return "", fmt.Errorf("ERR_LIBSQL_NOT_INITIALIZED")
+		return "", fmt.Errorf("ERR_DATABASE_NOT_INITIALIZED")
 	}
 	cleanID := strings.TrimSpace(requestedID)
 	if cleanID == "" {
@@ -1040,9 +1041,9 @@ func (a *ServerApp) handleWorkspaceSearch(w http.ResponseWriter, r *http.Request
 		WriteJSONError(w, http.StatusMethodNotAllowed, "ERR_METHOD_NOT_ALLOWED")
 		return
 	}
-	store := a.pool.GetLibSQLStore()
+	store := a.pool.GetMySQLStore()
 	if store == nil {
-		WriteJSONError(w, http.StatusServiceUnavailable, "ERR_LIBSQL_NOT_INITIALIZED")
+		WriteJSONError(w, http.StatusServiceUnavailable, "ERR_DATABASE_NOT_INITIALIZED")
 		return
 	}
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
@@ -1087,9 +1088,9 @@ func (a *ServerApp) handleWorkspaceSearch(w http.ResponseWriter, r *http.Request
 }
 
 func (a *ServerApp) handleWorkspaceDocs(w http.ResponseWriter, r *http.Request) {
-	store := a.pool.GetLibSQLStore()
+	store := a.pool.GetMySQLStore()
 	if store == nil {
-		WriteJSONError(w, http.StatusServiceUnavailable, "ERR_LIBSQL_NOT_INITIALIZED")
+		WriteJSONError(w, http.StatusServiceUnavailable, "ERR_DATABASE_NOT_INITIALIZED")
 		return
 	}
 	actor := a.resolveActor(r)
@@ -1199,9 +1200,9 @@ func (a *ServerApp) handleWorkspaceDocs(w http.ResponseWriter, r *http.Request) 
 }
 
 func (a *ServerApp) handleWorkspaceMemories(w http.ResponseWriter, r *http.Request) {
-	store := a.pool.GetLibSQLStore()
+	store := a.pool.GetMySQLStore()
 	if store == nil {
-		WriteJSONError(w, http.StatusServiceUnavailable, "ERR_LIBSQL_NOT_INITIALIZED")
+		WriteJSONError(w, http.StatusServiceUnavailable, "ERR_DATABASE_NOT_INITIALIZED")
 		return
 	}
 	actor := a.resolveActor(r)
@@ -1289,9 +1290,9 @@ func (a *ServerApp) handleWorkspaceMemories(w http.ResponseWriter, r *http.Reque
 }
 
 func (a *ServerApp) handleWorkspaceTasks(w http.ResponseWriter, r *http.Request) {
-	store := a.pool.GetLibSQLStore()
+	store := a.pool.GetMySQLStore()
 	if store == nil {
-		WriteJSONError(w, http.StatusServiceUnavailable, "ERR_LIBSQL_NOT_INITIALIZED")
+		WriteJSONError(w, http.StatusServiceUnavailable, "ERR_DATABASE_NOT_INITIALIZED")
 		return
 	}
 	actor := a.resolveActor(r)
