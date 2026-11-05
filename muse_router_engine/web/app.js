@@ -1192,7 +1192,7 @@
         const row = document.createElement("div");
         if (m.turn_id) row.setAttribute("data-turn-id", m.turn_id);
 
-        if (m.pending || !String(m.content || "").trim()) {
+        if (m.pending) {
           // Dòng trả lời để trống ngay bên dưới câu hỏi đang chờ phản hồi
           row.className = "ai-bubble-row pending-answer-row";
           const aiCard = document.createElement("div");
@@ -1202,6 +1202,16 @@
             '<span class="typing-dot"></span>' +
             '<span class="typing-dot"></span>';
           row.appendChild(aiCard);
+          streamInner.appendChild(row);
+          return;
+        }
+
+        if (!String(m.content || "").trim()) {
+          row.className = "ai-bubble-row";
+          const failedCard = document.createElement("div");
+          failedCard.className = "ai-bubble-card";
+          failedCard.innerHTML = '<div class="chat-error-alert" style="color:#b91c1c;background:#fef2f2;border:1px solid #fee2e2;border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.5;">Lượt chat trước không nhận được câu trả lời. Hãy gửi lại tin nhắn.</div>';
+          row.appendChild(failedCard);
           streamInner.appendChild(row);
           return;
         }

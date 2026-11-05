@@ -1971,6 +1971,19 @@ func (p *MuseRouterPool) RouteAndExecuteChatForOwner(
 		}
 
 		latencyMs := int(time.Since(startTs).Milliseconds())
+		if strings.TrimSpace(assistantReply) == "" {
+			emptyReplyErr := errors.New("Muse AI bridge returned an empty reply")
+			LogWarn("Node %s returned HTTP 200 with empty content; trying browser relay", candidate.Label)
+			lastErr = emptyReplyErr
+			if candidate.AuthType == "cookie" && candidate.HasHatchSess {
+				return p.prepareBrowserRelayResponse(candidate, resolvedThreadID, turnID, model, userPrompt)
+			}
+			p.releaseNode(candidate.ID, 0, latencyMs, false, emptyReplyErr.Error())
+			if !p.autoFailover {
+				break
+			}
+			continue
+		}
 		p.releaseNode(candidate.ID, tokensUsed, latencyMs, true, "")
 
 		// Tự động đồng bộ ngầm mức sử dụng Token thật từ muse.ai sau mỗi câu trả lời
