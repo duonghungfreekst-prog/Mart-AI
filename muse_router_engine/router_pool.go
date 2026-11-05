@@ -1471,22 +1471,22 @@ func (p *MuseRouterPool) wakeAndProbeNodeDirect(ctx context.Context, target *Mus
 		detail = fmt.Sprintf("Đăng nhập Muse.ai thành công (%dms), nhưng chưa đọc được dữ liệu mức sử dụng; hãy thử đồng bộ lại", int(latMs))
 	}
 	return map[string]interface{}{
-		"status":             "ready",
-		"latency_ms":         latMs,
-		"tokens_remaining":   tokRem,
+		"status":                      "ready",
+		"latency_ms":                  latMs,
+		"tokens_remaining":            tokRem,
 		"subscription_data_available": subInfo.Fetched,
-		"has_hatch_sess":     hasSess,
-		"has_hatch_gw":       hasGw,
-		"free_plan_label":    subInfo.FreePlanLabel,
-		"free_plan_value":    subInfo.FreePlanValue,
-		"free_plan_subtitle": subInfo.FreePlanSubtitle,
-		"free_plan_percent":  float64(subInfo.FreePlanPercent),
-		"topup_label":        subInfo.TopupLabel,
-		"topup_value":        subInfo.TopupValue,
-		"topup_subtitle":     subInfo.TopupSubtitle,
-		"topup_percent":      float64(subInfo.TopupPercent),
-		"device_profile":     computeDeterministicDeviceProfile(target.Fingerprint),
-		"detail":             detail,
+		"has_hatch_sess":              hasSess,
+		"has_hatch_gw":                hasGw,
+		"free_plan_label":             subInfo.FreePlanLabel,
+		"free_plan_value":             subInfo.FreePlanValue,
+		"free_plan_subtitle":          subInfo.FreePlanSubtitle,
+		"free_plan_percent":           float64(subInfo.FreePlanPercent),
+		"topup_label":                 subInfo.TopupLabel,
+		"topup_value":                 subInfo.TopupValue,
+		"topup_subtitle":              subInfo.TopupSubtitle,
+		"topup_percent":               float64(subInfo.TopupPercent),
+		"device_profile":              computeDeterministicDeviceProfile(target.Fingerprint),
+		"detail":                      detail,
 	}, nil
 }
 
@@ -1504,8 +1504,9 @@ type museSubscriptionParsed struct {
 }
 
 var (
-	reNextChunkJS = regexp.MustCompile(`/_next/static/chunks/[^"'\s<>]+\.js(?:\?[^"'\s<>]*)?`)
-	reNextActHex  = regexp.MustCompile(`[0-9a-f]{40,42}`)
+	reNextChunkJS      = regexp.MustCompile(`/_next/static/chunks/[^"'\s<>]+\.js(?:\?[^"'\s<>]*)?`)
+	reNextActHex       = regexp.MustCompile(`[0-9a-f]{40,42}`)
+	reMuseSubActionRef = regexp.MustCompile(`createServerReference\(["']([0-9a-f]{40,42})["']\s*,[^)]{0,512}["']fetchSubscriptionAction["']\)`)
 )
 
 func (p *MuseRouterPool) callMuseSubscriptionAction(ctx context.Context, upstream, cookieHeader, deployID, actionID string) (*museSubscriptionParsed, bool) {
@@ -1526,6 +1527,9 @@ func (p *MuseRouterPool) callMuseSubscriptionAction(ctx context.Context, upstrea
 	req.Header.Set("Origin", upstream)
 	req.Header.Set("Referer", upstream+"/")
 	req.Header.Set("Accept-Language", "vi-VN,vi;q=0.9,en-US;q=0.8")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	req.Header.Set("Sec-Fetch-Dest", "empty")
 	if deployID != "" && deployID != "verified" {
 		req.Header.Set("x-deployment-id", deployID)
 	}
@@ -1601,6 +1605,9 @@ func (p *MuseRouterPool) callMuseSubscriptionAction(ctx context.Context, upstrea
 			topLbl = "Token bổ sung"
 		}
 		topVal := strings.TrimSpace(strings.ReplaceAll(sub.TopupRowValueLabel, "\u00a0", " "))
+		if topVal == "" && sub.TopupBalance == 0 && sub.TopupTotal == 0 {
+			topVal = "0"
+		}
 		if topVal == "" {
 			topVal = "Chưa lấy được dữ liệu từ Muse.ai"
 		}
@@ -1653,52 +1660,87 @@ func (p *MuseRouterPool) discoverMuseSubActionID(ctx context.Context, upstream, 
 	if resp.StatusCode != http.StatusOK || len(htmlBytes) == 0 {
 		return ""
 	}
-	chunks := reNextChunkJS.FindAllString(string(htmlBytes), 20)
+	chunks := reNextChunkJS.FindAllString(string(htmlBytes), 96)
 	seen := map[string]bool{}
-	checked := 0
+	uniqueChunks := make([]string, 0, len(chunks))
 	for _, ch := range chunks {
-		if seen[ch] {
-			continue
-		}
-		seen[ch] = true
-		checked++
-		if checked > 25 {
-			break
-		}
-		cReq, errReq := http.NewRequestWithContext(ctx, http.MethodGet, upstream+ch, nil)
-		if errReq != nil {
-			continue
-		}
-		cReq.Header.Set("Cookie", cookieHeader)
-		cResp, errDo := p.httpClient.Do(cReq)
-		if errDo != nil {
-			continue
-		}
-		jsBytes, _ := io.ReadAll(io.LimitReader(cResp.Body, 524288))
-		cResp.Body.Close()
-		js := string(jsBytes)
-		for _, marker := range []string{"fetchSubscriptionAction", "fetchSubscription", "includeAgreement"} {
-			idx := strings.Index(js, marker)
-			if idx < 0 {
-				continue
-			}
-			start := idx - 350
-			if start < 0 {
-				start = 0
-			}
-			end := idx + 350
-			if end > len(js) {
-				end = len(js)
-			}
-			if found := reNextActHex.FindString(js[start:end]); found != "" {
-				if p.cache != nil {
-					p.cache.Set("muse_sub_action_id", found, 2*time.Hour)
-				}
-				return found
-			}
+		if !seen[ch] {
+			seen[ch] = true
+			uniqueChunks = append(uniqueChunks, ch)
 		}
 	}
-	return ""
+
+	// The settings module is lazy-loaded and can be beyond the initial chunks.
+	// Scan public static chunks concurrently, without sending session cookies.
+	scanCtx, cancelScan := context.WithCancel(ctx)
+	defer cancelScan()
+	sem := make(chan struct{}, 8)
+	var wg sync.WaitGroup
+	var foundMu sync.Mutex
+	found := ""
+	for _, ch := range uniqueChunks {
+		ch := ch
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+			case <-scanCtx.Done():
+				return
+			}
+			defer func() { <-sem }()
+
+			cReq, errReq := http.NewRequestWithContext(scanCtx, http.MethodGet, upstream+ch, nil)
+			if errReq != nil {
+				return
+			}
+			cResp, errDo := p.httpClient.Do(cReq)
+			if errDo != nil {
+				return
+			}
+			if cResp.ContentLength > 524288 {
+				cResp.Body.Close()
+				return
+			}
+			jsBytes, _ := io.ReadAll(io.LimitReader(cResp.Body, 524289))
+			cResp.Body.Close()
+			if len(jsBytes) > 524288 {
+				return
+			}
+			js := string(jsBytes)
+			match := reMuseSubActionRef.FindStringSubmatch(js)
+			actionID := ""
+			if len(match) > 1 {
+				actionID = match[1]
+			} else if idx := strings.Index(js, "fetchSubscriptionAction"); idx >= 0 {
+				start := idx - 350
+				if start < 0 {
+					start = 0
+				}
+				end := idx + 350
+				if end > len(js) {
+					end = len(js)
+				}
+				actionID = reNextActHex.FindString(js[start:end])
+			}
+			if actionID == "" {
+				return
+			}
+			foundMu.Lock()
+			if found == "" {
+				found = actionID
+				cancelScan()
+			}
+			foundMu.Unlock()
+		}()
+	}
+	wg.Wait()
+	foundMu.Lock()
+	defer foundMu.Unlock()
+	if found != "" && p.cache != nil {
+		p.cache.Set("muse_sub_action_id", found, 2*time.Hour)
+	}
+	return found
 }
 
 func (p *MuseRouterPool) fetchRealMuseSubscriptionGo(ctx context.Context, upstream, cookieHeader, deployID string) museSubscriptionParsed {
@@ -2015,9 +2057,9 @@ func (p *MuseRouterPool) fetchBridgeBusyMaps(parentCtx context.Context) (map[str
 }
 
 // prioritizeAndFilterBusyNodes:
-// - Nếu tài khoản đang trả lời dở câu hỏi trước (ActiveRequests > 0) hoặc còn đang làm việc nền trên Muse gốc (busyFPs/busyLabels),
-//   tự động đẩy tài khoản đó xuống sau để câu hỏi mới nhảy sang tài khoản khác đang rảnh.
-// - Nếu tài khoản vừa trả lời đoạn chat này đang hoàn toàn rảnh thì mới giữ ở tài khoản đó.
+//   - Nếu tài khoản đang trả lời dở câu hỏi trước (ActiveRequests > 0) hoặc còn đang làm việc nền trên Muse gốc (busyFPs/busyLabels),
+//     tự động đẩy tài khoản đó xuống sau để câu hỏi mới nhảy sang tài khoản khác đang rảnh.
+//   - Nếu tài khoản vừa trả lời đoạn chat này đang hoàn toàn rảnh thì mới giữ ở tài khoản đó.
 func (p *MuseRouterPool) prioritizeAndFilterBusyNodes(
 	threadID string,
 	candidates []*MuseAccountNode,
