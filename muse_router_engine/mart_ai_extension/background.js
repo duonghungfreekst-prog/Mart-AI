@@ -47,7 +47,7 @@ async function broadcastSessionReadyToOpenTabs(injectIfMissing) {
                 event: "MART_EXT_SESSION_READY",
                 cookie: cookies.sess ? cookies.header : "",
                 hasExistingSession: !!cookies.sess,
-                version: "1.2.0",
+                version: "1.2.1",
               },
               function () {
                 void chrome.runtime.lastError;
@@ -63,7 +63,7 @@ async function broadcastSessionReadyToOpenTabs(injectIfMissing) {
             event: "MART_EXT_SESSION_READY",
             cookie: cookies.sess ? cookies.header : "",
             hasExistingSession: !!cookies.sess,
-            version: "1.2.0",
+            version: "1.2.1",
           },
           function () {
             void chrome.runtime.lastError;
@@ -283,14 +283,15 @@ function waitForTabComplete(tabId, timeoutMs) {
 
 async function ensureMuseWorkerTab(switchedAccount) {
   var tabs = await chrome.tabs.query({ url: "https://muse.ai/*" });
-  var candidateTab = null;
-  for (var i = 0; i < tabs.length; i++) {
-    var u = tabs[i].url || "";
-    if (!/\/oidc\//i.test(u)) {
-      candidateTab = tabs[i];
-      break;
-    }
-  }
+  var candidates = (tabs || []).filter(function (tab) {
+    return tab && tab.id && !/\/oidc\//i.test(tab.url || "");
+  });
+  // Prefer the tab the person is viewing; otherwise use the most recently used Muse tab.
+  candidates.sort(function (a, b) {
+    if (!!a.active !== !!b.active) return a.active ? -1 : 1;
+    return (Number(b.lastAccessed) || 0) - (Number(a.lastAccessed) || 0);
+  });
+  var candidateTab = candidates[0] || null;
 
   if (candidateTab) {
     if (switchedAccount || candidateTab.status !== "complete") {
@@ -468,7 +469,19 @@ function domReadMuseSnapshot() {
 
 // Hàm chạy bên trong trang https://muse.ai: điền prompt vào composer và nhấn gửi
 function domSubmitMusePrompt(promptText) {
-  var el = document.querySelector('textarea[aria-label="Message"], textarea, [contenteditable="true"]');
+  var composers = Array.from(document.querySelectorAll('textarea, [contenteditable="true"]')).filter(function (item) {
+    var rect = item.getBoundingClientRect();
+    var style = window.getComputedStyle(item);
+    return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none" && !item.disabled;
+  });
+  composers.sort(function (a, b) {
+    var aRect = a.getBoundingClientRect();
+    var bRect = b.getBoundingClientRect();
+    var aScore = (/message|chat|tin nh.n/i.test((a.getAttribute("aria-label") || "") + " " + (a.getAttribute("placeholder") || "")) ? 100000 : 0) + aRect.bottom;
+    var bScore = (/message|chat|tin nh.n/i.test((b.getAttribute("aria-label") || "") + " " + (b.getAttribute("placeholder") || "")) ? 100000 : 0) + bRect.bottom;
+    return bScore - aScore;
+  });
+  var el = composers[0];
   if (!el) return { ok: false, error: "Không tìm thấy ô nhập tin nhắn trên muse.ai" };
 
   el.focus();
@@ -525,16 +538,17 @@ function domSubmitMusePrompt(promptText) {
       }
       if (!clicked) {
         pressEnterOnEl();
-        resolve({ ok: true });
-      } else {
-        setTimeout(function () {
-          var remaining = (el.value !== undefined ? el.value : el.textContent || "").trim();
-          if (remaining.length > 0) {
-            pressEnterOnEl();
-          }
-          resolve({ ok: true });
-        }, 120);
       }
+      // Do not press Enter after clicking Send: delayed framework updates can
+      // otherwise submit the same prompt twice. Confirm the composer accepted it.
+      setTimeout(function () {
+        var remaining = (el.value !== undefined ? el.value : el.textContent || "").trim();
+        if (remaining.length > 0) {
+          resolve({ ok: false, error: "Muse.ai chưa nhận lệnh gửi (nội dung vẫn còn trong ô chat)." });
+          return;
+        }
+        resolve({ ok: true });
+      }, 650);
     }, 140);
   });
 }
@@ -650,7 +664,7 @@ function handleBridgeAction(msg, sendResponse) {
   var action = (msg && msg.action) || "";
   if (action === "ping") {
     martCollectMuseCookies().then(function (c) {
-      sendResponse({ ok: true, version: "1.2.0", hasExistingSession: !!c.sess, supportsChatRelay: true });
+      sendResponse({ ok: true, version: "1.2.1", hasExistingSession: !!c.sess, supportsChatRelay: true });
     });
     return true;
   }
@@ -658,7 +672,7 @@ function handleBridgeAction(msg, sendResponse) {
     martCollectMuseCookies().then(function (c) {
       sendResponse({
         ok: true,
-        version: "1.2.0",
+        version: "1.2.1",
         hasExistingSession: !!c.sess,
         supportsChatRelay: true,
         cookie: c.sess ? c.header : "",
