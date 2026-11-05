@@ -1911,11 +1911,6 @@ func (p *MuseRouterPool) RouteAndExecuteChatForOwner(
 					}
 					continue
 				}
-				if ownerID != "" {
-					p.unmarkNodeRunningKeepReady(candidate.ID)
-					p.cancelQuestionTurn(resolvedThreadID, turnID)
-					return nil, errors.New("Trình duyệt xử lý trên máy chủ đang bận — vui lòng thử lại sau giây lát.")
-				}
 				return p.prepareBrowserRelayResponse(candidate, resolvedThreadID, turnID, model, userPrompt)
 			}
 			p.releaseNode(candidate.ID, 0, 0, false, errMsg)

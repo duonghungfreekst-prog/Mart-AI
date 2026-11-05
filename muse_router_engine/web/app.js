@@ -2464,7 +2464,7 @@
         renderAccountsTable();
       }
       throw new Error(
-        "Trình duyệt ngầm trên máy chủ đang khởi tạo — vui lòng đợi vài giây rồi gửi lại tin nhắn."
+        "Máy chủ Render không có trình duyệt ngầm. Vui lòng cài đặt Tiện ích 'Mart AI Extension' trên trình duyệt (hoặc khởi chạy Mart AI trên máy tính bằng tệp BAT_DUONG_HAM_CLOUDFLARE.bat) để gửi tin nhắn."
       );
     }
 
@@ -3485,8 +3485,18 @@
           } catch(_) { /* bỏ qua lỗi notification */ }
         } catch (err) {
           if (!stoppedByUser) {
-            if (aiRow && aiRow.parentNode) aiRow.remove();
-            if (uRow && uRow.parentNode) uRow.remove();
+            // Giữ nguyên câu hỏi của người dùng (uRow), không bao giờ xóa mất câu hỏi
+            if (aiRow && aiRow.parentNode) {
+              const card = aiRow.querySelector(".ai-bubble-card");
+              if (card) {
+                card.classList.remove("typing-dots-bubble");
+                card.innerHTML =
+                  '<div class="chat-error-alert" style="color:#ef4444;background:#fef2f2;border:1px solid #fee2e2;border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.5;">' +
+                  '⚠️ <strong>Không thể gửi tin nhắn:</strong> ' +
+                  escapeHtml(err.message || "Lỗi không xác định") +
+                  '</div>';
+              }
+            }
             if (!promptInput.value) {
               promptInput.value = promptText;
               promptInput.dispatchEvent(new Event("input"));
@@ -3500,7 +3510,6 @@
           }
           if (state.pendingChatCount === 0) {
             setMuseCharacterActivity(false);
-            renderActiveThreadMessages();
           }
           if (sendBtn) sendBtn.disabled = false;
         }

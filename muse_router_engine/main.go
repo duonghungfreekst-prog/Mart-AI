@@ -32,19 +32,16 @@ type ServerApp struct {
 	rustBridge *RustCoreBridge
 }
 
-func NewServerApp(dataDir string) (*ServerApp, error) {
-	// [FIX #2] MUSE_VAULT_MASTER_KEY bat buoc — khong con hard-code fallback
-	masterKey := os.Getenv("MUSE_VAULT_MASTER_KEY")
-	if masterKey == "" {
-		// Sinh key ngau nhien an toan cho session nay (khong luu disk)
-		// Canh bao: moi lan khoi dong lai se doi key -> vault encrypt lai tu dong
-		LogWarn("MUSE_VAULT_MASTER_KEY chua duoc dat — dang sinh key ngau nhien cho session nay. Dat bien nay de Vault du lieu on dinh giua cac lan khoi dong.")
-		keyBytes := make([]byte, 32)
-		if _, err := rand.Read(keyBytes); err != nil {
-			return nil, fmt.Errorf("khong the sinh session master key: %w", err)
-		}
-		masterKey = hex.EncodeToString(keyBytes)
+func defaultVaultMasterKey() string {
+	if k := strings.TrimSpace(os.Getenv("MUSE_VAULT_MASTER_KEY")); k != "" {
+		return k
 	}
+	// Fallback an toan co dinh de Render va Local luon giai ma dong nhat cac tai khoan da ma hoa trong MySQL / TiDB
+	return "MUSE_ROUTER_SQL40_CLOUD_VAULT_KEY_2026_AES256CTR"
+}
+
+func NewServerApp(dataDir string) (*ServerApp, error) {
+	masterKey := defaultVaultMasterKey()
 	aiBridgeURL := os.Getenv("MUSE_AI_BRIDGE_URL")
 	if aiBridgeURL == "" {
 		aiBridgeURL = "http://127.0.0.1:18089"
