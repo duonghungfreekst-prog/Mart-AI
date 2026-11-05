@@ -675,6 +675,8 @@ class WarmBrowserSessionManager:
         const els = Array.from(document.querySelectorAll('.prose'));
         const count = els.length;
         const lastMd = count > 0 ? nodeToMd(els[count - 1], 0).replace(/\\n{3,}/g, "\\n\\n").trim() : "";
+        const unseenEls = els.filter(el => el.getAttribute("data-mart-seen") !== "1");
+        const unseenLastMd = unseenEls.length > 0 ? nodeToMd(unseenEls[unseenEls.length - 1], 0).replace(/\\n{3,}/g, "\\n\\n").trim() : "";
 
         let statusText = "";
         let avatarFrame = "";
@@ -711,7 +713,7 @@ class WarmBrowserSessionManager:
             }
         } catch (e) {}
 
-        return { count, lastMd, statusText, avatarFrame };
+        return { count, lastMd, unseenLastMd, statusText, avatarFrame };
     }"""
 
     def __init__(self, pacer: SameIPPacer) -> None:
@@ -1060,12 +1062,20 @@ class WarmBrowserSessionManager:
             pg.goto("https://muse.ai", wait_until="domcontentloaded", timeout=25000)
             pg.wait_for_selector('textarea[aria-label="Message"], textarea, [contenteditable="true"]', timeout=15000)
 
-            # Đợi danh sách tin nhắn lịch sử (.prose) nạp ổn định lần đầu
+            # Đợi danh sách tin nhắn lịch sử (.prose) nạp ổn định lần đầu qua Noise WebSocket
             prev_cnt = -1
-            for _ in range(10):
+            stable_init = 0
+            for idx_wait in range(25):
                 pg.wait_for_timeout(200)
                 cur_cnt = pg.locator(".prose").count()
-                if cur_cnt > 0 and cur_cnt == prev_cnt:
+                if cur_cnt > 0:
+                    if cur_cnt == prev_cnt:
+                        stable_init += 1
+                        if stable_init >= 2:
+                            break
+                    else:
+                        stable_init = 0
+                elif idx_wait >= 18:
                     break
                 prev_cnt = cur_cnt
 
@@ -1123,7 +1133,8 @@ class WarmBrowserSessionManager:
                     # vào khung chat để phía Muse gốc không bị lộ cơ chế định tuyến Pool.
                     effective_prompt = prompt
 
-                    # 1. Ghi nhận chính xác trạng thái TRƯỚC khi nhấn Enter để không bao giờ lấy nhầm tin nhắn cũ
+                    # 1. Ghi nhận chính xác trạng thái TRƯỚC khi nhấn Enter và đánh dấu data-mart-seen="1" để không bao giờ lấy nhầm tin nhắn cũ
+                    page.evaluate("() => { document.querySelectorAll('.prose').forEach(el => el.setAttribute('data-mart-seen', '1')); }")
                     baseline = page.evaluate(self.EXTRACT_PROSE_JS)
                     base_count = int(baseline.get("count") or 0)
                     base_last_md = str(baseline.get("lastMd") or "")
@@ -1166,7 +1177,11 @@ class WarmBrowserSessionManager:
                         page.wait_for_timeout(200)
                         snap = page.evaluate(self.EXTRACT_PROSE_JS)
                         cur_count = int(snap.get("count") or 0)
-                        cur_md = str(snap.get("lastMd") or "")
+                        cur_md = str(snap.get("unseenLastMd") or "").strip()
+                        if not cur_md and cur_count > base_count:
+                            cand_md = str(snap.get("lastMd") or "").strip()
+                            if cand_md != base_last_md:
+                                cur_md = cand_md
                         cur_status = str(snap.get("statusText") or "")
                         cur_avatar = str(snap.get("avatarFrame") or "")
 
@@ -1176,10 +1191,7 @@ class WarmBrowserSessionManager:
                         if cur_avatar:
                             upd["avatar_frame"] = cur_avatar
 
-                        is_new_reply = (cur_count > base_count and len(cur_md) > 0) or (
-                            cur_count > 0 and len(cur_md) > 0 and cur_md != base_last_md
-                        )
-                        if not is_new_reply or cur_md == prompt.strip() or cur_md == effective_prompt.strip():
+                        if not cur_md or cur_md == base_last_md or cur_md == prompt.strip() or cur_md == effective_prompt.strip():
                             self._update_account_state(fp, **upd)
                             continue
 

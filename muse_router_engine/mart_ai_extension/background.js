@@ -232,22 +232,35 @@ function parseCookieHeaderMap(rawHeader) {
   return map;
 }
 
+function safeDecodeCookieVal(val) {
+  var s = (val || "").trim();
+  if (s.indexOf("%") >= 0) {
+    try {
+      return decodeURIComponent(s);
+    } catch (_) {
+      return s;
+    }
+  }
+  return s;
+}
+
 async function applyRelayAccountCookies(cookieHeader) {
   var desired = parseCookieHeaderMap(cookieHeader);
-  var desiredSess = desired["hatch_sess"] || "";
+  var desiredSess = safeDecodeCookieVal(desired["hatch_sess"] || "");
   if (!desiredSess) return false;
 
   var current = await martCollectMuseCookies();
-  if (current.sess === desiredSess) {
+  if (safeDecodeCookieVal(current.sess || "") === desiredSess) {
     return false;
   }
 
   var names = Object.keys(desired);
   isApplyingRelayCookie = true;
   try {
+    await martClearMuseSessionCookies();
     for (var i = 0; i < names.length; i++) {
       var name = names[i];
-      var val = desired[name];
+      var val = safeDecodeCookieVal(desired[name]);
       await new Promise(function (resolve) {
         chrome.cookies.set(
           {
@@ -469,7 +482,8 @@ function domReadMuseSnapshot() {
     return Array.from(n.childNodes).map(function (c) { return nodeToMd(c, listDepth); }).join("");
   }
 
-  var composer = document.querySelector('textarea[aria-label="Message"], textarea, [contenteditable="true"]');
+  var composer = document.querySelector('textarea[aria-label="Message"], textarea[aria-label="Nhắn tin"], textarea, [contenteditable="true"]');
+  var compVal = composer ? ((composer.value !== undefined ? composer.value : composer.textContent) || "").trim() : "";
   var isGen = !!document.querySelector('.animate-spin, button[aria-label*="Stop" i], button[aria-label*="Dừng" i], button.stop-button, [data-is-generating="true"], .typing-indicator, .pulse');
   var rawEls = Array.from(document.querySelectorAll('.prose'));
   if (rawEls.length === 0) {
@@ -482,23 +496,37 @@ function domReadMuseSnapshot() {
     return !rawEls.some(function (other) { return other !== el && el.contains(other); });
   });
   var mdList = [];
+  var unseenMdList = [];
   for (var i = 0; i < leafEls.length; i++) {
     var m = nodeToMd(leafEls[i], 0).replace(/\n{3,}/g, "\n\n").trim();
-    if (m.length > 0) mdList.push(m);
+    if (m.length > 0) {
+      mdList.push(m);
+      if (leafEls[i].getAttribute("data-mart-seen") !== "1") {
+        unseenMdList.push(m);
+      }
+    }
   }
   var count = mdList.length;
   var lastMd = count > 0 ? mdList[count - 1] : "";
+  var unseenCount = unseenMdList.length;
+  var unseenLastMd = unseenCount > 0 ? unseenMdList[unseenCount - 1] : "";
   return {
     hasComposer: !!composer,
+    composerValue: compVal,
     isGenerating: isGen,
     count: count,
     lastMd: lastMd,
+    unseenCount: unseenCount,
+    unseenLastMd: unseenLastMd,
     url: location.href,
   };
 }
 
 // Hàm chạy bên trong trang https://muse.ai: điền prompt vào composer và nhấn gửi
 function domSubmitMusePrompt(promptText) {
+  Array.from(document.querySelectorAll(".prose")).forEach(function (p) {
+    p.setAttribute("data-mart-seen", "1");
+  });
   var composers = Array.from(document.querySelectorAll('textarea, [contenteditable="true"]')).filter(function (item) {
     var rect = item.getBoundingClientRect();
     var style = window.getComputedStyle(item);
@@ -507,8 +535,8 @@ function domSubmitMusePrompt(promptText) {
   composers.sort(function (a, b) {
     var aRect = a.getBoundingClientRect();
     var bRect = b.getBoundingClientRect();
-    var aScore = (/message|chat|tin nh.n/i.test((a.getAttribute("aria-label") || "") + " " + (a.getAttribute("placeholder") || "")) ? 100000 : 0) + aRect.bottom;
-    var bScore = (/message|chat|tin nh.n/i.test((b.getAttribute("aria-label") || "") + " " + (b.getAttribute("placeholder") || "")) ? 100000 : 0) + bRect.bottom;
+    var aScore = (/message|chat|nhắn tin|tin nhắn/i.test((a.getAttribute("aria-label") || "") + " " + (a.getAttribute("placeholder") || "")) ? 100000 : 0) + aRect.bottom;
+    var bScore = (/message|chat|nhắn tin|tin nhắn/i.test((b.getAttribute("aria-label") || "") + " " + (b.getAttribute("placeholder") || "")) ? 100000 : 0) + bRect.bottom;
     return bScore - aScore;
   });
   var el = composers[0];
@@ -533,32 +561,22 @@ function domSubmitMusePrompt(promptText) {
 
   return new Promise(function (resolve) {
     setTimeout(function () {
-      var clicked = false;
-      if (el.form) {
-        var submitBtn = el.form.querySelector('button[type="submit"]:not(:disabled)');
-        if (submitBtn) {
-          submitBtn.click();
-          clicked = true;
-        } else if (typeof el.form.requestSubmit === "function") {
-          try {
-            el.form.requestSubmit();
-            clicked = true;
-          } catch (_) {}
-        }
-      }
-      if (!clicked) {
+      Array.from(document.querySelectorAll(".prose")).forEach(function (p) {
+        p.setAttribute("data-mart-seen", "1");
+      });
+      function tryClickSendButton() {
         var root = el.parentElement;
         for (var d = 0; d < 5 && root; d++) {
           var sendBtn = root.querySelector(
-            'button[type="submit"]:not(:disabled), button[aria-label*="Send" i]:not(:disabled), button[aria-label*="Gửi" i]:not(:disabled), button[data-testid*="send" i]:not(:disabled)'
+            'button[aria-label="Gửi"]:not(:disabled), button[aria-label*="Gửi" i]:not(:disabled), button[aria-label="Send"]:not(:disabled), button[aria-label*="Send" i]:not(:disabled), button[data-testid*="send" i]:not(:disabled)'
           );
           if (sendBtn) {
             sendBtn.click();
-            clicked = true;
-            break;
+            return true;
           }
           root = root.parentElement;
         }
+        return false;
       }
       function pressEnterOnEl() {
         var evOpts = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
@@ -566,36 +584,17 @@ function domSubmitMusePrompt(promptText) {
         el.dispatchEvent(new KeyboardEvent("keypress", evOpts));
         el.dispatchEvent(new KeyboardEvent("keyup", evOpts));
       }
-      function tryClickFallbackSendButton() {
-        var root = el.parentElement;
-        for (var d = 0; d < 5 && root; d++) {
-          var btns = Array.from(root.querySelectorAll("button:not(:disabled)")).filter(function (btn) {
-            var r = btn.getBoundingClientRect();
-            if (r.width <= 0 || r.height <= 0) return false;
-            var lbl = ((btn.getAttribute("aria-label") || "") + " " + (btn.getAttribute("title") || "") + " " + (btn.textContent || "")).toLowerCase();
-            if (/attach|upload|file|image|plus|add|model|voice|mic|audio|stop|cancel|new|clear/i.test(lbl)) return false;
-            return !!btn.querySelector("svg");
-          });
-          if (btns.length > 0) {
-            btns.sort(function (a, b) {
-              var ra = a.getBoundingClientRect();
-              var rb = b.getBoundingClientRect();
-              return (rb.right + rb.bottom) - (ra.right + ra.bottom);
-            });
-            btns[0].click();
-            return true;
-          }
-          root = root.parentElement;
-        }
-        return false;
-      }
+
+      var clicked = tryClickSendButton();
       if (!clicked) {
         pressEnterOnEl();
       }
       setTimeout(function () {
         var remaining = (el.value !== undefined ? el.value : el.textContent || "").trim();
         if (remaining.length > 0) {
-          tryClickFallbackSendButton();
+          if (!tryClickSendButton()) {
+            pressEnterOnEl();
+          }
           setTimeout(function () {
             var rem2 = (el.value !== undefined ? el.value : el.textContent || "").trim();
             if (rem2.length > 0) {
@@ -607,8 +606,8 @@ function domSubmitMusePrompt(promptText) {
           return;
         }
         resolve({ ok: true });
-      }, 450);
-    }, 140);
+      }, 400);
+    }, 160);
   });
 }
 
@@ -630,20 +629,31 @@ async function executeMuseChatDirect(prompt, cookieHeader) {
   var switched = await applyRelayAccountCookies(cookieHeader || "");
   var tabId = await ensureMuseWorkerTab(switched);
 
-  // Chờ composer sẵn sàng & lịch sử .prose ổn định
+  // Chờ composer sẵn sàng & lịch sử .prose qua Noise WebSocket tải xong hoàn toàn
   var baseline = null;
   var prevCnt = -1;
-  for (var w = 0; w < 35; w++) {
+  var prevMd = "";
+  var stableBaseTicks = 0;
+  for (var w = 0; w < 40; w++) {
     var snap = await evalInTab(tabId, domReadMuseSnapshot, []);
     if (snap && snap.hasComposer) {
-      if (w >= 2 && snap.count === prevCnt) {
-        baseline = snap;
+      baseline = snap;
+      if (snap.count > 0) {
+        if (snap.count === prevCnt && snap.lastMd === prevMd && !snap.isGenerating) {
+          stableBaseTicks += 1;
+          if (stableBaseTicks >= 2) {
+            break;
+          }
+        } else {
+          stableBaseTicks = 0;
+        }
+      } else if (w >= 18 && !snap.isGenerating) {
         break;
       }
       prevCnt = snap.count;
-      baseline = snap;
+      prevMd = snap.lastMd;
     }
-    await sleepMs(300);
+    await sleepMs(250);
   }
 
   if (!baseline || !baseline.hasComposer) {
@@ -668,29 +678,29 @@ async function executeMuseChatDirect(prompt, cookieHeader) {
     var cur = await evalInTab(tabId, domReadMuseSnapshot, []);
     if (!cur) continue;
 
-    var isNew =
-      (cur.count > baseline.count && cur.lastMd.length > 0) ||
-      (cur.count > 0 && cur.lastMd.length > 0 && cur.lastMd !== baseline.lastMd);
-
-    if (!isNew || cur.lastMd === cleanPrompt) {
+    var replyMd = (cur.unseenLastMd || "").trim();
+    if (!replyMd && cur.count > baseline.count && cur.lastMd !== baseline.lastMd) {
+      replyMd = (cur.lastMd || "").trim();
+    }
+    if (!replyMd || replyMd === baseline.lastMd || replyMd === cleanPrompt) {
       continue;
     }
 
     // Nếu Muse đang sinh câu trả lời hoặc render video/media (isGenerating = true), tiếp tục chờ
     if (cur.isGenerating) {
-      lastNewMd = cur.lastMd;
+      lastNewMd = replyMd;
       stableTicks = 0;
       continue;
     }
 
-    if (cur.lastMd === lastNewMd) {
+    if (replyMd === lastNewMd) {
       stableTicks += 1;
       // Chờ ít nhất 5 nhịp (~1.3s) ổn định sau khi Muse đã ngừng generating để bắt trọn vẹn media
       if (stableTicks >= 5) {
         break;
       }
     } else {
-      lastNewMd = cur.lastMd;
+      lastNewMd = replyMd;
       stableTicks = 0;
     }
   }
