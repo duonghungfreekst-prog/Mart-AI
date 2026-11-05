@@ -564,6 +564,10 @@ func (a *ServerApp) Routes() http.Handler {
 			preferredNode = "auto"
 		}
 		idemKey := r.Header.Get("X-Idempotency-Key")
+		chatCtx := r.Context()
+		if r.Header.Get("X-Mart-Client") == "web" {
+			chatCtx = context.WithValue(chatCtx, clientBrowserRelayContextKey{}, true)
+		}
 
 		// Hỗ trợ Server-Sent Events (SSE) Streaming thời gian thực
 		wantsStream := strings.Contains(r.Header.Get("Accept"), "text/event-stream") || req.Stream
@@ -585,7 +589,7 @@ func (a *ServerApp) Routes() http.Handler {
 			}
 
 			res, err := a.pool.RouteAndExecuteChatForOwner(
-				r.Context(),
+				chatCtx,
 				actor.OwnerScope(),
 				req.ThreadID,
 				preferredNode,
@@ -613,7 +617,7 @@ func (a *ServerApp) Routes() http.Handler {
 			return
 		}
 		res, err := a.pool.RouteAndExecuteChatForOwner(
-			r.Context(),
+			chatCtx,
 			actor.OwnerScope(),
 			req.ThreadID,
 			preferredNode,

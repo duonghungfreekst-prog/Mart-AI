@@ -1192,7 +1192,7 @@
         const row = document.createElement("div");
         if (m.turn_id) row.setAttribute("data-turn-id", m.turn_id);
 
-        if (m.pending) {
+        if (m.pending && (state.pendingChatCount || 0) > 0) {
           // Dòng trả lời để trống ngay bên dưới câu hỏi đang chờ phản hồi
           row.className = "ai-bubble-row pending-answer-row";
           const aiCard = document.createElement("div");
