@@ -496,16 +496,17 @@ function domReadMuseSnapshot() {
     return !rawEls.some(function (other) { return other !== el && el.contains(other); });
   });
   var expectedNorm = String(window.__martExpectedPrompt || "").replace(/\s+/g, " ").trim().toLowerCase();
-  var expectedPrefix = expectedNorm.slice(0, 28);
-  var userCandidates = Array.from(document.querySelectorAll('div.flex.flex-col.gap-2, [data-message-author-role="user"]')).filter(function (el) {
+  var expectedSnippet = expectedNorm.length > 20 ? expectedNorm.slice(0, 20) : expectedNorm;
+  var userCandidates = Array.from(document.querySelectorAll('div.flex.flex-col.gap-2, [data-message-author-role="user"], div[class*="message"]')).filter(function (el) {
     if (el.getAttribute("data-mart-seen") === "1") return false;
     if (el.closest('form, textarea, [contenteditable="true"]')) return false;
     if (el.querySelector(".prose")) return false;
     var tNorm = (el.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
-    var isUserPrefix = tNorm.indexOf("bạn:") === 0 || tNorm.indexOf("you:") === 0 || el.getAttribute("data-message-author-role") === "user";
-    if (!isUserPrefix) return false;
-    if (expectedPrefix && tNorm.indexOf(expectedPrefix) === -1) return false;
-    return true;
+    if (!tNorm) return false;
+    if (expectedSnippet && tNorm.indexOf(expectedSnippet) >= 0) return true;
+    var isUserRole = el.getAttribute("data-message-author-role") === "user" ||
+                     /^(bạn|you|user|[a-zA-Z0-9_\s-]+):/i.test(tNorm);
+    return isUserRole;
   });
   var lastUnseenUserEl = userCandidates.length > 0 ? userCandidates[userCandidates.length - 1] : null;
   var userTurnSent = !!lastUnseenUserEl;
@@ -520,7 +521,7 @@ function domReadMuseSnapshot() {
           if (Boolean(lastUnseenUserEl.compareDocumentPosition(leafEls[i]) & 4)) {
             unseenMdList.push(m);
           }
-        } else if (!expectedPrefix) {
+        } else {
           unseenMdList.push(m);
         }
       }
@@ -702,18 +703,11 @@ async function executeMuseChatDirect(prompt, cookieHeader, forceReload) {
     var cur = await evalInTab(tabId, domReadMuseSnapshot, []);
     if (!cur) continue;
 
-    if (!cur.userTurnSent) {
-      noUserTurnTicks += 1;
-      if (noUserTurnTicks >= 6 && refillAttempts < 5) {
-        refillAttempts += 1;
-        noUserTurnTicks = 0;
-        await evalInTab(tabId, domSubmitMusePrompt, [prompt]);
-      }
-      continue;
-    }
-
     var replyMd = (cur.unseenLastMd || "").trim();
-    if (!replyMd || replyMd === cleanPrompt) {
+    if (!replyMd && cur.count > baseline.count && cur.lastMd !== baseline.lastMd) {
+      replyMd = (cur.lastMd || "").trim();
+    }
+    if (!replyMd || replyMd === baseline.lastMd || replyMd === cleanPrompt) {
       continue;
     }
 

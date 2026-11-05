@@ -205,16 +205,17 @@ const cdpMuseSnapshotJS = `
     return !rawEls.some(function(other) { return other !== el && el.contains(other); });
   });
   var expectedNorm = String(window.__martExpectedPrompt || "").replace(/\s+/g, " ").trim().toLowerCase();
-  var expectedPrefix = expectedNorm.slice(0, 28);
-  var userCandidates = Array.from(document.querySelectorAll('div.flex.flex-col.gap-2, [data-message-author-role="user"]')).filter(function(el) {
+  var expectedSnippet = expectedNorm.length > 20 ? expectedNorm.slice(0, 20) : expectedNorm;
+  var userCandidates = Array.from(document.querySelectorAll('div.flex.flex-col.gap-2, [data-message-author-role="user"], div[class*="message"]')).filter(function(el) {
     if (el.getAttribute("data-mart-seen") === "1") return false;
     if (el.closest('form, textarea, [contenteditable="true"]')) return false;
     if (el.querySelector('.prose')) return false;
     var tNorm = (el.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
-    var isUserPrefix = tNorm.indexOf("bạn:") === 0 || tNorm.indexOf("you:") === 0 || el.getAttribute("data-message-author-role") === "user";
-    if (!isUserPrefix) return false;
-    if (expectedPrefix && tNorm.indexOf(expectedPrefix) === -1) return false;
-    return true;
+    if (!tNorm) return false;
+    if (expectedSnippet && tNorm.indexOf(expectedSnippet) >= 0) return true;
+    var isUserRole = el.getAttribute("data-message-author-role") === "user" ||
+                     /^(bạn|you|user|[a-zA-Z0-9_\s-]+):/i.test(tNorm);
+    return isUserRole;
   });
   var lastUnseenUserEl = userCandidates.length > 0 ? userCandidates[userCandidates.length - 1] : null;
   var userTurnSent = !!lastUnseenUserEl;
@@ -229,7 +230,7 @@ const cdpMuseSnapshotJS = `
           if (Boolean(lastUnseenUserEl.compareDocumentPosition(leafEls[i]) & 4)) {
             unseenMdList.push(m);
           }
-        } else if (!expectedPrefix) {
+        } else {
           unseenMdList.push(m);
         }
       }
@@ -1477,8 +1478,6 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 	lastNewMd := ""
 	stableTicks := 0
 	resendAttempts := 0
-	noUserTurnTicks := 0
-	refillAttempts := 0
 
 	for time.Now().Before(deadline) {
 		select {
@@ -1492,26 +1491,18 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 			continue
 		}
 
-		// Nếu văn bản vẫn còn nguyên trong ô nhập (do WebSocket vừa mới kết nối xong), bấm Gửi lại
-		if !cur.UserTurnSent {
-			noUserTurnTicks++
-			if cur.ComposerValue != "" && resendAttempts < 8 {
-				resendAttempts++
-				clickSendOrEnter()
-				continue
-			}
-			if noUserTurnTicks >= 6 && refillAttempts < 5 {
-				refillAttempts++
-				noUserTurnTicks = 0
-				_ = wt.Page.Call(ctx, "Runtime.evaluate", map[string]interface{}{"expression": markAndFillJS}, nil)
-				time.Sleep(150 * time.Millisecond)
-				clickSendOrEnter()
-			}
+		// Nếu văn bản vẫn còn nguyên trong ô nhập (chưa nhận Enter), bấm Gửi lại
+		if cur.ComposerValue != "" && resendAttempts < 8 {
+			resendAttempts++
+			clickSendOrEnter()
 			continue
 		}
 
 		replyMd := strings.TrimSpace(cur.UnseenLastMd)
-		if replyMd == "" || replyMd == cleanPrompt {
+		if replyMd == "" && cur.Count > baseline.Count && cur.LastMd != baseline.LastMd {
+			replyMd = strings.TrimSpace(cur.LastMd)
+		}
+		if replyMd == "" || replyMd == baseline.LastMd || replyMd == cleanPrompt {
 			continue
 		}
 
