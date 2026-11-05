@@ -163,19 +163,73 @@
   }
 
   function formatInlineMarkdown(line) {
+    // 1. Nhận diện video player: ![video poster="..."](url) hoặc ![video](url)
+    const videoMatch = line.match(/^!\[video(?:\s+poster="([^"]*)")?\]\(([^)]+)\)$/i);
+    if (videoMatch) {
+      const poster = escapeHtml(videoMatch[1] || "");
+      const vUrl = escapeHtml(videoMatch[2] || "");
+      return '<div class="chat-media-video-wrap">' +
+        '<video controls preload="metadata" playsinline class="chat-native-video"' + (poster ? ' poster="' + poster + '"' : '') + ' src="' + vUrl + '">' +
+        'Trình duyệt không hỗ trợ thẻ video.' +
+        '</video>' +
+        '<div class="chat-media-meta"><span class="chat-media-badge">🎥 Video Muse AI</span><a href="' + vUrl + '" target="_blank" rel="noopener noreferrer" class="chat-media-link">🔗 Mở toàn màn hình</a></div>' +
+        '</div>';
+    }
+
+    // [embed-video](url)
+    const embedMatch = line.match(/^\[embed-video\]\(([^)]+)\)$/i);
+    if (embedMatch) {
+      const eUrl = escapeHtml(embedMatch[1] || "");
+      return '<div class="chat-media-embed-wrap">' +
+        '<iframe src="' + eUrl + '" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen frameborder="0" class="chat-embed-iframe"></iframe>' +
+        '</div>';
+    }
+
+    // [audio](url)
+    const audioMatch = line.match(/^\[audio\]\(([^)]+)\)$/i);
+    if (audioMatch) {
+      const aUrl = escapeHtml(audioMatch[1] || "");
+      return '<div class="chat-media-audio-wrap"><audio controls src="' + aUrl + '" class="chat-native-audio"></audio></div>';
+    }
+
+    // Link video trần (.mp4, .webm, muse.ai/v/...)
+    const rawVideoMatch = line.match(/^https?:\/\/[^\s]+(?:\.(?:mp4|webm|mov|m4v)(?:\?[^\s]*)?|muse\.ai\/v\/[a-zA-Z0-9_-]+)$/i);
+    if (rawVideoMatch) {
+      const vUrl = escapeHtml(rawVideoMatch[0]);
+      if (vUrl.indexOf("muse.ai/v/") >= 0) {
+        const embedUrl = vUrl.replace("/v/", "/embed/");
+        return '<div class="chat-media-embed-wrap"><iframe src="' + embedUrl + '" allowfullscreen frameborder="0" class="chat-embed-iframe"></iframe></div>';
+      }
+      return '<div class="chat-media-video-wrap"><video controls preload="metadata" playsinline class="chat-native-video" src="' + vUrl + '"></video></div>';
+    }
+
+    // 2. Escape HTML cho các đoạn văn bản thường
     let out = escapeHtml(line);
+
+    // Markdown Image: ![alt](url)
+    out = out.replace(/!\[([^\]]*)\]\((https?:\/\/[^)]+)\)/g, function(_, alt, src) {
+      return '<div class="chat-media-img-wrap"><img src="' + src + '" alt="' + alt + '" class="chat-native-img" loading="lazy" onclick="window.open(this.src,\'_blank\')"/></div>';
+    });
+
+    // Markdown Link: [text](url)
+    out = out.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, function(_, txt, href) {
+      return '<a href="' + href + '" target="_blank" rel="noopener noreferrer" class="chat-markdown-link">' + txt + '</a>';
+    });
+
+    // Code inline
     out = out.replace(
       /`([^`]+)`/g,
-      '<code style="background:rgba(0,0,0,0.06);padding:1px 5px;border-radius:4px;font-family:var(--font-mono);font-size:0.86em;">$1</code>'
+      '<code class="chat-inline-code">$1</code>'
     );
+    // Bold & Italic
     out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
     out = out.replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
     return out;
   }
 
   /**
-   * Chuyển đổi văn bản / Markdown phản hồi từ Muse.ai sang cấu trúc HTML chuẩn
-   * (<p>, <strong>, <ul><li> cấp 1 • và <ul><ul><li> cấp 2 ◦ giống hệt https://muse.ai)
+   * Chuyển đổi văn bản / Markdown phản hồi từ Muse.ai sang HTML chuẩn
+   * Hỗ trợ đầy đủ: Code Blocks (XML, HTML, JSON, Go, Python, SQL...), Video Player, Markdown Table, Lists, Quotes.
    */
   function formatMarkdownNative(rawText) {
     const text = String(rawText || "").replace(/\r\n/g, "\n");
@@ -187,12 +241,37 @@
     blocks.forEach(function (block) {
       if (block.startsWith("```") && block.endsWith("```")) {
         const firstNewline = block.indexOf("\n");
-        const codeContent =
-          firstNewline >= 0 ? block.slice(firstNewline + 1, -3) : block.slice(3, -3);
+        let lang = "";
+        let codeContent = "";
+        if (firstNewline >= 0) {
+          lang = block.slice(3, firstNewline).trim();
+          codeContent = block.slice(firstNewline + 1, -3);
+        } else {
+          codeContent = block.slice(3, -3);
+        }
+
+        // Tự động đoán ngôn ngữ XML/HTML/JSON nếu chưa có
+        if (!lang) {
+          const trimmedCode = codeContent.trim();
+          if (trimmedCode.startsWith("<?xml") || (trimmedCode.startsWith("<") && trimmedCode.endsWith(">") && trimmedCode.indexOf("</") > 0)) {
+            lang = trimmedCode.toLowerCase().startsWith("<!doctype html") || trimmedCode.toLowerCase().startsWith("<html") ? "html" : "xml";
+          } else if ((trimmedCode.startsWith("{") && trimmedCode.endsWith("}")) || (trimmedCode.startsWith("[") && trimmedCode.endsWith("]"))) {
+            lang = "json";
+          }
+        }
+
+        const langBadge = lang ? escapeHtml(lang.toUpperCase()) : "CODE";
         htmlParts.push(
-          '<pre style="background:#1e293b;color:#f8fafc;padding:12px;border-radius:10px;overflow-x:auto;margin:8px 0;font-family:var(--font-mono);font-size:12.5px;"><code>' +
-            escapeHtml(codeContent.trim()) +
-            "</code></pre>"
+          '<div class="chat-code-block-wrap">' +
+            '<div class="chat-code-header">' +
+              '<span class="chat-code-lang">' + langBadge + '</span>' +
+              '<button type="button" class="chat-copy-code-btn" title="Sao chép toàn bộ mã">' +
+                '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px;"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>' +
+                '<span>Sao chép</span>' +
+              '</button>' +
+            '</div>' +
+            '<pre class="chat-pre-code"><code>' + escapeHtml(codeContent.trim()) + '</code></pre>' +
+          '</div>'
         );
         return;
       }
@@ -200,6 +279,10 @@
       const lines = block.split("\n");
       let inTopList = false;
       let inSubList = false;
+      let inTable = false;
+      let tableRows = [];
+      let inBlockquote = false;
+      let quoteBuffer = [];
       let paraBuffer = [];
 
       function flushPara() {
@@ -220,7 +303,90 @@
         }
       }
 
+      function flushTable() {
+        if (inTable && tableRows.length > 0) {
+          let tHtml = '<div class="chat-table-wrapper"><table class="chat-markdown-table">';
+          tableRows.forEach(function (row, rIdx) {
+            if (rIdx === 1 && row.every(function (c) { return /^:?-+:?$/.test(c.trim()); })) {
+              return;
+            }
+            const isHead = rIdx === 0;
+            const tag = isHead ? "th" : "td";
+            tHtml += isHead ? "<thead><tr>" : (rIdx === 2 || (rIdx === 1 && tableRows.length === 2) ? "<tbody><tr>" : "<tr>");
+            row.forEach(function (cell) {
+              tHtml += "<" + tag + ">" + formatInlineMarkdown(cell.trim()) + "</" + tag + ">";
+            });
+            tHtml += isHead ? "</tr></thead>" : "</tr>";
+          });
+          if (tableRows.length > 1) {
+            tHtml += "</tbody>";
+          }
+          tHtml += "</table></div>";
+          htmlParts.push(tHtml);
+          tableRows = [];
+          inTable = false;
+        }
+      }
+
+      function flushBlockquote() {
+        if (inBlockquote && quoteBuffer.length > 0) {
+          htmlParts.push('<blockquote class="chat-blockquote">' + quoteBuffer.join("<br>") + "</blockquote>");
+          quoteBuffer = [];
+          inBlockquote = false;
+        }
+      }
+
+      function resetAllContainers() {
+        closeLists();
+        flushTable();
+        flushBlockquote();
+        flushPara();
+      }
+
       lines.forEach(function (line) {
+        const trimmed = line.trim();
+
+        // 1. Kiểm tra Bảng (| Col 1 | Col 2 |)
+        if (trimmed.startsWith("|") && trimmed.endsWith("|") && trimmed.length > 2) {
+          closeLists();
+          flushBlockquote();
+          flushPara();
+          inTable = true;
+          const rawCells = trimmed.slice(1, -1).split("|");
+          tableRows.push(rawCells);
+          return;
+        } else if (inTable) {
+          flushTable();
+        }
+
+        // 2. Kiểm tra Trích dẫn Blockquote (> quote)
+        if (trimmed.startsWith(">")) {
+          closeLists();
+          flushTable();
+          flushPara();
+          inBlockquote = true;
+          quoteBuffer.push(formatInlineMarkdown(trimmed.replace(/^>\s?/, "")));
+          return;
+        } else if (inBlockquote) {
+          flushBlockquote();
+        }
+
+        // 3. Đường kẻ ngang (--- hoặc ***)
+        if (/^(?:---|\*\*\*|___)$/.test(trimmed)) {
+          resetAllContainers();
+          htmlParts.push('<hr class="chat-divider">');
+          return;
+        }
+
+        // 4. Video, Embed hoặc Media độc lập
+        if (trimmed.startsWith("![video") || trimmed.startsWith("[embed-video]") || trimmed.startsWith("[audio]") ||
+            /^(?:https?:\/\/[^\s]+(?:\.(?:mp4|webm|mov|m4v)(?:\?[^\s]*)?|muse\.ai\/v\/[a-zA-Z0-9_-]+))$/.test(trimmed)) {
+          resetAllContainers();
+          htmlParts.push(formatInlineMarkdown(trimmed));
+          return;
+        }
+
+        // 5. Danh sách Unordered & Ordered
         const subMatch = line.match(/^(?:\s{2,}|\t+)(?:[-*•◦]|\d+\.)\s+(.*)$/);
         const topMatch = !subMatch && line.match(/^\s?(?:[-*•]|\d+\.)\s+(.*)$/);
 
@@ -249,7 +415,7 @@
             inTopList = true;
           }
           htmlParts.push("<li>" + formatInlineMarkdown(topMatch[1]) + "</li>");
-        } else if (!line.trim()) {
+        } else if (!trimmed) {
           closeLists();
           flushPara();
         } else {
@@ -258,12 +424,31 @@
         }
       });
 
-      closeLists();
-      flushPara();
+      resetAllContainers();
     });
 
     return htmlParts.join("");
   }
+
+  // Đăng ký sự kiện sao chép mã nguồn cho tất cả các nút Copy trong Code Blocks
+  document.addEventListener("click", function (ev) {
+    const btn = ev.target && ev.target.closest ? ev.target.closest(".chat-copy-code-btn") : null;
+    if (!btn) return;
+    const wrap = btn.closest(".chat-code-block-wrap");
+    if (!wrap) return;
+    const codeEl = wrap.querySelector("code");
+    if (!codeEl) return;
+    navigator.clipboard.writeText(codeEl.textContent || "").then(function () {
+      const span = btn.querySelector("span");
+      const origText = span ? span.textContent : btn.textContent;
+      if (span) span.textContent = "Đã chép ✓";
+      btn.classList.add("copied");
+      setTimeout(function () {
+        if (span) span.textContent = origText;
+        btn.classList.remove("copied");
+      }, 2000);
+    });
+  });
 
   async function apiRequest(path, options) {
     const opts = options || {};

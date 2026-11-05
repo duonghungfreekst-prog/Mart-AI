@@ -45,34 +45,120 @@ const cdpStealthAndPopupHookJS = `
 
 const cdpMuseSnapshotJS = `
 (function() {
+  var standardFormattingTags = {
+    "p":1,"div":1,"span":1,"h1":1,"h2":1,"h3":1,"h4":1,"h5":1,"h6":1,
+    "strong":1,"b":1,"em":1,"i":1,"u":1,"s":1,"a":1,"ul":1,"ol":1,"li":1,
+    "table":1,"thead":1,"tbody":1,"tfoot":1,"tr":1,"th":1,"td":1,"blockquote":1,
+    "pre":1,"code":1,"img":1,"video":1,"source":1,"audio":1,"iframe":1,
+    "br":1,"hr":1,"button":1,"svg":1,"style":1,"script":1,"input":1,"textarea":1
+  };
+
   function nodeToMd(n, listDepth) {
     if (!n) return "";
     if (n.nodeType === 3) return n.textContent || "";
     if (n.nodeType !== 1) return "";
     var tag = (n.tagName || "").toLowerCase();
     if (tag === "button" || tag === "svg" || tag === "style" || tag === "script") return "";
+
+    // 1. Khối mã lệnh: Giữ nguyên thụt dòng và nhận diện chính xác XML, HTML, JSON, Go, Python, v.v.
     if (tag === "pre") {
       var codeEl = n.querySelector("code");
       var lang = "";
       if (codeEl && codeEl.className) {
-        var m = codeEl.className.match(/language-([a-zA-Z0-9_+-]+)/);
-        if (m) lang = m[1];
+        var m = codeEl.className.match(/language-([a-zA-Z0-9_+-]+)/i);
+        if (m) lang = m[1].toLowerCase();
       }
       var rawCode = (codeEl ? codeEl.textContent : n.textContent) || "";
+      if (!lang) {
+        var trimmed = rawCode.trim();
+        if (trimmed.startsWith("<?xml") || (trimmed.startsWith("<") && trimmed.endsWith(">") && trimmed.indexOf("</") > 0)) {
+          if (trimmed.toLowerCase().startsWith("<!doctype html") || trimmed.toLowerCase().startsWith("<html")) {
+            lang = "html";
+          } else {
+            lang = "xml";
+          }
+        } else if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+          lang = "json";
+        }
+      }
       return "\n\x60\x60\x60" + lang + "\n" + rawCode.replace(/\n$/, "") + "\n\x60\x60\x60\n\n";
     }
+
     if (tag === "code") return "\x60" + (n.textContent || "") + "\x60";
+
+    // 2. Video Player & Media: Thu thập đầy đủ link video, source và iframe embed
+    if (tag === "video") {
+      var vSrc = n.getAttribute("src") || n.currentSrc || n.src || "";
+      if (!vSrc) {
+        var s = n.querySelector("source");
+        if (s) vSrc = s.getAttribute("src") || s.src || "";
+      }
+      var poster = n.getAttribute("poster") || "";
+      if (vSrc) {
+        return "\n\n![video" + (poster ? " poster=\"" + poster + "\"" : "") + "](" + vSrc + ")\n\n";
+      }
+    }
+
+    if (tag === "iframe") {
+      var ifrSrc = n.getAttribute("src") || n.src || "";
+      if (ifrSrc && (ifrSrc.indexOf("muse.ai") >= 0 || ifrSrc.indexOf("youtube") >= 0 || ifrSrc.indexOf("vimeo") >= 0 || ifrSrc.indexOf("video") >= 0 || ifrSrc.indexOf("embed") >= 0)) {
+        return "\n\n[embed-video](" + ifrSrc + ")\n\n";
+      }
+    }
+
+    if (tag === "audio") {
+      var aSrc = n.getAttribute("src") || n.currentSrc || n.src || "";
+      if (!aSrc) {
+        var as = n.querySelector("source");
+        if (as) aSrc = as.getAttribute("src") || as.src || "";
+      }
+      if (aSrc) {
+        return "\n\n[audio](" + aSrc + ")\n\n";
+      }
+    }
+
+    // 3. Bảng dữ liệu (Table -> Markdown Table)
+    if (tag === "table") {
+      var rows = Array.from(n.querySelectorAll("tr"));
+      if (rows.length === 0) return "";
+      var mdRows = [];
+      rows.forEach(function(tr, rIdx) {
+        var cells = Array.from(tr.querySelectorAll("th, td"));
+        if (cells.length === 0) return;
+        var rowStr = "| " + cells.map(function(cell) {
+          return Array.from(cell.childNodes).map(function(c){ return nodeToMd(c, listDepth); }).join("").trim().replace(/\|/g, "\\|").replace(/\n+/g, " ");
+        }).join(" | ") + " |";
+        mdRows.push(rowStr);
+        if (rIdx === 0) {
+          var sep = "| " + cells.map(function() { return "---"; }).join(" | ") + " |";
+          mdRows.push(sep);
+        }
+      });
+      return "\n\n" + mdRows.join("\n") + "\n\n";
+    }
+
+    // 4. Trích dẫn Blockquote
+    if (tag === "blockquote") {
+      var bTxt = Array.from(n.childNodes).map(function(c){ return nodeToMd(c, listDepth); }).join("").trim();
+      return "\n\n" + bTxt.split("\n").map(function(l){ return "> " + l; }).join("\n") + "\n\n";
+    }
+
     if (tag === "strong" || tag === "b") {
       return "**" + Array.from(n.childNodes).map(function(c){ return nodeToMd(c, listDepth); }).join("") + "**";
     }
     if (tag === "em" || tag === "i") {
       return "*" + Array.from(n.childNodes).map(function(c){ return nodeToMd(c, listDepth); }).join("") + "*";
     }
+
     if (tag === "a") {
       var txt = Array.from(n.childNodes).map(function(c){ return nodeToMd(c, listDepth); }).join("").trim();
       var href = n.getAttribute("href") || "";
+      if (href.match(/\.(mp4|webm|mov|m4v)(\?.*)?$/i) || href.indexOf("muse.ai/v/") >= 0 || href.indexOf("muse.ai/embed/") >= 0) {
+        return "\n\n![video](" + href + ")\n\n";
+      }
       return href ? "[" + (txt || href) + "](" + href + ")" : txt;
     }
+
     if (tag === "ul" || tag === "ol") {
       return "\n" + Array.from(n.children).map(function(li, idx) {
         var prefix = tag === "ol" ? (idx + 1) + ". " : "- ";
@@ -86,20 +172,33 @@ const cdpMuseSnapshotJS = `
       var b = Array.from(n.childNodes).map(function(c){ return nodeToMd(c, listDepth); }).join("").trim();
       return ind + "- " + b + "\n";
     }
-    if (tag === "p" || tag === "div" || tag === "h1" || tag === "h2" || tag === "h3" || tag === "h4") {
+
+    if (tag === "p" || tag === "div" || tag === "h1" || tag === "h2" || tag === "h3" || tag === "h4" || tag === "h5" || tag === "h6") {
       var inner = Array.from(n.childNodes).map(function(c){ return nodeToMd(c, listDepth); }).join("").trim();
       return inner ? inner + "\n\n" : "";
     }
     if (tag === "br") return "\n";
+    if (tag === "hr") return "\n\n---\n\n";
     if (tag === "img" && n.src) return "\n![" + (n.alt || "Hình ảnh") + "](" + n.src + ")\n";
+
+    // 5. Bảo toàn các thẻ XML / Custom Element không bị nuốt mất thẻ tag
+    if (!standardFormattingTags[tag] && tag.length > 0) {
+      var attrs = Array.from(n.attributes || []).map(function(a){ return " " + a.name + "=\"" + a.value + "\""; }).join("");
+      var innerXml = Array.from(n.childNodes).map(function(c){ return nodeToMd(c, listDepth); }).join("");
+      return "<" + tag + attrs + ">" + innerXml + "</" + tag + ">";
+    }
+
     return Array.from(n.childNodes).map(function(c){ return nodeToMd(c, listDepth); }).join("");
   }
+
   var composer = document.querySelector('textarea[aria-label="Message"], textarea, [contenteditable="true"]');
-  var els = Array.from(document.querySelectorAll('.prose'));
+  var isGen = !!document.querySelector('.animate-spin, button[aria-label*="Stop" i], button[aria-label*="Dừng" i], button.stop-button, [data-is-generating="true"], .typing-indicator, .pulse');
+  var els = Array.from(document.querySelectorAll('.prose, [data-message-author-role="assistant"], div[class*="prose"], div[class*="message-assistant"], .chat-bubble-assistant'));
   var count = els.length;
   var lastMd = count > 0 ? nodeToMd(els[count - 1], 0).replace(/\n{3,}/g, "\n\n").trim() : "";
   return JSON.stringify({
     hasComposer: !!composer,
+    isGenerating: isGen,
     count: count,
     lastMd: lastMd,
     url: location.href
@@ -1047,10 +1146,11 @@ func (m *CDPBrowserManager) CancelRemoteLoginSession(sessionID string) {
 }
 
 type cdpMuseSnap struct {
-	HasComposer bool   `json:"hasComposer"`
-	Count       int    `json:"count"`
-	LastMd      string `json:"lastMd"`
-	URL         string `json:"url"`
+	HasComposer  bool   `json:"hasComposer"`
+	IsGenerating bool   `json:"isGenerating"`
+	Count        int    `json:"count"`
+	LastMd       string `json:"lastMd"`
+	URL          string `json:"url"`
 }
 
 func evalMuseSnap(ctx context.Context, page *cdpClient) (*cdpMuseSnap, error) {
@@ -1289,7 +1389,7 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 	_ = wt.Page.Call(ctx, "Runtime.evaluate", map[string]interface{}{"expression": clickSubmitFallbackJS}, nil)
 
 	cleanPrompt := strings.TrimSpace(userPrompt)
-	deadline := time.Now().Add(55 * time.Second)
+	deadline := time.Now().Add(75 * time.Second)
 	lastNewMd := ""
 	stableTicks := 0
 
@@ -1311,9 +1411,17 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 			continue
 		}
 
+		// Nếu Muse.ai đang trong trạng thái sinh nội dung / render video (spinning/generating), không bao giờ ngắt sớm!
+		if cur.IsGenerating {
+			lastNewMd = cur.LastMd
+			stableTicks = 0
+			continue
+		}
+
 		if cur.LastMd == lastNewMd {
 			stableTicks++
-			if stableTicks >= 3 {
+			// Chờ 5 nhịp liên tiếp (~1.25 giây) không đổi SAU KHI Muse đã ngừng generating để gom trọn vẹn video/code/XML
+			if stableTicks >= 5 {
 				break
 			}
 		} else {

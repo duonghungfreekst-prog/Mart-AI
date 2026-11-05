@@ -933,3 +933,25 @@ func TestResponseSpeedBenchmark(t *testing.T) {
 		}
 	}
 }
+
+func TestRichContentAndSnapshotExtractionIntegrity(t *testing.T) {
+	// Kiem tra script snapshot JavaScript chua day du cac logic phan tich da phuong tien va cau truc phong phu
+	if !strings.Contains(cdpMuseSnapshotJS, `tag === "video"`) {
+		t.Fatalf("cdpMuseSnapshotJS thieu logic trich xuat video")
+	}
+	if !strings.Contains(cdpMuseSnapshotJS, `tag === "iframe"`) {
+		t.Fatalf("cdpMuseSnapshotJS thieu logic trich xuat iframe embed video")
+	}
+	if !strings.Contains(cdpMuseSnapshotJS, `tag === "table"`) {
+		t.Fatalf("cdpMuseSnapshotJS thieu logic trich xuat table thanh Markdown Table")
+	}
+	if !strings.Contains(cdpMuseSnapshotJS, `tag === "blockquote"`) {
+		t.Fatalf("cdpMuseSnapshotJS thieu logic trich xuat blockquote")
+	}
+	if !strings.Contains(cdpMuseSnapshotJS, `isGenerating`) {
+		t.Fatalf("cdpMuseSnapshotJS thieu kiem tra trang thai isGenerating de chong ngat som")
+	}
+	if !strings.Contains(cdpMuseSnapshotJS, `standardFormattingTags`) {
+		t.Fatalf("cdpMuseSnapshotJS thieu logic bao toan the XML custom elements")
+	}
+}
