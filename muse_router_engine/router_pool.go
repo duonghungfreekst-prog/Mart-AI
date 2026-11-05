@@ -1853,7 +1853,8 @@ func (p *MuseRouterPool) RouteAndExecuteChatForOwner(
 		// Render không có browser Muse chạy trên server. Với tài khoản cookie,
 		// gửi qua extension trên trình duyệt người dùng để lệnh xuất hiện trong
 		// chính phiên chat Muse.ai đó; tránh bridge HTTP trả rỗng mà vẫn thành công.
-		if os.Getenv("RENDER") != "" && candidate.AuthType == "cookie" && candidate.HasHatchSess {
+		isHostedRuntime := os.Getenv("RENDER") != "" || os.Getenv("RENDER_SERVICE_ID") != "" || os.Getenv("RENDER_EXTERNAL_HOSTNAME") != "" || os.Getenv("PORT") != ""
+		if isHostedRuntime && candidate.AuthType == "cookie" && candidate.HasHatchSess {
 			LogInfo("Routing Muse chat through client browser relay for node %s", candidate.ID)
 			return p.prepareBrowserRelayResponse(candidate, resolvedThreadID, turnID, model, userPrompt)
 		}
