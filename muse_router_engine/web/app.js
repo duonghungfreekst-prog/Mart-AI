@@ -2523,7 +2523,7 @@
       throw new Error(errMsg);
     }
 
-    return await apiRequest("/api/chat/relay-complete", {
+    const completed = await apiRequest("/api/chat/relay-complete", {
       method: "POST",
       body: {
         thread_id: res.thread_id || "",
@@ -2535,6 +2535,13 @@
         latency_ms: relayOut.latency_ms || 1000,
       },
     });
+    if (!completed || completed.cancelled || completed.error) {
+      throw new Error((completed && completed.error) || "Muse relay đã hủy lượt chat trước khi nhận được câu trả lời.");
+    }
+    if (!String(completed.reply || "").trim()) {
+      throw new Error("Extension đã đọc được phản hồi nhưng máy chủ không lưu được nội dung trả lời.");
+    }
+    return completed;
   }
 
   async function triggerInteractiveBrowserLogin(btnEl, sessionIdOverride, proxyUrlOverride) {
