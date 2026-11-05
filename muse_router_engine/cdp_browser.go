@@ -1280,7 +1280,7 @@ func (m *CDPBrowserManager) getOrCreateWarmChatTab(ctx context.Context, fp strin
 	return wt, nil
 }
 
-func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate *MuseAccountNode, userPrompt string) (string, int64, int, error) {
+func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate *MuseAccountNode, userPrompt string, onChunk ...func(delta string, fullText string)) (string, int64, int, error) {
 	rawCred, err := m.pool.rustBridge.DecryptSecret(candidate.EncryptedCredential)
 	if err != nil {
 		return "", 0, 0, err
@@ -1413,7 +1413,18 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 
 		// Nếu Muse.ai đang trong trạng thái sinh nội dung / render video (spinning/generating), không bao giờ ngắt sớm!
 		if cur.IsGenerating {
-			lastNewMd = cur.LastMd
+			if cur.LastMd != lastNewMd {
+				delta := ""
+				if strings.HasPrefix(cur.LastMd, lastNewMd) {
+					delta = cur.LastMd[len(lastNewMd):]
+				} else {
+					delta = cur.LastMd
+				}
+				lastNewMd = cur.LastMd
+				if len(onChunk) > 0 && onChunk[0] != nil && delta != "" {
+					onChunk[0](delta, cur.LastMd)
+				}
+			}
 			stableTicks = 0
 			continue
 		}
@@ -1425,8 +1436,17 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 				break
 			}
 		} else {
+			delta := ""
+			if strings.HasPrefix(cur.LastMd, lastNewMd) {
+				delta = cur.LastMd[len(lastNewMd):]
+			} else {
+				delta = cur.LastMd
+			}
 			lastNewMd = cur.LastMd
 			stableTicks = 0
+			if len(onChunk) > 0 && onChunk[0] != nil && delta != "" {
+				onChunk[0](delta, cur.LastMd)
+			}
 		}
 	}
 
