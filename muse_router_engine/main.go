@@ -409,6 +409,7 @@ func (a *ServerApp) Routes() http.Handler {
 	mux.HandleFunc("/api/accounts/remote-login/state", a.handleRemoteLoginState)
 	mux.HandleFunc("/api/accounts/remote-login/input", a.handleRemoteLoginInput)
 	mux.HandleFunc("/api/accounts/remote-login/cancel", a.handleRemoteLoginCancel)
+	mux.HandleFunc("/api/admin/cdp-inspect", a.handleCDPInspect)
 	// 4. Quản lý Phiên Hội Thoại (Threads) & Muse AI Chat thật (cô lập theo từng tài khoản trong MySQL)
 	mux.HandleFunc("/api/threads", func(w http.ResponseWriter, r *http.Request) {
 		actor := a.resolveActor(r)

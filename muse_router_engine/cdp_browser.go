@@ -1741,3 +1741,227 @@ func (a *ServerApp) handleRemoteLoginCancel(w http.ResponseWriter, r *http.Reque
 	}
 	WriteJSONResponse(w, http.StatusOK, map[string]bool{"cancelled": true})
 }
+
+type CDPInspectReq struct {
+	Action     string `json:"action"`     // "status", "navigate", "type_and_send", "eval", "click"
+	Prompt     string `json:"prompt"`     // text for type_and_send
+	URL        string `json:"url"`        // for navigate
+	Expression string `json:"expression"` // for eval
+	Selector   string `json:"selector"`   // for click
+}
+
+type CDPInspectResp struct {
+	Success    bool                   `json:"success"`
+	Error      string                 `json:"error,omitempty"`
+	URL        string                 `json:"url"`
+	Title      string                 `json:"title"`
+	Composer   map[string]interface{} `json:"composer,omitempty"`
+	Buttons    []interface{}          `json:"buttons,omitempty"`
+	LastProse  string                 `json:"last_prose,omitempty"`
+	ProseCount int                    `json:"prose_count"`
+	IsGen      bool                   `json:"is_generating"`
+	EvalResult interface{}            `json:"eval_result,omitempty"`
+	Screenshot string                 `json:"screenshot,omitempty"`
+}
+
+func (m *CDPBrowserManager) InspectWarmTab(parentCtx context.Context, req CDPInspectReq) (*CDPInspectResp, error) {
+	if m == nil || !m.HasBrowserAvailable() {
+		return nil, errors.New("Trình duyệt CDP chưa khả dụng trên máy chủ")
+	}
+
+	nodes, err := m.pool.getOrderedCandidateNodes("")
+	if err != nil || len(nodes) == 0 {
+		return nil, errors.New("Chưa có tài khoản Muse nào khả dụng trong Pool")
+	}
+	var candidate *MuseAccountNode
+	for _, n := range nodes {
+		if n.AuthType == "cookie" && n.HasHatchSess {
+			candidate = n
+			break
+		}
+	}
+	if candidate == nil {
+		return nil, errors.New("Chưa có tài khoản Muse nào có cookie hatch_sess")
+	}
+
+	rawCred, err := m.pool.rustBridge.DecryptSecret(candidate.EncryptedCredential)
+	if err != nil {
+		return nil, fmt.Errorf("Lỗi giải mã thông tin tài khoản: %w", err)
+	}
+
+	m.chatMu.Lock()
+	defer m.chatMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(parentCtx, 45*time.Second)
+	defer cancel()
+
+	targetOrigin := strings.TrimRight(strings.TrimSpace(candidate.UpstreamURL), "/")
+	if targetOrigin == "" {
+		targetOrigin = "https://muse.ai"
+	}
+
+	wt, err := m.getOrCreateWarmChatTab(ctx, candidate.Fingerprint, rawCred, targetOrigin)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := &CDPInspectResp{Success: true}
+
+	if req.Action == "navigate" && req.URL != "" {
+		_ = wt.Page.Call(ctx, "Page.navigate", map[string]interface{}{"url": req.URL}, nil)
+		time.Sleep(3 * time.Second)
+	} else if req.Action == "click" && req.Selector != "" {
+		selJSON, _ := json.Marshal(req.Selector)
+		clickJS := fmt.Sprintf(`(function(){ var el = document.querySelector(%s); if(el){ el.click(); return true; } return false; })()`, string(selJSON))
+		var clickVal struct {
+			Result struct {
+				Value bool `json:"value"`
+			} `json:"result"`
+		}
+		_ = wt.Page.Call(ctx, "Runtime.evaluate", map[string]interface{}{"expression": clickJS, "returnByValue": true}, &clickVal)
+		time.Sleep(1 * time.Second)
+	} else if req.Action == "eval" && req.Expression != "" {
+		var evalVal struct {
+			Result struct {
+				Value interface{} `json:"value"`
+			} `json:"result"`
+		}
+		_ = wt.Page.Call(ctx, "Runtime.evaluate", map[string]interface{}{"expression": req.Expression, "returnByValue": true}, &evalVal)
+		resp.EvalResult = evalVal.Result.Value
+	} else if req.Action == "type_and_send" && req.Prompt != "" {
+		pJSON, _ := json.Marshal(req.Prompt)
+		typeJS := fmt.Sprintf(`(function(txt){
+			var el = document.querySelector('textarea, [contenteditable="true"], input[type="text"]');
+			if (!el) return {ok: false, err: 'no composer'};
+			el.focus();
+			if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
+				var proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+				var desc = Object.getOwnPropertyDescriptor(proto, 'value');
+				if (desc && desc.set) { desc.set.call(el, txt); } else { el.value = txt; }
+				el.dispatchEvent(new InputEvent('input', { bubbles: true, data: txt, inputType: 'insertText' }));
+				el.dispatchEvent(new Event('change', { bubbles: true }));
+			}
+			return {ok: true};
+		})(%s)`, string(pJSON))
+		var typeVal struct {
+			Result struct {
+				Value interface{} `json:"value"`
+			} `json:"result"`
+		}
+		_ = wt.Page.Call(ctx, "Runtime.evaluate", map[string]interface{}{"expression": typeJS, "returnByValue": true}, &typeVal)
+		time.Sleep(500 * time.Millisecond)
+
+		sendJS := `(function(){
+			var btns = Array.from(document.querySelectorAll('button'));
+			return btns.map(function(b){
+				return {
+					tag: b.tagName,
+					text: (b.innerText || '').trim(),
+					aria: b.getAttribute('aria-label') || '',
+					disabled: !!b.disabled,
+					type: b.type,
+					hasSvg: !!b.querySelector('svg')
+				};
+			});
+		})()`
+		var btnVal struct {
+			Result struct {
+				Value interface{} `json:"value"`
+			} `json:"result"`
+		}
+		_ = wt.Page.Call(ctx, "Runtime.evaluate", map[string]interface{}{"expression": sendJS, "returnByValue": true}, &btnVal)
+		resp.EvalResult = btnVal.Result.Value
+	}
+
+	diagJS := `(function(){
+		var composer = document.querySelector('textarea, [contenteditable="true"]');
+		var compInfo = null;
+		if (composer) {
+			var r = composer.getBoundingClientRect();
+			compInfo = {
+				tag: composer.tagName,
+				placeholder: composer.getAttribute('placeholder') || '',
+				ariaLabel: composer.getAttribute('aria-label') || '',
+				value: (composer.value !== undefined ? composer.value : composer.textContent) || '',
+				disabled: !!composer.disabled,
+				width: r.width,
+				height: r.height
+			};
+		}
+		var btns = Array.from(document.querySelectorAll('button')).slice(0, 30).map(function(b){
+			var br = b.getBoundingClientRect();
+			return {
+				text: (b.innerText || '').trim().slice(0, 50),
+				aria: b.getAttribute('aria-label') || '',
+				type: b.type,
+				disabled: !!b.disabled,
+				visible: br.width > 0 && br.height > 0,
+				className: (b.className || '').slice(0, 100)
+			};
+		});
+		var proses = Array.from(document.querySelectorAll('.prose, [data-message-author-role="assistant"]')).map(function(p){
+			return (p.textContent || '').trim().slice(0, 200);
+		});
+		var isGen = !!document.querySelector('.animate-spin, button[aria-label*="Stop" i], button.stop-button, .typing-indicator');
+		return {
+			title: document.title,
+			url: location.href,
+			composer: compInfo,
+			buttons: btns,
+			proseCount: proses.length,
+			lastProse: proses.length > 0 ? proses[proses.length - 1] : '',
+			isGenerating: isGen
+		};
+	})()`
+
+	var diagVal struct {
+		Result struct {
+			Value struct {
+				Title       string                 `json:"title"`
+				URL         string                 `json:"url"`
+				Composer    map[string]interface{} `json:"composer"`
+				Buttons     []interface{}          `json:"buttons"`
+				ProseCount  int                    `json:"proseCount"`
+				LastProse   string                 `json:"lastProse"`
+				IsGen       bool                   `json:"isGenerating"`
+			} `json:"result"`
+		} `json:"result"`
+	}
+	_ = wt.Page.Call(ctx, "Runtime.evaluate", map[string]interface{}{"expression": diagJS, "returnByValue": true}, &diagVal)
+
+	resp.Title = diagVal.Result.Value.Title
+	resp.URL = diagVal.Result.Value.URL
+	resp.Composer = diagVal.Result.Value.Composer
+	resp.Buttons = diagVal.Result.Value.Buttons
+	resp.ProseCount = diagVal.Result.Value.ProseCount
+	resp.LastProse = diagVal.Result.Value.LastProse
+	resp.IsGen = diagVal.Result.Value.IsGen
+
+	frame, curURL := capturePageFrameAndURL(ctx, wt.Page)
+	if frame != "" {
+		resp.Screenshot = frame
+	}
+	if curURL != "" {
+		resp.URL = curURL
+	}
+
+	return resp, nil
+}
+
+func (a *ServerApp) handleCDPInspect(w http.ResponseWriter, r *http.Request) {
+	if a.pool.cdpManager == nil {
+		WriteJSONError(w, http.StatusServiceUnavailable, "CDP_MANAGER_NOT_INITIALIZED")
+		return
+	}
+	var req CDPInspectReq
+	if r.Method == http.MethodPost {
+		_ = a.readJSONBody(r, &req)
+	}
+	resp, err := a.pool.cdpManager.InspectWarmTab(r.Context(), req)
+	if err != nil {
+		WriteJSONError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	WriteJSONResponse(w, http.StatusOK, resp)
+}
+
