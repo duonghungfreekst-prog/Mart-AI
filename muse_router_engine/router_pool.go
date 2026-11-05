@@ -555,6 +555,14 @@ func (p *MuseRouterPool) saveSingleThreadLocked(target *ChatThread) error {
 
 func (p *MuseRouterPool) GetSummary() RouterSummary {
 	p.mu.RLock()
+	needReload := len(p.nodes) == 0 && p.mysqlStore != nil
+	p.mu.RUnlock()
+
+	if needReload {
+		_ = p.loadVault()
+	}
+
+	p.mu.RLock()
 	defer p.mu.RUnlock()
 
 	allocMB := atomic.LoadUint64(&p.cachedMemAllocMB)
@@ -1147,6 +1155,14 @@ func (p *MuseRouterPool) UpdateRoutingConfig(strategy string, autoFailover bool)
 }
 
 func (p *MuseRouterPool) getOrderedCandidateNodes(preferredNodeID string) ([]*MuseAccountNode, error) {
+	p.mu.RLock()
+	needReload := len(p.nodes) == 0 && p.mysqlStore != nil
+	p.mu.RUnlock()
+
+	if needReload {
+		_ = p.loadVault()
+	}
+
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
