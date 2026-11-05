@@ -594,13 +594,39 @@ func (a *ServerApp) Routes() http.Handler {
 			w.Header().Set("Connection", "keep-alive")
 			w.Header().Set("X-Accel-Buffering", "no")
 			w.WriteHeader(http.StatusOK)
+			fmt.Fprintf(w, "event: start\ndata: {\"status\":\"processing\"}\n\n")
 			flusher.Flush()
+
+			pingTicker := time.NewTicker(4 * time.Second)
+			pingDone := make(chan struct{})
+			var sseMu sync.Mutex
+			go func() {
+				for {
+					select {
+					case <-pingDone:
+						return
+					case <-chatCtx.Done():
+						return
+					case <-pingTicker.C:
+						sseMu.Lock()
+						fmt.Fprintf(w, ": keepalive\n\n")
+						flusher.Flush()
+						sseMu.Unlock()
+					}
+				}
+			}()
+			defer func() {
+				pingTicker.Stop()
+				close(pingDone)
+			}()
 
 			onStreamChunk := func(chunkType string, data map[string]interface{}) {
 				jsonData, err := json.Marshal(data)
 				if err == nil {
+					sseMu.Lock()
 					fmt.Fprintf(w, "event: %s\ndata: %s\n\n", chunkType, string(jsonData))
 					flusher.Flush()
+					sseMu.Unlock()
 				}
 			}
 
@@ -617,9 +643,11 @@ func (a *ServerApp) Routes() http.Handler {
 				onStreamChunk,
 			)
 			if err != nil {
+				sseMu.Lock()
 				errData, _ := json.Marshal(map[string]string{"error": err.Error()})
 				fmt.Fprintf(w, "event: error\ndata: %s\n\n", string(errData))
 				flusher.Flush()
+				sseMu.Unlock()
 				return
 			}
 			if actor.Role == "admin" {
@@ -628,8 +656,10 @@ func (a *ServerApp) Routes() http.Handler {
 				res["summary"] = a.pool.GetPublicSummary()
 			}
 			doneBytes, _ := json.Marshal(res)
+			sseMu.Lock()
 			fmt.Fprintf(w, "event: done\ndata: %s\n\n", string(doneBytes))
 			flusher.Flush()
+			sseMu.Unlock()
 			return
 		}
 		res, err := a.pool.RouteAndExecuteChatForOwner(

@@ -330,6 +330,7 @@ func (a *ServerApp) resolveActor(r *http.Request) RequestActor {
 func isPublicRoute(path string) bool {
 	switch path {
 	case "/api/health",
+		"/api/auth/session",
 		"/api/users/register",
 		"/api/users/login",
 		"/api/users/admin-login",

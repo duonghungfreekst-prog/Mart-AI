@@ -1392,8 +1392,9 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 
 	// 1. Đánh dấu toàn bộ bong bóng cũ trên DOM với data-mart-seen='1' để tuyệt đối không đọc nhầm tin cũ
 	markSeenJS := `(function(){
-		Array.from(document.querySelectorAll('.prose, [data-message-author-role], div.mb-6.flex.flex-col.gap-5, div.flex.flex-col.gap-5')).forEach(function(el){
+		Array.from(document.querySelectorAll('[data-hatch-assistant-message-body="true"], .prose, div[class*="message-assistant"], [data-message-author-role], div.mb-6.flex.flex-col.gap-5, div.flex.flex-col.gap-5, [data-pel-click="assistant_message_content"]')).forEach(function(el){
 			el.setAttribute('data-mart-seen', '1');
+			Array.from(el.querySelectorAll('*')).forEach(function(c){ c.setAttribute('data-mart-seen', '1'); });
 		});
 	})()`
 	_ = wt.Page.Call(ctx, "Runtime.evaluate", map[string]interface{}{"expression": markSeenJS}, nil)

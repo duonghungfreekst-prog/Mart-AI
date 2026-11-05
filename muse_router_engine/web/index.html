@@ -1900,6 +1900,38 @@ function addAiError(msg){
 
 var isSending = false;
 
+/* Đảm bảo token JWT RS256 luôn hợp lệ trước mọi thao tác */
+async function ensureValidToken(){
+  var tok = localStorage.getItem("mart_jwt_token") || "";
+  if(!tok){
+    try {
+      var r = await fetch("/api/auth/session", { cache: "no-store" });
+      if(r.ok){
+        var d = await r.json();
+        if(d && d.token){
+          tok = d.token;
+          localStorage.setItem("mart_jwt_token", tok);
+        }
+      }
+    } catch(e){}
+  }
+  return tok;
+}
+
+/* Hàm fetch bọc xác thực tự động kèm Bearer token và X-Mart-Client */
+async function authedFetch(url, opts){
+  opts = opts || {};
+  opts.headers = opts.headers || {};
+  var tok = await ensureValidToken();
+  if(tok && !opts.headers["Authorization"]) {
+    opts.headers["Authorization"] = "Bearer " + tok;
+  }
+  if(!opts.headers["X-Mart-Client"]){
+    opts.headers["X-Mart-Client"] = "web";
+  }
+  return fetch(url, opts);
+}
+
 /* Gửi tin nhắn thực tế qua SSE Streaming tới /api/chat/send của Mart AI backend */
 async function handleSend(text){
   if(!text || !text.trim() || isSending) return;
@@ -1922,7 +1954,7 @@ async function handleSend(text){
   var receivedAnyChunk = false;
 
   try {
-    var authTok = localStorage.getItem("mart_jwt_token") || "";
+    var authTok = await ensureValidToken();
     var headers = {
       "Content-Type": "application/json",
       "Accept": "text/event-stream, application/json",
@@ -2019,19 +2051,7 @@ async function handleSend(text){
               updateUsage();
               addActivity(title, "Hoàn thành câu trả lời");
               saveToHistory(title, finalReply.slice(0, 60));
-              (async function initSession(){
-  try {
-    var tok = localStorage.getItem("mart_jwt_token");
-    if(!tok){
-      var r = await fetch("/api/auth/session", { cache: "no-store" });
-      if(r.ok){
-        var d = await r.json();
-        if(d && d.token) localStorage.setItem("mart_jwt_token", d.token);
-      }
-    }
-  } catch(e){}
-})();
-fetchThreads();
+              fetchThreads();
             } catch(e){}
           } else if(evType === "error"){
             var eMsg = "Lỗi khi xử lý phản hồi";
@@ -2071,7 +2091,7 @@ fetchThreads();
 /* Lấy danh sách đoạn chat thật từ Backend */
 async function fetchThreads(){
   try {
-    var res = await fetch("/api/threads", { cache: "no-store" });
+    var res = await authedFetch("/api/threads", { cache: "no-store" });
     if(!res.ok) return;
     var data = await res.json();
     var list = data.threads || [];
@@ -2106,7 +2126,7 @@ async function openConversation(c){
   setTitle("Đang tải...");
 
   try {
-    var res = await fetch("/api/threads/" + encodeURIComponent(threadId), { cache: "no-store" });
+    var res = await authedFetch("/api/threads/" + encodeURIComponent(threadId), { cache: "no-store" });
     if(!res.ok) throw new Error("ERR_LOAD_THREAD");
     var data = await res.json();
     var t = data.thread || data;
@@ -2151,7 +2171,7 @@ if(histWrapEl){
     var id = b.getAttribute("data-del");
     if(!id) return;
     try {
-      await fetch("/api/threads/" + encodeURIComponent(id), { method: "DELETE" });
+      await authedFetch("/api/threads/" + encodeURIComponent(id), { method: "DELETE" });
       CONVERSATIONS = CONVERSATIONS.filter(function(x){ return x.id !== id; });
       if(activeConvId === id) resetChat();
       renderHistory($("#searchHist") ? $("#searchHist").value : "");
@@ -2185,7 +2205,7 @@ document.addEventListener("keydown", function(e){
 
 async function fetchPoolReal(){
   try {
-    var res = await fetch("/api/router/summary", { cache: "no-store" });
+    var res = await authedFetch("/api/router/summary", { cache: "no-store" });
     if(!res.ok) return;
     var data = await res.json();
     var nodes = data.nodes || [];
@@ -2491,17 +2511,72 @@ $("#modelList").addEventListener("click", function(e){
   input.focus();
 });
 
-/* Admin view open/close */
+/* Admin view open/close & Khôi phục quyền Quản trị viên */
+async function restoreAdminLogin(forcePrompt){
+  var defPw = "Admin@123456";
+  var pw = defPw;
+  if(forcePrompt){
+    pw = prompt("Nhập mật khẩu Quản trị viên (Admin):", defPw);
+    if(!pw) return;
+  }
+  try {
+    var res = await fetch("/api/users/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Mart-Client": "web" },
+      body: JSON.stringify({ username: "admin", password: pw })
+    });
+    var data = await res.json().catch(function(){ return {}; });
+    if(!res.ok){
+      if(!forcePrompt){
+        // Thử lại bằng prompt nếu mật khẩu mặc định bị đổi
+        restoreAdminLogin(true);
+        return;
+      }
+      toast(data.error || "Sai mật khẩu Quản trị viên");
+      return;
+    }
+    if(data.token){
+      localStorage.setItem("mart_jwt_token", data.token);
+      localStorage.setItem("mart_user", JSON.stringify(data.user || { role: "admin", username: "admin", display_name: "Sean" }));
+      setRoleView("admin");
+      await fetchUsersReal();
+      await fetchThreads();
+      document.body.classList.add("admin-open");
+      $("#adminView").scrollTop = 0;
+      closeDrawers();
+      toast("Đã khôi phục thành công quyền Quản trị viên (Sean Admin)");
+    }
+  } catch(e){
+    toast("Không thể kết nối máy chủ để xác thực");
+  }
+}
+
 function openAdmin(){
-  if(document.body.classList.contains("user-view")){ toast("Tài khoản con không vào được khu Quản trị"); return; }
+  if(document.body.classList.contains("user-view")){
+    restoreAdminLogin(false);
+    return;
+  }
   document.body.classList.add("admin-open");
   $("#adminView").scrollTop = 0;
   closeDrawers();
+  fetchUsersReal();
+  fetchPoolReal();
 }
 function closeAdmin(){ document.body.classList.remove("admin-open"); }
 $("#btnExitAdmin").addEventListener("click", closeAdmin);
 $("#openAdminFromPanel").addEventListener("click", function(){ closeModal(); openAdmin(); });
 $("#setOpenAdmin").addEventListener("click", function(){ closeModal(); openAdmin(); });
+
+/* Gắn sự kiện click vào khối persona / avatar ở góc dưới bên trái */
+var userCardEl = $(".user-card");
+if(userCardEl){
+  userCardEl.style.cursor = "pointer";
+  userCardEl.title = "Bấm để mở Quản trị viên / Khôi phục quyền Admin";
+  userCardEl.addEventListener("click", function(e){
+    if(e.target.closest("#themeBtn")) return;
+    openAdmin();
+  });
+}
 
 /* Pool tài khoản Muse.ai riêng (Admin) — đúng cấu trúc MuseAccountNode */
 var POOL = [];
@@ -2621,14 +2696,53 @@ $("#btnSaveRouter").addEventListener("click", function(){
   toast("Đã lưu cài đặt điều phối — áp dụng cho Chat, Batch Tasks và API");
 });
 
-/* Tài khoản con & người dùng (mart_users) */
-var USERS = [
-  { name:"Sean", un:"admin", role:"admin", disabled:false, threads:12, docs:4, mem:6, tasks:3, last:"Vừa xong" },
-  { name:"Minh Anh", un:"minhanh", role:"user", disabled:false, threads:5, docs:2, mem:1, tasks:0, last:"Hôm nay · 09:12" },
-  { name:"Tuấn Anh", un:"tuananh", role:"user", disabled:true, threads:2, docs:0, mem:0, tasks:1, last:"Hôm qua" }
-];
+/* Tài khoản con & người dùng thật kết nối trực tiếp MySQL / TiDB (mart_users) */
+var USERS = [];
+
+async function fetchUsersReal(){
+  try {
+    var res = await authedFetch("/api/admin/users", { cache: "no-store" });
+    if(!res.ok) return;
+    var data = await res.json();
+    var list = data.users || [];
+    USERS = list.map(function(u){
+      var d = u.last_login_at;
+      var lastStr = "Chưa đăng nhập";
+      if(d){
+        try {
+          var dt = new Date(d);
+          var now = new Date();
+          if(dt.toDateString() === now.toDateString()){
+            lastStr = "Hôm nay · " + ("0"+dt.getHours()).slice(-2) + ":" + ("0"+dt.getMinutes()).slice(-2);
+          } else {
+            lastStr = ("0"+dt.getDate()).slice(-2) + "/" + ("0"+(dt.getMonth()+1)).slice(-2) + "/" + dt.getFullYear();
+          }
+        } catch(e){ lastStr = String(d); }
+      }
+      return {
+        id: u.id,
+        name: u.display_name || u.username,
+        un: u.username,
+        role: u.role || "user",
+        disabled: !!u.is_disabled,
+        threads: u.thread_count || 0,
+        docs: u.doc_count || 0,
+        mem: u.memory_count || 0,
+        tasks: u.task_count || 0,
+        last: lastStr
+      };
+    });
+    renderUsers();
+  } catch(e){}
+}
+
 function renderUsers(){
-  var wrap = $("#usersList"); wrap.innerHTML = "";
+  var wrap = $("#usersList"); if(!wrap) return;
+  wrap.innerHTML = "";
+  if(USERS.length === 0){
+    wrap.innerHTML = '<div style="padding:16px;text-align:center;color:var(--ink-2);font-size:13.5px">Đang tải danh sách tài khoản từ cơ sở dữ liệu…</div>';
+    return;
+  }
   USERS.forEach(function(u, idx){
     var row = document.createElement("div");
     row.className = "user-row" + (u.disabled ? " off" : "");
@@ -2648,48 +2762,134 @@ function renderUsers(){
     wrap.appendChild(row);
   });
 }
-$("#usersList").addEventListener("click", function(e){
+
+$("#usersList").addEventListener("click", async function(e){
   var b = e.target.closest("[data-uact]"); if(!b) return;
   var u = USERS[parseInt(b.getAttribute("data-ui"), 10)]; if(!u) return;
   var act = b.getAttribute("data-uact");
-  if(act==="toggle"){ u.disabled = !u.disabled; renderUsers(); toast(u.disabled ? ("Đã khoá tài khoản @" + u.un) : ("Đã mở khoá tài khoản @" + u.un)); }
-  if(act==="reset"){ toast("Đã đặt lại mật khẩu cho @" + u.un + " (tối thiểu 6 ký tự)"); }
+
+  if(act==="toggle"){
+    try {
+      var res = await authedFetch("/api/admin/users/toggle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: u.id || u.un,
+          is_disabled: !u.disabled
+        })
+      });
+      if(res.ok){
+        u.disabled = !u.disabled;
+        renderUsers();
+        toast(u.disabled ? ("Đã khoá tài khoản @" + u.un) : ("Đã mở khoá tài khoản @" + u.un));
+      } else {
+        var errD = await res.json().catch(function(){ return {}; });
+        toast(errD.error || "Không thể cập nhật trạng thái");
+      }
+    } catch(err){
+      toast("Lỗi kết nối máy chủ");
+    }
+  }
+
+  if(act==="reset"){
+    var newPw = prompt("Nhập mật khẩu mới cho @" + u.un + " (tối thiểu 6 ký tự):", "");
+    if(!newPw) return;
+    if(newPw.length < 6){ toast("Mật khẩu phải tối thiểu 6 ký tự"); return; }
+    try {
+      var res = await authedFetch("/api/admin/users/reset-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: u.id || u.un,
+          new_password: newPw
+        })
+      });
+      if(res.ok){
+        toast("Đã đặt lại mật khẩu cho @" + u.un + " thành công");
+      } else {
+        var errD = await res.json().catch(function(){ return {}; });
+        toast(errD.error || "Không thể đặt lại mật khẩu");
+      }
+    } catch(err){
+      toast("Lỗi kết nối máy chủ");
+    }
+  }
+
   if(act==="del"){
     if(b.getAttribute("data-armed")==="1"){
-      USERS.splice(USERS.indexOf(u), 1); renderUsers();
-      toast("Đã xoá @" + u.un + " cùng toàn bộ dữ liệu riêng của tài khoản này");
+      try {
+        var res = await authedFetch("/api/admin/users/delete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ user_id: u.id || u.un })
+        });
+        if(res.ok){
+          toast("Đã xoá @" + u.un + " cùng toàn bộ dữ liệu riêng của tài khoản này");
+          await fetchUsersReal();
+        } else {
+          var errD = await res.json().catch(function(){ return {}; });
+          toast(errD.error || "Không thể xoá tài khoản");
+        }
+      } catch(err){
+        toast("Lỗi kết nối máy chủ");
+      }
     } else {
       b.setAttribute("data-armed","1"); b.classList.add("danger-armed"); b.textContent = "Xoá thật?";
-      setTimeout(function(){ renderUsers(); }, 2600);
+      setTimeout(function(){
+        b.removeAttribute("data-armed");
+        b.classList.remove("danger-armed");
+        b.textContent = "Xoá";
+      }, 2600);
     }
   }
 });
-$("#createUserForm").addEventListener("submit", function(e){
+
+$("#createUserForm").addEventListener("submit", async function(e){
   e.preventDefault();
   var un = $("#nuUser").value.trim().toLowerCase();
   var nm = $("#nuName").value.trim();
   var pw = $("#nuPass").value;
+  var role = $("#nuRole").value;
   if(!/^[a-z0-9_.-]{3,32}$/.test(un)){ toast("Tên đăng nhập phải 3–32 ký tự: chữ, số, dấu . _ -"); return; }
-  if(USERS.some(function(x){ return x.un===un; })){ toast("Tên tài khoản này đã tồn tại"); return; }
   if(pw.length < 6){ toast("Mật khẩu phải tối thiểu 6 ký tự"); return; }
-  USERS.push({ name: nm || un, un: un, role: $("#nuRole").value, disabled:false, threads:0, docs:0, mem:0, tasks:0, last:"Chưa đăng nhập" });
-  renderUsers();
-  $("#nuUser").value = ""; $("#nuName").value = ""; $("#nuPass").value = "";
-  toast("Đã tạo tài khoản @" + un + " với không gian riêng độc lập");
+
+  try {
+    var res = await authedFetch("/api/users/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username: un,
+        display_name: nm || un,
+        password: pw,
+        role: role
+      })
+    });
+    var data = await res.json().catch(function(){ return {}; });
+    if(!res.ok){
+      throw new Error(data.error || "Không thể tạo tài khoản");
+    }
+    toast("Đã tạo thành công tài khoản @" + un + " trên cơ sở dữ liệu");
+    $("#nuUser").value = ""; $("#nuName").value = ""; $("#nuPass").value = "";
+    await fetchUsersReal();
+  } catch(err){
+    toast(err.message || "Lỗi tạo tài khoản");
+  }
 });
 
 /* Xem theo quyền: Admin <-> Tài khoản con */
-function setRoleView(v){
+function setRoleView(v, customUser){
   var isUser = v==="user";
   document.body.classList.toggle("user-view", isUser);
   $("#roleBanner").hidden = !isUser;
   if(isUser){
     closeAdmin();
-    $("#personaAvatar").textContent = "M";
-    $("#personaName").textContent = "Minh Anh";
-    $("#personaStatus").textContent = "Không gian riêng · @minhanh";
+    var uname = (customUser && customUser.username) || "minhanh";
+    var dname = (customUser && customUser.display_name) || "Minh Anh";
+    $("#personaAvatar").textContent = dname.charAt(0).toUpperCase();
+    $("#personaName").textContent = dname;
+    $("#personaStatus").textContent = "Không gian riêng · @" + uname;
     $("#personaRole").textContent = "Tài khoản con";
-    $("#setPersonaLine").textContent = "Minh Anh · Tài khoản con (@minhanh)";
+    $("#setPersonaLine").textContent = dname + " · Tài khoản con (@" + uname + ")";
     toast("Đang xem như tài khoản con — Pool và Quản trị đã ẩn");
   } else {
     $("#personaAvatar").textContent = "S";
@@ -2701,19 +2901,32 @@ function setRoleView(v){
   }
 }
 $("#btnViewAsUser").addEventListener("click", function(){ setRoleView("user"); window.scrollTo(0,0); });
-$("#backToAdmin").addEventListener("click", function(){ setRoleView("admin"); });
+$("#backToAdmin").addEventListener("click", function(){ restoreAdminLogin(false); });
 
-fetchThreads();
-fetchPoolReal();
-renderUsers();
-selectModel("claude-auto", true);
-scanModels();
+/* Khởi động toàn diện hệ thống Web */
+async function initApp(){
+  await ensureValidToken();
+  try {
+    var meRes = await authedFetch("/api/users/me");
+    if(meRes.ok){
+      var meData = await meRes.json();
+      if(meData && meData.user && meData.user.role === "user"){
+        setRoleView("user", meData.user);
+      }
+    }
+  } catch(e){}
+  fetchThreads();
+  fetchPoolReal();
+  fetchUsersReal();
+  selectModel("claude-auto", true);
+  scanModels();
+  renderHistory("");
+  renderActivity();
+  updateUsage();
+  autoGrow();
+}
 
-/* Init */
-renderHistory("");
-renderActivity();
-updateUsage();
-autoGrow();
+initApp();
 })();
 
 </script>
