@@ -1846,26 +1846,38 @@
   var pendingExtResolvers = {};
   var autoSyncCookieInFlight = false;
 
-  function sendViaDirectExternal(payload) {
+  function sendViaDirectExternal(payload, timeoutMs) {
     return new Promise(function (resolve) {
+      var settled = false;
+      var timer = setTimeout(function () {
+        if (settled) return;
+        settled = true;
+        resolve(null);
+      }, Math.max(500, Number(timeoutMs) || 8000));
+      function finish(resp) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(resp || null);
+      }
       try {
         if (
           typeof window.chrome === "undefined" ||
           !window.chrome.runtime ||
           typeof window.chrome.runtime.sendMessage !== "function"
         ) {
-          resolve(null);
+          finish(null);
           return;
         }
         window.chrome.runtime.sendMessage(MART_EXTENSION_ID, payload, function (resp) {
           if (window.chrome.runtime.lastError) {
-            resolve(null);
+            finish(null);
             return;
           }
-          resolve(resp || null);
+          finish(resp || null);
         });
       } catch (_) {
-        resolve(null);
+        finish(null);
       }
     });
   }
@@ -1881,7 +1893,12 @@
         if (settled) return;
         delete pendingExtResolvers[reqId];
         // Dự phòng qua externally_connectable nếu tab chưa nạp content.js
-        sendViaDirectExternal(payload).then(function (fallbackResp) {
+        if (act === "execute_muse_chat") {
+          settled = true;
+          resolve(null);
+          return;
+        }
+        sendViaDirectExternal(payload, 8000).then(function (fallbackResp) {
           if (!settled) {
             settled = true;
             resolve(fallbackResp);
@@ -1896,8 +1913,10 @@
         delete pendingExtResolvers[reqId];
         if (resp) {
           resolve(resp);
+        } else if (act === "execute_muse_chat") {
+          resolve(null);
         } else {
-          sendViaDirectExternal(payload).then(resolve);
+          sendViaDirectExternal(payload, 8000).then(resolve);
         }
       };
 
@@ -1913,7 +1932,7 @@
       } catch (_) {
         clearTimeout(timer);
         delete pendingExtResolvers[reqId];
-        sendViaDirectExternal(payload).then(resolve);
+        sendViaDirectExternal(payload, 8000).then(resolve);
       }
     });
   }
