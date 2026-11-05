@@ -191,9 +191,9 @@ const cdpMuseSnapshotJS = `
     return Array.from(n.childNodes).map(function(c){ return nodeToMd(c, listDepth); }).join("");
   }
 
-  var composer = document.querySelector('textarea[aria-label="Message"], textarea[aria-label="Nhắn tin"], textarea, [contenteditable="true"]');
+  var composer = document.querySelector('textarea[aria-label="Nhắn tin"], textarea[placeholder="Nhắn tin"], textarea[aria-label="Message"], textarea, [contenteditable="true"]');
   var compVal = composer ? ((composer.value !== undefined ? composer.value : composer.textContent) || "").trim() : "";
-  var isGen = !!document.querySelector('.animate-spin, button[aria-label*="Stop" i], button[aria-label*="Dừng" i], button.stop-button, [data-is-generating="true"], .typing-indicator, .pulse');
+  var isGen = !!document.querySelector('.animate-spin, button[aria-label*="Stop" i], button[aria-label*="Dừng" i], button.stop-button, [data-is-generating="true"], .typing-indicator, .pulse, button:has(span[class*="rounded-sm"]), .rounded-sm.bg-fill-primary');
   var rawEls = Array.from(document.querySelectorAll('div.mb-6.flex.flex-col.gap-5, div.flex.flex-col.gap-5, .prose, [data-message-author-role="assistant"], div[class*="message-assistant"], .chat-bubble-assistant')).filter(function(el) {
     return !el.closest('form, textarea, [contenteditable="true"]');
   });
@@ -1417,22 +1417,24 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 	})(%s)`, string(promptJSON))
 
 	_ = wt.Page.Call(ctx, "Runtime.evaluate", map[string]interface{}{"expression": markAndFillJS}, nil)
-	time.Sleep(160 * time.Millisecond)
+	time.Sleep(250 * time.Millisecond)
 
 	clickSendOrEnter := func() {
 		clickSendJS := `(function(){
-			var el = document.querySelector('textarea[aria-label="Message"], textarea[aria-label="Nhắn tin"], textarea, [contenteditable="true"]');
+			var el = document.querySelector('textarea[aria-label="Nhắn tin"], textarea[placeholder="Nhắn tin"], textarea[aria-label="Message"], textarea, [contenteditable="true"]');
 			if (!el) return false;
 			var rem = ((el.value !== undefined ? el.value : el.textContent) || '').trim();
 			if (!rem) return true;
 
-			// 1. Tìm nút Gửi / Send quanh ô nhập và toàn bộ form
-			var sendBtn = null;
-			var root = el.parentElement;
-			for (var d = 0; d < 6 && root; d++) {
-				sendBtn = root.querySelector('button[aria-label="Gửi"]:not(:disabled), button[aria-label*="Gửi" i]:not(:disabled), button[aria-label="Send"]:not(:disabled), button[aria-label*="Send" i]:not(:disabled), button[data-testid*="send" i]:not(:disabled), button[type="submit"]:not(:disabled)');
-				if (sendBtn) break;
-				root = root.parentElement;
+			// 1. Tìm nút Gửi / Send trực tiếp và quanh ô nhập
+			var sendBtn = document.querySelector('button[aria-label="Gửi"]:not(:disabled), button[aria-label*="Gửi" i]:not(:disabled), button[aria-label="Send"]:not(:disabled)');
+			if (!sendBtn) {
+				var root = el.parentElement;
+				for (var d = 0; d < 6 && root; d++) {
+					sendBtn = root.querySelector('button[aria-label="Gửi"]:not(:disabled), button[aria-label*="Gửi" i]:not(:disabled), button[aria-label="Send"]:not(:disabled), button[aria-label*="Send" i]:not(:disabled), button[data-testid*="send" i]:not(:disabled), button[type="submit"]:not(:disabled)');
+					if (sendBtn) break;
+					root = root.parentElement;
+				}
 			}
 			if (!sendBtn) {
 				var allBtns = Array.from(document.querySelectorAll('button:not(:disabled)'));
@@ -1514,10 +1516,8 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 		}
 
 		replyMd := ""
-		if cur.UnseenLastMd != "" && cur.UnseenLastMd != baseline.LastMd && cur.UnseenLastMd != cleanPrompt {
+		if cur.UnseenLastMd != "" && cur.UnseenLastMd != cleanPrompt {
 			replyMd = strings.TrimSpace(cur.UnseenLastMd)
-		} else if cur.LastMd != "" && cur.LastMd != baseline.LastMd && cur.LastMd != cleanPrompt {
-			replyMd = strings.TrimSpace(cur.LastMd)
 		}
 		if replyMd == "" {
 			continue

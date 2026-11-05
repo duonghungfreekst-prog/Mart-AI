@@ -480,7 +480,7 @@ function domReadMuseSnapshot() {
 
   var composer = document.querySelector('textarea[aria-label="Nhắn tin"], textarea[placeholder="Nhắn tin"], textarea[aria-label="Message"], textarea, [contenteditable="true"]');
   var compVal = composer ? ((composer.value !== undefined ? composer.value : composer.textContent) || "").trim() : "";
-  var isGen = !!document.querySelector('.animate-spin, button[aria-label*="Stop" i], button[aria-label*="Dừng" i], button.stop-button, [data-is-generating="true"], .typing-indicator, .pulse');
+  var isGen = !!document.querySelector('.animate-spin, button[aria-label*="Stop" i], button[aria-label*="Dừng" i], button.stop-button, [data-is-generating="true"], .typing-indicator, .pulse, button:has(span[class*="rounded-sm"]), .rounded-sm.bg-fill-primary');
   var rawEls = Array.from(document.querySelectorAll('div.mb-6.flex.flex-col.gap-5, div.flex.flex-col.gap-5, .prose, [data-message-author-role="assistant"], div[class*="message-assistant"], .chat-bubble-assistant')).filter(function (el) {
     return !el.closest('form, textarea, [contenteditable="true"]');
   });
@@ -578,8 +578,13 @@ function domSubmitMusePrompt(promptText) {
   return new Promise(function (resolve) {
     setTimeout(function () {
       function tryClickSendButton() {
+        var directBtn = document.querySelector('button[aria-label="Gửi"]:not(:disabled), button[aria-label*="Gửi" i]:not(:disabled), button[aria-label="Send"]:not(:disabled)');
+        if (directBtn) {
+          directBtn.click();
+          return true;
+        }
         var root = el.parentElement;
-        for (var d = 0; d < 5 && root; d++) {
+        for (var d = 0; d < 6 && root; d++) {
           var sendBtn = root.querySelector(
             'button[aria-label="Gửi"]:not(:disabled), button[aria-label*="Gửi" i]:not(:disabled), button[aria-label="Send"]:not(:disabled), button[aria-label*="Send" i]:not(:disabled), button[data-testid*="send" i]:not(:disabled)'
           );
@@ -694,9 +699,7 @@ async function executeMuseChatDirect(prompt, cookieHeader, forceReload) {
     if (!cur) continue;
 
     var replyMd = "";
-    if (cur.lastMd && cur.lastMd !== baseline.lastMd && cur.lastMd !== cleanPrompt) {
-      replyMd = (cur.lastMd || "").trim();
-    } else if (cur.unseenLastMd && cur.unseenLastMd !== baseline.lastMd && cur.unseenLastMd !== cleanPrompt) {
+    if (cur.unseenLastMd && cur.unseenLastMd !== cleanPrompt) {
       replyMd = (cur.unseenLastMd || "").trim();
     }
     if (!replyMd) {

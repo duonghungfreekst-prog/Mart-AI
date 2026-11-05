@@ -1967,10 +1967,6 @@ func (p *MuseRouterPool) RouteAndExecuteChatForOwner(
 						return p.CompleteBrowserRelayTurn(resolvedThreadID, turnID, candidate.ID, model, replyCDP, tokCDP, latCDP, "")
 					}
 					LogWarn("CDP server-side chat error on %s: %v", candidate.Label, errCDP)
-					if !skipClientRelay {
-						LogInfo("Falling back from CDP error to client browser relay on %s", candidate.Label)
-						return p.prepareBrowserRelayResponse(candidate, resolvedThreadID, turnID, model, userPrompt)
-					}
 					p.unmarkNodeRunningKeepReady(candidate.ID)
 					lastErr = errCDP
 					if !p.autoFailover {
