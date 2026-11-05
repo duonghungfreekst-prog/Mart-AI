@@ -2961,6 +2961,86 @@
       });
     }
 
+    // 7.5. Hỗ trợ Server-Sent Events (SSE) Streaming theo thời gian thực
+    async function sendChatStream(payload, onChunk, onReaderReady) {
+      const headers = {
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream, application/json",
+        "X-Mart-Client": "web",
+      };
+      if (state.jwtToken) {
+        headers["Authorization"] = "Bearer " + state.jwtToken;
+      }
+      const resp = await fetch("/api/chat/send", {
+        method: "POST",
+        headers: headers,
+        body: JSON.stringify(Object.assign({}, payload, { stream: true })),
+        cache: "no-store",
+      });
+
+      if (!resp.ok) {
+        const errData = await resp.json().catch(function () { return {}; });
+        throw new Error(errData.error || ("ERR_HTTP_" + resp.status));
+      }
+
+      const contentType = resp.headers.get("content-type") || "";
+      if (contentType.includes("text/event-stream") && resp.body) {
+        const reader = resp.body.getReader();
+        if (typeof onReaderReady === "function") {
+          onReaderReady(reader);
+        }
+        const decoder = new TextDecoder("utf-8");
+        let buffer = "";
+        let finalResult = null;
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const parts = buffer.split("\n\n");
+            buffer = parts.pop() || "";
+
+            for (const block of parts) {
+              if (!block.trim()) continue;
+              let eventName = "message";
+              let dataStr = "";
+              const lines = block.split("\n");
+              for (const line of lines) {
+                if (line.startsWith("event:")) {
+                  eventName = line.slice(6).trim();
+                } else if (line.startsWith("data:")) {
+                  dataStr = line.slice(5).trim();
+                }
+              }
+              if (dataStr) {
+                try {
+                  const parsed = JSON.parse(dataStr);
+                  if (eventName === "delta") {
+                    if (typeof onChunk === "function") onChunk(parsed);
+                  } else if (eventName === "done") {
+                    finalResult = parsed;
+                  } else if (eventName === "error") {
+                    throw new Error(parsed.error || "STREAM_ERROR");
+                  }
+                } catch (parseErr) {
+                  if (eventName === "error") throw parseErr;
+                }
+              }
+            }
+          }
+        } catch (streamErr) {
+          if (streamErr.name === "AbortError") {
+            return { stopped: true };
+          }
+          throw streamErr;
+        }
+        return finalResult || { reply: "" };
+      }
+
+      return await resp.json();
+    }
+
     // 8. Đính kèm tệp / Dán ảnh chụp màn hình (Ctrl+V) & Gửi tin nhắn
     const btnAttach = document.getElementById("btnAttachFile");
     const fileInput = document.getElementById("chatFileInput");
@@ -3232,11 +3312,15 @@
           setMuseCharacterActivity(true, promptText, "", false, currentCartPct);
         }, 1200);
 
+        var activeStreamReader = null;
         const stopBtn = document.getElementById("btnStopGenerating");
         var stoppedByUser = false;
         if (stopBtn) {
           stopBtn.onclick = function () {
             stoppedByUser = true;
+            if (activeStreamReader) {
+              try { activeStreamReader.cancel(); } catch(_) {}
+            }
             clearInterval(livePollTimer);
             state.pendingChatCount = Math.max(0, (state.pendingChatCount || 1) - 1);
             if (aiRow && aiRow.parentNode) aiRow.remove();
@@ -3259,9 +3343,8 @@
             }
           } catch(_) { /* không có memories — bỏ qua */ }
 
-          let res = await apiRequest("/api/chat/send", {
-            method: "POST",
-            body: {
+          let res = await sendChatStream(
+            {
               thread_id: requestThreadId,
               preferred_node_id: selNode ? selNode.value : "auto",
               model: "",
@@ -3269,7 +3352,30 @@
               prompt: finalPrompt,
               attachments: attachmentsToSend,
             },
-          });
+            function (chunk) {
+              if (stoppedByUser) return;
+              if (aiRow && aiRow.parentNode) {
+                const card = aiRow.querySelector(".ai-bubble-card");
+                if (card) {
+                  if (card.classList.contains("typing-dots-bubble")) {
+                    card.classList.remove("typing-dots-bubble");
+                  }
+                  var curText = chunk.content || "";
+                  card.innerHTML = formatMarkdownNative(curText);
+                  if (viewport) {
+                    viewport.scrollTop = viewport.scrollHeight;
+                  }
+                  if (curText.length > 0) {
+                    var livePct = Math.min(94, 28 + Math.floor(curText.length / 18));
+                    updateMartCartProgress(livePct, "Đang viết câu trả lời...");
+                  }
+                }
+              }
+            },
+            function (reader) {
+              activeStreamReader = reader;
+            }
+          );
 
           if (stoppedByUser) {
             if (res && res.browser_relay) {

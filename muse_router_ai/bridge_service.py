@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MuseRouter AI Bridge Service (`muse_router_ai`) — 100% Real Protocol & Browser-CDP Driver
+Mart AI Python AI Bridge Service (`muse_router_ai`) — 100% Real Protocol & Browser-CDP Driver (MySQL / TiDB Cloud)
 Tuân thủ tuyệt đối Antigravity Polyglot v2.4 & PHAN 9 (KHÔNG giả lập / KHÔNG dữ liệu ảo):
 - Luồng giao tiếp: Go Engine -> Python AI -> Rust Core (`muse_router_core.dll`)
 - Prefix log bắt buộc: `[AI]`

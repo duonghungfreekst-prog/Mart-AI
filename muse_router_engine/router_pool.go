@@ -1901,11 +1901,7 @@ func (p *MuseRouterPool) RouteAndExecuteChatForOwner(
 					}
 					replyCDP, tokCDP, latCDP, errCDP := p.cdpManager.ExecuteMuseChat(parentCtx, candidate, userPrompt, onChunkCDP)
 					if errCDP == nil {
-						resRelay, errRelay := p.CompleteBrowserRelayTurn(resolvedThreadID, turnID, candidate.ID, model, replyCDP, tokCDP, latCDP, "")
-						if errRelay == nil && len(onChunk) > 0 && onChunk[0] != nil {
-							onChunk[0]("done", resRelay)
-						}
-						return resRelay, errRelay
+						return p.CompleteBrowserRelayTurn(resolvedThreadID, turnID, candidate.ID, model, replyCDP, tokCDP, latCDP, "")
 					}
 					LogWarn("CDP server-side chat error on %s: %v", candidate.Label, errCDP)
 					p.unmarkNodeRunningKeepReady(candidate.ID)
