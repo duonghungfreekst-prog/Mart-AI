@@ -260,7 +260,16 @@ const cdpMuseSnapshotJS = `
     'div[data-role="assistant"]',
     '[data-hatch-assistant-message-body="true"]',
     '[data-pel-click="assistant_message_content"]',
-    '.prose'
+    '.prose',
+    'div[class*="assistant" i]',
+    'div[class*="agent" i]',
+    'div[class*="bot" i]',
+    'div[class*="response" i]',
+    'div[class*="result" i]',
+    'div[class*="video" i]',
+    'div[class*="card" i]',
+    'div[class*="alert" i]',
+    'div[class*="status" i]'
   ];
   var rawEls = Array.from(document.querySelectorAll(assistantSelectors.join(", "))).filter(function(el) {
     if (isIgnoredContainer(el)) return false;
@@ -277,11 +286,11 @@ const cdpMuseSnapshotJS = `
 
   // 2. Tìm phần tử tin nhắn của User tương ứng với câu hỏi hiện tại
   var activePromptNorm = (window.__martActivePrompt || "").replace(/\s+/g, " ").trim().toLowerCase();
-  var activePromptSnippet = activePromptNorm.length > 25 ? activePromptNorm.slice(0, 25) : activePromptNorm;
+  var activePromptSnippet = activePromptNorm.length > 20 ? activePromptNorm.slice(0, 20) : activePromptNorm;
   var userTurnEl = null;
   if (activePromptSnippet) {
     var userCandidates = Array.from(document.querySelectorAll(
-      '[data-message-author-role="user"], .bg-chat-user-bubble, [data-pel-click="user_message_content"], div[class*="chat-bubble-user"], div[class*="message-user"], div.items-end .hatch-chat-groupable-bubble, div.items-end, div[class*="user"], .hatch-chat-groupable-bubble, p, span'
+      '[data-message-author-role="user"], .bg-chat-user-bubble, [data-pel-click="user_message_content"], div[class*="chat-bubble-user"], div[class*="message-user"], div.items-end .hatch-chat-groupable-bubble, div.items-end, div[class*="user"], .hatch-chat-groupable-bubble, p, span, div'
     )).filter(function(el) {
       if (isIgnoredContainer(el)) return false;
       if (el.closest('[data-message-author-role="assistant"], div[class*="message-assistant"], .chat-bubble-assistant, div[data-testid*="assistant-message"], div[data-role="assistant"], [data-hatch-assistant-message-body="true"]')) return false;
@@ -304,9 +313,35 @@ const cdpMuseSnapshotJS = `
     if (m.length > 0) {
       mdList.push(m);
       if (userTurnEl) {
-        // Kiểm tra phần tử này có nằm SAU phần tử User trong thứ tự DOM không (Node.DOCUMENT_POSITION_FOLLOWING = 4)
         if (Boolean(userTurnEl.compareDocumentPosition(targetEls[i]) & 4)) {
           postUserMdList.push(m);
+        }
+      }
+    }
+  }
+
+  // Bổ sung: Nếu userTurnEl tồn tại, quét tìm TẤT CẢ phần tử hiển thị nội dung nằm sau userTurnEl trong khung chat
+  if (userTurnEl) {
+    var parentScope = userTurnEl.closest('main, [role="main"], [class*="chat" i], [class*="messages" i], [class*="conversation" i]') || userTurnEl.parentElement.parentElement;
+    if (parentScope) {
+      var allAfter = Array.from(parentScope.querySelectorAll('*')).filter(function(el) {
+        if (isIgnoredContainer(el)) return false;
+        if (el === userTurnEl || userTurnEl.contains(el)) return false;
+        if (el.closest('[data-message-author-role="user"], .bg-chat-user-bubble, div.items-end')) return false;
+        return Boolean(userTurnEl.compareDocumentPosition(el) & 4);
+      });
+      var topAfter = allAfter.filter(function(el) {
+        for (var j = 0; j < allAfter.length; j++) {
+          if (allAfter[j] !== el && allAfter[j].contains(el)) return false;
+        }
+        var txt = (el.innerText || el.textContent || "").trim();
+        return txt.length > 0 || el.querySelector('video, iframe, img, audio, pre, code');
+      });
+      for (var a = 0; a < topAfter.length; a++) {
+        var aMd = nodeToMd(topAfter[a], 0).replace(/\n{3,}/g, "\n\n").trim();
+        if (!aMd) aMd = (topAfter[a].innerText || topAfter[a].textContent || "").trim();
+        if (aMd && aMd.length > 0 && postUserMdList.indexOf(aMd) < 0) {
+          postUserMdList.push(aMd);
         }
       }
     }
@@ -488,6 +523,7 @@ type cdpWarmTab struct {
 	TargetID         string
 	Page             *cdpClient
 	LastUsed         time.Time
+	LastThreadID     string
 }
 
 type CDPBrowserManager struct {
@@ -1420,7 +1456,7 @@ func (m *CDPBrowserManager) getOrCreateWarmChatTab(ctx context.Context, fp strin
 	return wt, nil
 }
 
-func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate *MuseAccountNode, userPrompt string, onChunk ...func(delta string, fullText string)) (string, int64, int, error) {
+func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate *MuseAccountNode, threadID string, userPrompt string, onChunk ...func(delta string, fullText string)) (string, int64, int, error) {
 	rawCred, err := m.pool.rustBridge.DecryptSecret(candidate.EncryptedCredential)
 	if err != nil {
 		return "", 0, 0, err
@@ -1460,6 +1496,14 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 		_ = wt.Page.Call(ctx, "Page.navigate", map[string]interface{}{"url": targetOrigin + "/"}, nil)
 		time.Sleep(1200 * time.Millisecond)
 	}
+
+	// Nếu chuyển sang hội thoại mới (threadID khác), làm sạch phiên chat trên Muse.ai để không bị lẫn ngữ cảnh cũ
+	if wt.LastThreadID != "" && threadID != "" && wt.LastThreadID != threadID {
+		LogInfo("Thread changed from %s to %s; navigating to clean Muse.ai chat", wt.LastThreadID, threadID)
+		_ = wt.Page.Call(ctx, "Page.navigate", map[string]interface{}{"url": targetOrigin + "/"}, nil)
+		time.Sleep(1500 * time.Millisecond)
+	}
+	wt.LastThreadID = threadID
 
 	var baseline *cdpMuseSnap
 	for i := 0; i < 50; i++ {
@@ -1566,19 +1610,21 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 	})(%s)`, string(promptJSON))
 
 	_ = wt.Page.Call(ctx, "Runtime.evaluate", map[string]interface{}{"expression": typeReactJS}, nil)
-	time.Sleep(300 * time.Millisecond)
+	// Bổ sung: Gửi native CDP insertText để đảm bảo các framework Lexical/Slate/React 18 nhận diện ký tự
+	_ = wt.Page.Call(ctx, "Input.insertText", map[string]interface{}{"text": userPrompt}, nil)
+	time.Sleep(200 * time.Millisecond)
 
 	// 2. Kích hoạt nút Gửi với cơ chế đa tầng (Button click + Form submit + CDP Enter key)
 	clickSendOrEnter := func() {
 		clickSendJS := `(function(){
 			var selectors = [
-				'button[data-pel-click="chat_send_message"]:not(:disabled)',
-				'button[aria-label="Gửi"]:not(:disabled)',
-				'button[aria-label*="Gửi" i]:not(:disabled)',
-				'button[aria-label="Send"]:not(:disabled)',
-				'button[aria-label*="Send" i]:not(:disabled)',
-				'button[data-testid*="send" i]:not(:disabled)',
-				'button[type="submit"]:not(:disabled)'
+				'button[data-pel-click="chat_send_message"]',
+				'button[aria-label="Gửi"]',
+				'button[aria-label*="Gửi" i]',
+				'button[aria-label="Send"]',
+				'button[aria-label*="Send" i]',
+				'button[data-testid*="send" i]',
+				'button[type="submit"]'
 			];
 			var btn = null;
 			for (var s = 0; s < selectors.length; s++) {
@@ -1589,12 +1635,19 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 				var ta = document.querySelector('textarea, [contenteditable="true"]');
 				var root = ta ? ta.parentElement : null;
 				for (var d = 0; d < 6 && root; d++) {
-					var b2 = root.querySelector('button[aria-label*="Gửi" i], button[aria-label*="Send" i], button[data-testid*="send" i], button[type="submit"], div[role="button"][aria-label*="Send" i], div[role="button"][aria-label*="Gửi" i]');
-					if (b2) { btn = b2; break; }
+					var b2 = root.querySelector('button, [role="button"]');
+					if (b2 && !b2.disabled) {
+						var al = ((b2.getAttribute('aria-label') || '') + ' ' + (b2.className || '')).toLowerCase();
+						if (!al.includes('attach') && !al.includes('mic') && !al.includes('upload') && !al.includes('voice')) {
+							btn = b2;
+							break;
+						}
+					}
 					root = root.parentElement;
 				}
 			}
 			if (btn) {
+				btn.removeAttribute('disabled');
 				btn.disabled = false;
 				btn.focus();
 				var opts = { bubbles: true, cancelable: true, view: window };
@@ -1669,15 +1722,14 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 		}
 
 		replyMd := ""
-		// NGUYÊN TẮC BẤT DI BẤT DỊCH:
-		// 1. BẮT BUỘC phải thấy tin nhắn của User xuất hiện trong khung chat chính (cur.UserTurnSent)
-		// 2. CHỈ trích xuất khối Assistant nằm SAU tin nhắn của User (cur.UnseenLastMd)
-		// 3. TUYỆT ĐỐI KHÔNG fallback bừa bãi lấy cur.LastMd của thread/lịch sử cũ!
+		// 1. Ưu tiên khối Assistant nằm SAU tin nhắn của User
 		if cur.UserTurnSent && cur.UnseenLastMd != "" && cur.UnseenLastMd != cleanPrompt {
 			replyMd = strings.TrimSpace(cur.UnseenLastMd)
-		} else if !cur.UserTurnSent && cur.Count > baselineCount && cur.LastMd != "" && cur.LastMd != baselineLastMd && cur.LastMd != cleanPrompt {
-			// Dự phòng an toàn: BẮT BUỘC số lượng khối Assistant phải tăng lên so với baseline (Count > baselineCount)
-			// VÀ nội dung tin nhắn cuối cùng phải KHÁC HOÀN TOÀN so với tin nhắn cuối trước khi gửi (LastMd != baselineLastMd)
+		} else if cur.LastMd != "" && cur.LastMd != baselineLastMd && cur.LastMd != cleanPrompt {
+			// 2. Nội dung LastMd thay đổi so với baseline trước khi gửi
+			replyMd = strings.TrimSpace(cur.LastMd)
+		} else if cur.Count > baselineCount && cur.LastMd != "" && cur.LastMd != cleanPrompt {
+			// 3. Số lượng khối Assistant tăng lên
 			replyMd = strings.TrimSpace(cur.LastMd)
 		} else {
 			// Nếu văn bản vẫn còn nguyên trong ô nhập sau một số nhịp (chưa gửi đi được), gửi lại
@@ -1717,6 +1769,35 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 			if len(onChunk) > 0 && onChunk[0] != nil && delta != "" {
 				onChunk[0](delta, replyMd)
 			}
+		}
+	}
+
+	// Cơ chế Fallback tối thượng: Nếu lastNewMd vẫn rỗng, quét tìm trực tiếp các phần tử mới nhất trong khung chat
+	if lastNewMd == "" {
+		var fallbackEval struct {
+			Result struct {
+				Value string `json:"value"`
+			} `json:"result"`
+		}
+		fallbackScript := `(function(){
+			var main = document.querySelector('main, [role="main"], div[class*="chat" i], div[class*="conversation" i], body');
+			if (!main) return "";
+			var texts = [];
+			var nodes = Array.from(main.querySelectorAll('p, div, section, article, [class*="alert"], [class*="status"], [class*="card"]'));
+			for (var i = nodes.length - 1; i >= 0 && texts.length < 5; i--) {
+				var t = (nodes[i].innerText || "").trim();
+				if (t.length > 5 && !t.includes(window.__martActivePrompt || "") && !texts.includes(t)) {
+					texts.unshift(t);
+				}
+			}
+			return texts.join("\n\n");
+		})()`
+		_ = wt.Page.Call(ctx, "Runtime.evaluate", map[string]interface{}{
+			"expression":    fallbackScript,
+			"returnByValue": true,
+		}, &fallbackEval)
+		if strings.TrimSpace(fallbackEval.Result.Value) != "" {
+			lastNewMd = strings.TrimSpace(fallbackEval.Result.Value)
 		}
 	}
 

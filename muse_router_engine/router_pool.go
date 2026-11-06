@@ -2017,7 +2017,7 @@ func (p *MuseRouterPool) RouteAndExecuteChatForOwner(
 							})
 						}
 					}
-					replyCDP, tokCDP, latCDP, errCDP := p.cdpManager.ExecuteMuseChat(parentCtx, candidate, userPrompt, onChunkCDP)
+					replyCDP, tokCDP, latCDP, errCDP := p.cdpManager.ExecuteMuseChat(parentCtx, candidate, resolvedThreadID, userPrompt, onChunkCDP)
 					if errCDP == nil {
 						return p.CompleteBrowserRelayTurn(resolvedThreadID, turnID, candidate.ID, model, replyCDP, tokCDP, latCDP, "")
 					}
