@@ -1247,6 +1247,58 @@ $("#accAuth").addEventListener("change", function(){
   var field = $("#accUpstreamField");
   if(field) field.style.display = this.value === "api_key" ? "block" : "none";
 });
+function requestChromeExtension(payload, timeoutMs){
+  return new Promise(function(resolve, reject){
+    var reqId = "mart-ext-" + Date.now() + "-" + Math.random().toString(36).slice(2);
+    var timer = setTimeout(function(){
+      window.removeEventListener("message", onMessage);
+      reject(new Error("Không nhận được phản hồi từ tiện ích Chrome. Hãy cài/bật Mart AI Extension, sau đó tải lại trang."));
+    }, timeoutMs || 5000);
+    function onMessage(ev){
+      if(ev.source !== window || ev.origin !== window.location.origin || !ev.data || ev.data.__mart_ext_resp !== true || ev.data.reqId !== reqId) return;
+      clearTimeout(timer);
+      window.removeEventListener("message", onMessage);
+      if(ev.data.error) reject(new Error(ev.data.error));
+      else resolve(ev.data.result || null);
+    }
+    window.addEventListener("message", onMessage);
+    window.postMessage({ __mart_ext_req: true, reqId: reqId, payload: payload }, window.location.origin);
+  });
+}
+$("#btnCaptureMuseChrome").addEventListener("click", async function(){
+  var btn = this;
+  var status = $("#chromeCaptureStatus");
+  btn.disabled = true;
+  status.textContent = "Đang mở Muse.ai trong Chrome; hãy hoàn tất đăng nhập…";
+  try {
+    var captured = await requestChromeExtension({ action: "login_and_capture" }, 185000);
+    if(!captured || !captured.ok || !captured.cookie) throw new Error((captured && captured.error) || "Chrome chưa trả về phiên đăng nhập Muse.ai.");
+    status.textContent = "Đã bắt phiên. Đang xác thực và lưu vào Pool…";
+    var res = await authedFetch("/api/accounts/add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        label: $("#accLabel").value.trim(),
+        plan_tier: "Muse.ai",
+        auth_type: "cookie",
+        upstream_url: "https://muse.ai",
+        proxy_url: $("#accProxy").value.trim(),
+        credential: captured.cookie,
+        tokens_remaining: 0
+      })
+    });
+    var data = await res.json().catch(function(){ return {}; });
+    if(!res.ok) throw new Error(data.error || "Không lưu được phiên Muse.ai vào Pool (HTTP " + res.status + ").");
+    await fetchPoolReal();
+    status.textContent = data.status_detail || "Đã bắt phiên và đồng bộ tài khoản Muse.ai.";
+    toast("Đã bắt phiên Chrome và cập nhật Pool.");
+  } catch(err){
+    status.textContent = err.message || "Không bắt được phiên Chrome.";
+    toast(status.textContent);
+  } finally {
+    btn.disabled = false;
+  }
+});
 $("#addNodeForm").addEventListener("submit", async function(e){
   e.preventDefault();
   var cred = $("#accCred").value.trim();
