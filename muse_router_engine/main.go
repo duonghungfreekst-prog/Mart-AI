@@ -1408,10 +1408,11 @@ func initPrecompressedWebAssets(webRoot fs.FS) {
 	}
 	precompressedWebOnce.Do(func() {
 		targets := map[string]string{
-			"index.html":  "text/html; charset=utf-8",
-			"app.js":      "application/javascript; charset=utf-8",
-			"styles.css":  "text/css; charset=utf-8",
-			"favicon.svg": "image/svg+xml",
+			"index.html":      "text/html; charset=utf-8",
+			"app.js":          "application/javascript; charset=utf-8",
+			"mart_preview.js": "application/javascript; charset=utf-8",
+			"styles.css":      "text/css; charset=utf-8",
+			"favicon.svg":     "image/svg+xml",
 		}
 		for name, ctype := range targets {
 			raw, err := fs.ReadFile(webRoot, name)

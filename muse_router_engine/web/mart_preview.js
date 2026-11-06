@@ -1166,9 +1166,32 @@ $("#swStreamPanel").addEventListener("click", function(){ settings.stream = !set
 
 /* Settings modal & theme */
 var modal = $("#settingsModal");
-function openModal(){ modal.classList.add("open"); }
-function closeModal(){ modal.classList.remove("open"); }
+function openModal(){
+  modal.classList.add("open");
+  if(window.location.pathname !== "/cai-dat"){
+    try { history.pushState({modal:"settings"}, "", "/cai-dat"); } catch(e){}
+  }
+}
+function closeModal(){
+  modal.classList.remove("open");
+  if(window.location.pathname === "/cai-dat"){
+    try { history.pushState(null, "", "/"); } catch(e){}
+  }
+}
 $("#footSettings").addEventListener("click", openModal);
+
+window.addEventListener("popstate", function(ev){
+  if(window.location.pathname === "/cai-dat"){
+    modal.classList.add("open");
+  } else {
+    modal.classList.remove("open");
+  }
+  if(window.location.pathname === "/admin"){
+    if(typeof openAdmin === "function") openAdmin();
+  } else {
+    if(typeof closeAdmin === "function") closeAdmin();
+  }
+});
 
 $$("[data-close-modal]").forEach(function(el){ el.addEventListener("click", closeModal); });
 $("#footAdmin").addEventListener("click", function(){ openAdmin(); closeDrawers(); });
@@ -1957,6 +1980,11 @@ async function initApp(){
   renderActivity();
   updateUsage();
   autoGrow();
+  if(window.location.pathname === "/cai-dat"){
+    setTimeout(function(){ openModal(); }, 100);
+  } else if(window.location.pathname === "/admin"){
+    setTimeout(function(){ openAdmin(); closeDrawers(); }, 100);
+  }
 }
 
 initApp();
