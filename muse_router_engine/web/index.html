@@ -1300,16 +1300,32 @@ button{-webkit-tap-highlight-color:transparent;touch-action:manipulation}
         <div class="admin-card">
           <div style="font-weight:800;font-size:15px">Cắm thêm tài khoản vào Pool</div>
           <p class="admin-sec-d" style="margin-top:4px">Dán Cookie / Link Callback hoặc API Key — hệ thống tự xác thực với muse.ai rồi mới cho vào Pool. Dán nhiều dòng để nhập hàng loạt nhiều tài khoản cùng lúc.</p>
-          <div style="margin-top:12px;padding:14px;border:1px solid #c7d2fe;border-radius:12px;background:#f5f7ff">
-            <div style="font-weight:800;font-size:14px">Bắt phiên đăng nhập Muse.ai bằng Chrome</div>
-            <p class="admin-sec-d" style="margin:5px 0 10px">Dùng tiện ích Mart AI để lấy phiên Muse.ai đang đăng nhập trong Chrome và thêm/cập nhật tài khoản trong Pool.</p>
+          
+          <!-- Lựa chọn 1: Đăng nhập trực tiếp trên Server (0 cần tiện ích, hỗ trợ cả điện thoại) -->
+          <div style="margin-top:12px;padding:16px;border:1.5px solid #3b82f6;border-radius:14px;background:#eff6ff">
+            <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+              <div>
+                <div style="font-weight:800;font-size:14.5px;color:#1e40af;display:flex;align-items:center;gap:6px">
+                  <span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#10b981"></span>
+                  🌐 Đăng nhập Muse.ai trực tiếp trên Server (Không cần cài tiện ích)
+                </div>
+                <p class="admin-sec-d" style="margin:4px 0 0;color:#3b82f6;font-size:12.5px">Mở màn hình ảo trực tiếp trên trình duyệt (hoạt động 100% trên điện thoại, máy tính bảng &amp; PC). Server tự động thu nhận phiên, mã hóa và giữ sống 24/7.</p>
+              </div>
+              <button type="button" class="btn-solid" id="btnOpenServerLoginModal" style="padding:9px 18px;font-size:13.5px;cursor:pointer;white-space:nowrap">Mở đăng nhập Server</button>
+            </div>
+          </div>
+
+          <!-- Lựa chọn 2: Bắt phiên qua Chrome Extension (Tuỳ chọn phụ trợ) -->
+          <div style="margin-top:10px;padding:14px;border:1px solid #c7d2fe;border-radius:12px;background:#f5f7ff">
+            <div style="font-weight:800;font-size:13.5px;color:var(--ink)">Cách 2: Bắt phiên bằng Chrome Extension (Tuỳ chọn cho máy tính)</div>
+            <p class="admin-sec-d" style="margin:4px 0 8px">Nếu bạn đang dùng máy tính cá nhân và đã đăng nhập sẵn tab Muse.ai, bạn có thể bấm bắt phiên nhanh.</p>
             <div style="display:flex;gap:9px;flex-wrap:wrap;align-items:center">
               <button type="button" class="btn-admin-solid" id="btnCaptureMuseChrome">Đăng nhập &amp; bắt phiên bằng Chrome</button>
               <a class="btn-admin-ghost" href="/api/accounts/extension.zip" download>Tải tiện ích Chrome</a>
               <span id="chromeCaptureStatus" role="status" aria-live="polite" style="font-size:12px;color:var(--ink-2)"></span>
             </div>
-            <details style="margin-top:10px;font-size:12px;color:var(--ink-2)">
-              <summary style="cursor:pointer;font-weight:700">Cách cài tiện ích (chỉ cần làm một lần)</summary>
+            <details style="margin-top:8px;font-size:12px;color:var(--ink-2)">
+              <summary style="cursor:pointer;font-weight:700">Hướng dẫn cài tiện ích</summary>
               <ol style="margin:7px 0 0;padding-left:20px;line-height:1.7">
                 <li>Tải và giải nén tiện ích Chrome.</li>
                 <li>Mở <b>chrome://extensions</b>, bật <b>Developer mode</b>.</li>
@@ -1471,6 +1487,37 @@ button{-webkit-tap-highlight-color:transparent;touch-action:manipulation}
     <div class="m-foot">
       <button class="btn-ghost" data-close-modal>Đóng</button>
       <button class="btn-solid" data-close-modal>Xong</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Cửa sổ ảo đăng nhập Muse.ai trên Server (0 Tiện ích) -->
+<div class="modal-wrap" id="serverLoginModal" role="dialog" aria-modal="true" aria-label="Đăng nhập Muse.ai trên Server">
+  <div class="modal-bg" id="closeServerLoginBg"></div>
+  <div class="modal" style="width:min(860px,100%);padding:20px;max-height:94dvh;display:flex;flex-direction:column;gap:12px">
+    <div style="display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);padding-bottom:10px">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#10b981"></span>
+        <span style="font-weight:800;font-size:16px">Cửa sổ ảo đăng nhập Muse.ai trên Server</span>
+      </div>
+      <button type="button" class="btn-ghost" id="btnCloseServerLogin" style="padding:6px 14px;font-size:13px;flex:none">Đóng</button>
+    </div>
+    <div style="font-size:13px;color:var(--ink-2);line-height:1.5">
+      Màn hình trình duyệt Chromium chạy ngầm trên Server. Bạn có thể <b>nhấp chuột và gõ phím trực tiếp vào khung dưới</b> để đăng nhập Muse.ai. Khi đăng nhập thành công, Server sẽ tự động lưu phiên vào Pool!
+    </div>
+    <div id="remoteBrowserViewport" style="position:relative;background:#0f172a;border-radius:10px;overflow:hidden;min-height:360px;max-height:56dvh;display:flex;align-items:center;justify-content:center;cursor:crosshair">
+      <div id="remoteBrowserLoading" style="color:#94a3b8;font-size:14px;font-weight:600;display:flex;flex-direction:column;align-items:center;gap:10px">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+        <span>Đang khởi động trình duyệt Chromium trên Server...</span>
+      </div>
+      <img id="remoteBrowserImg" style="display:none;width:100%;height:auto;object-fit:contain;user-select:none;-webkit-user-drag:none" alt="Remote Screen" />
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding-top:6px">
+      <div style="display:flex;gap:8px;align-items:center">
+        <input type="text" id="remoteBrowserTextInput" placeholder="Gõ văn bản / mật khẩu vào đây rồi bấm Gửi..." style="padding:8px 12px;border:1px solid var(--line);border-radius:8px;font-size:13px;width:280px" />
+        <button type="button" class="btn-solid" id="btnSendRemoteText" style="padding:8px 14px;font-size:13px">Gửi phím</button>
+      </div>
+      <div style="font-size:12px;font-weight:600;color:var(--ink-2)" id="remoteLoginStatusText">Trạng thái: Đang kết nối</div>
     </div>
   </div>
 </div>

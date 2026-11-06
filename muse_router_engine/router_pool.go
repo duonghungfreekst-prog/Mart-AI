@@ -1332,7 +1332,7 @@ func (p *MuseRouterPool) WakeAndProbeNode(parentCtx context.Context, nodeID stri
 	if err != nil {
 		directRes, errDirect := p.wakeAndProbeNodeDirect(ctx, target)
 		if errDirect != nil {
-			errMsg := fmt.Sprintf("Chưa kết nối được dịch vụ AI Bridge (%s): %v", p.aiBridgeURL, err)
+			errMsg := fmt.Sprintf("Kiểm tra phiên trực tiếp tới muse.ai không thành công: %v", errDirect)
 			LogWarn("%s", errMsg)
 			p.mu.Lock()
 			for _, n := range p.nodes {

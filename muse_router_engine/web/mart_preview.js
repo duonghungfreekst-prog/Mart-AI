@@ -1769,6 +1769,167 @@ function setRoleView(v, actualUser){
 }
 
 
+/* ============================================================================
+   CỬA SỔ ẢO ĐĂNG NHẬP MUSE.AI TRỰC TIẾP TRÊN SERVER (0 CÀI TIỆN ÍCH, 0 F12)
+   ============================================================================ */
+var remoteLoginSessionId = "";
+var remoteLoginPollTimer = null;
+var remoteLoginLastSeq = 0;
+var remoteVirtualW = 960, remoteVirtualH = 600;
+var remoteInputBusy = false;
+
+var serverLoginModal = $("#serverLoginModal");
+var btnOpenServerLoginModal = $("#btnOpenServerLoginModal");
+var btnCloseServerLogin = $("#btnCloseServerLogin");
+var closeServerLoginBg = $("#closeServerLoginBg");
+var remoteBrowserLoading = $("#remoteBrowserLoading");
+var remoteBrowserImg = $("#remoteBrowserImg");
+var remoteLoginStatusText = $("#remoteLoginStatusText");
+var remoteBrowserTextInput = $("#remoteBrowserTextInput");
+var btnSendRemoteText = $("#btnSendRemoteText");
+
+function closeServerLoginModal(){
+  if(serverLoginModal) serverLoginModal.classList.remove("open");
+  if(remoteLoginPollTimer){
+    clearInterval(remoteLoginPollTimer);
+    remoteLoginPollTimer = null;
+  }
+  if(remoteLoginSessionId){
+    authedFetch("/api/accounts/remote-login/cancel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: remoteLoginSessionId })
+    }).catch(function(){});
+    remoteLoginSessionId = "";
+  }
+}
+
+if(btnCloseServerLogin) btnCloseServerLogin.addEventListener("click", closeServerLoginModal);
+if(closeServerLoginBg) closeServerLoginBg.addEventListener("click", closeServerLoginModal);
+
+async function startServerRemoteLogin(){
+  if(!serverLoginModal) return;
+  serverLoginModal.classList.add("open");
+  if(remoteBrowserLoading) remoteBrowserLoading.style.display = "flex";
+  if(remoteBrowserImg) remoteBrowserImg.style.display = "none";
+  if(remoteLoginStatusText) remoteLoginStatusText.textContent = "Đang khởi động trình duyệt Server...";
+
+  try {
+    var res = await authedFetch("/api/accounts/remote-login/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        label: ($("#accLabel") && $("#accLabel").value.trim()) || "Muse.ai Cloud",
+        proxy_url: ($("#accProxy") && $("#accProxy").value.trim()) || ""
+      })
+    });
+    var data = await res.json().catch(function(){ return {}; });
+    if(!res.ok || !data.session_id){
+      throw new Error(data.error || "Máy chủ chưa sẵn sàng Chromium headless.");
+    }
+
+    remoteLoginSessionId = data.session_id;
+    if(data.width) remoteVirtualW = data.width;
+    if(data.height) remoteVirtualH = data.height;
+    remoteLoginLastSeq = 0;
+    if(remoteLoginStatusText) remoteLoginStatusText.textContent = "Đã kết nối! Bạn có thể nhấp chuột và gõ phím bên dưới:";
+
+    if(remoteLoginPollTimer) clearInterval(remoteLoginPollTimer);
+    remoteLoginPollTimer = setInterval(async function(){
+      if(!remoteLoginSessionId) return;
+      try {
+        var stRes = await authedFetch("/api/accounts/remote-login/state?session_id=" + encodeURIComponent(remoteLoginSessionId) + "&after_seq=" + remoteLoginLastSeq);
+        if(!stRes.ok) return;
+        var snap = await stRes.json().catch(function(){ return {}; });
+        if(!snap) return;
+
+        if(snap.width) remoteVirtualW = snap.width;
+        if(snap.height) remoteVirtualH = snap.height;
+        if(snap.frame_seq) remoteLoginLastSeq = snap.frame_seq;
+
+        if(!snap.unchanged && snap.frame && remoteBrowserImg){
+          remoteBrowserImg.src = snap.frame;
+          remoteBrowserImg.style.display = "block";
+          if(remoteBrowserLoading) remoteBrowserLoading.style.display = "none";
+        }
+
+        if(snap.status === "completed"){
+          closeServerLoginModal();
+          toast("✅ Đã bắt phiên Muse.ai thành công và lưu vào Pool!");
+          await fetchPoolReal();
+          return;
+        }
+
+        if(snap.status === "error" || snap.status === "cancelled"){
+          var errTxt = snap.error || "Phiên đăng nhập đã kết thúc.";
+          if(remoteLoginStatusText) remoteLoginStatusText.textContent = "Lỗi: " + errTxt;
+        }
+      } catch(e){}
+    }, 700);
+
+  } catch(err){
+    if(remoteLoginStatusText) remoteLoginStatusText.textContent = "Lỗi: " + (err.message || "Không thể mở trình duyệt Server");
+    toast(err.message || "Không khởi động được phiên đăng nhập trên Server.");
+  }
+}
+
+if(btnOpenServerLoginModal){
+  btnOpenServerLoginModal.addEventListener("click", startServerRemoteLogin);
+}
+
+if(remoteBrowserImg){
+  remoteBrowserImg.addEventListener("click", async function(e){
+    if(!remoteLoginSessionId || remoteInputBusy) return;
+    var rect = remoteBrowserImg.getBoundingClientRect();
+    if(!rect.width || !rect.height) return;
+    var relX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+    var relY = Math.max(0, Math.min(rect.height, e.clientY - rect.top));
+    var virtX = Math.round((relX / rect.width) * remoteVirtualW);
+    var virtY = Math.round((relY / rect.height) * remoteVirtualH);
+
+    remoteInputBusy = true;
+    try {
+      await authedFetch("/api/accounts/remote-login/input", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: remoteLoginSessionId,
+          type: "click",
+          x: virtX,
+          y: virtY
+        })
+      });
+    } catch(err){}
+    finally { remoteInputBusy = false; }
+  });
+}
+
+function sendRemoteTextFromInput(){
+  if(!remoteLoginSessionId || !remoteBrowserTextInput) return;
+  var txt = remoteBrowserTextInput.value;
+  if(!txt) return;
+  remoteBrowserTextInput.value = "";
+  authedFetch("/api/accounts/remote-login/input", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      session_id: remoteLoginSessionId,
+      type: "text",
+      text: txt
+    })
+  }).catch(function(){});
+}
+
+if(btnSendRemoteText) btnSendRemoteText.addEventListener("click", sendRemoteTextFromInput);
+if(remoteBrowserTextInput){
+  remoteBrowserTextInput.addEventListener("keydown", function(e){
+    if(e.key === "Enter"){
+      e.preventDefault();
+      sendRemoteTextFromInput();
+    }
+  });
+}
+
 /* Khởi động toàn diện hệ thống Web */
 async function initApp(){
   await ensureValidToken();
