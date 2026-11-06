@@ -1257,21 +1257,6 @@ func (p *MuseRouterPool) releaseNode(nodeID string, tokensUsed int64, latencyMs 
 				n.TotalRequests++
 				if tokensUsed > 0 {
 					n.TokensUsed += tokensUsed
-					if n.TokensRemaining > tokensUsed {
-						n.TokensRemaining -= tokensUsed
-					}
-					// Cập nhật TopupValue tức thì dựa trên TokensUsed thực tế
-					if n.TokensQuota > 0 {
-						pctUsed := float64(n.TokensUsed) / float64(n.TokensQuota) * 100
-						remaining := n.TokensQuota - n.TokensUsed
-						if remaining < 0 {
-							remaining = 0
-						}
-						n.TopupValue = fmt.Sprintf("Đã dùng %.4f%% (còn %s token)", pctUsed, FormatTokenCount(remaining))
-						n.TopupPercent = int(pctUsed)
-					} else if n.TokensUsed > 0 {
-						n.TopupValue = fmt.Sprintf("Đã dùng %s tok", FormatTokenCount(n.TokensUsed))
-					}
 				}
 				n.LatencyMs = latencyMs
 				n.StatusDetail = fmt.Sprintf("Đã đồng bộ (%dms)", latencyMs)
@@ -1486,6 +1471,60 @@ func (p *MuseRouterPool) wakeAndProbeNodeDirect(ctx context.Context, target *Mus
 	}
 
 	startTs := time.Now()
+	sessionReq, err := http.NewRequestWithContext(ctx, http.MethodGet, upstream+"/api/session", nil)
+	if err != nil {
+		return nil, err
+	}
+	sessionReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+	sessionReq.Header.Set("Accept", "application/json")
+	sessionReq.Header.Set("Cookie", cookieHeader)
+	sessionResp, err := p.httpClient.Do(sessionReq)
+	if err != nil {
+		return nil, err
+	}
+	sessionBody, _ := io.ReadAll(io.LimitReader(sessionResp.Body, 32768))
+	sessionResp.Body.Close()
+	latMs := float64(time.Since(startTs).Milliseconds())
+	if sessionResp.StatusCode == http.StatusUnauthorized || sessionResp.StatusCode == http.StatusForbidden || !hasSess {
+		return map[string]interface{}{
+			"status":         "unavailable",
+			"latency_ms":     latMs,
+			"has_hatch_sess": hasSess,
+			"has_hatch_gw":   hasGw,
+			"detail":         fmt.Sprintf("Muse.ai xác nhận phiên không hợp lệ (HTTP %d)", sessionResp.StatusCode),
+		}, nil
+	}
+	if sessionResp.StatusCode < http.StatusOK || sessionResp.StatusCode >= http.StatusMultipleChoices {
+		return map[string]interface{}{
+			"status":         "unavailable",
+			"latency_ms":     latMs,
+			"has_hatch_sess": hasSess,
+			"has_hatch_gw":   hasGw,
+			"detail":         fmt.Sprintf("Không xác minh được phiên Muse.ai (HTTP %d)", sessionResp.StatusCode),
+		}, nil
+	}
+	var sessionData struct {
+		VMState string `json:"vm_state"`
+	}
+	if err := json.Unmarshal(sessionBody, &sessionData); err != nil {
+		return map[string]interface{}{
+			"status":         "unavailable",
+			"latency_ms":     latMs,
+			"has_hatch_sess": hasSess,
+			"has_hatch_gw":   hasGw,
+			"detail":         "Muse.ai trả dữ liệu phiên không đọc được; chưa xác nhận tài khoản",
+		}, nil
+	}
+	if strings.EqualFold(strings.TrimSpace(sessionData.VMState), "DISABLED") {
+		return map[string]interface{}{
+			"status":         "unavailable",
+			"latency_ms":     latMs,
+			"has_hatch_sess": hasSess,
+			"has_hatch_gw":   hasGw,
+			"detail":         "Muse.ai báo VM của tài khoản đang bị vô hiệu hóa",
+		}, nil
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, upstream+"/api/client-version", nil)
 	if err != nil {
 		return nil, err
@@ -1500,9 +1539,9 @@ func (p *MuseRouterPool) wakeAndProbeNodeDirect(ctx context.Context, target *Mus
 	}
 	defer resp.Body.Close()
 	verBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
-	latMs := float64(time.Since(startTs).Milliseconds())
+	latMs = float64(time.Since(startTs).Milliseconds())
 
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || !hasSess {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices || !hasSess {
 		return map[string]interface{}{
 			"status":         "unavailable",
 			"latency_ms":     latMs,
@@ -1907,7 +1946,7 @@ func (p *MuseRouterPool) RouteAndExecuteChatForOwner(
 		startTs := time.Now()
 		// Nếu máy chủ có sẵn Chromium Headless CDP, ưu tiên chạy CDP trực tiếp trên máy chủ để cách ly 100% cuộc trò chuyện sạch!
 		// Chỉ khi máy chủ không có sẵn Chromium mới chuyển tiếp qua Client Browser Relay của Extension.
-		if !skipClientRelay && forceClientRelay && candidate.AuthType == "cookie" && candidate.HasHatchSess && !p.shouldTryPythonBridge() && (p.cdpManager == nil || !p.cdpManager.HasBrowserAvailable()) {
+		if !skipClientRelay && forceClientRelay && candidate.AuthType == "cookie" && candidate.HasHatchSess && (p.cdpManager == nil || !p.cdpManager.HasBrowserAvailable()) {
 			LogInfo("Routing web chat through client browser relay for node %s", candidate.ID)
 			return p.prepareBrowserRelayResponse(candidate, resolvedThreadID, turnID, model, userPrompt)
 		}

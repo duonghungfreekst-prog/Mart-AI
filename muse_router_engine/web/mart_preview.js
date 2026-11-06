@@ -524,8 +524,9 @@ async function handleSend(text){
     var authTok = await ensureValidToken(controller.signal);
     var headers = {
       "Content-Type": "application/json",
-      "Accept": "text/event-stream, application/json",
-      "X-Mart-Client": "web"
+      "Accept": "application/json",
+      "X-Mart-Client": "web",
+      "X-Mart-Ext-Relay": "1"
     };
     if(authTok) headers["Authorization"] = "Bearer " + authTok;
 
@@ -533,8 +534,9 @@ async function handleSend(text){
       prompt: text,
       thread_id: activeConvId || "",
       model: modelName,
-      skip_browser_relay: true,
-      stream: settings.stream !== false
+      client_relay_capable: true,
+      skip_browser_relay: false,
+      stream: false
     };
 
     var resp = await fetch("/api/chat/send", {
@@ -641,6 +643,49 @@ async function handleSend(text){
       }
     } else {
       var dataJson = await resp.json();
+      if(dataJson && dataJson.browser_relay){
+        var relayOut;
+        try {
+          var extension = await requestChromeExtension({ action: "ping" }, 5000);
+          if(!extension || !extension.ok || extension.supportsChatRelay === false){
+            throw new Error("Chrome extension chua ket noi; hay bat tien ich, dang nhap Muse.ai va tai lai trang.");
+          }
+          relayOut = await requestChromeExtension({
+            action: "execute_muse_chat",
+            prompt: dataJson.prompt || text,
+            cookie: dataJson.relay_cookie || ""
+          }, 90000);
+          if(!relayOut || !relayOut.ok || !String(relayOut.content || "").trim()){
+            throw new Error((relayOut && relayOut.error) || "Chrome chua nhan duoc cau tra loi moi tu Muse.ai.");
+          }
+        } catch(relayErr) {
+          var relayError = (relayErr && relayErr.message) || "Khong nhan duoc phan hoi moi tu Muse.ai.";
+          await authedFetch("/api/chat/relay-complete", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ thread_id: dataJson.thread_id, turn_id: dataJson.turn_id, node_id: dataJson.node_id, model: dataJson.model, error: relayError })
+          }).catch(function(){});
+          throw new Error(relayError);
+        }
+        var completeRes = await authedFetch("/api/chat/relay-complete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            thread_id: dataJson.thread_id,
+            turn_id: dataJson.turn_id,
+            node_id: dataJson.node_id,
+            model: dataJson.model || modelName,
+            reply: relayOut.content,
+            tokens_used: relayOut.tokens_used || countTokens(relayOut.content),
+            latency_ms: relayOut.latency_ms || 0
+          })
+        });
+        var completed = await completeRes.json().catch(function(){ return {}; });
+        if(!completeRes.ok || !String(completed.reply || "").trim()){
+          throw new Error(completed.error || "Server chua luu duoc cau tra loi nhan tu Chrome.");
+        }
+        dataJson = completed;
+      }
       hideTyping();
       var reply = dataJson.reply || dataJson.content || "";
       if(!reply) throw new Error("Máy chủ trả về phản hồi rỗng; Mart AI chưa nhận được câu trả lời.");
@@ -820,6 +865,7 @@ async function fetchPoolReal(){
         fp: n.fingerprint || n.id || "",
         tokens: Number(n.tokens_remaining) || 0,
         freeVal: n.free_plan_value || "Chưa lấy được dữ liệu mức sử dụng",
+        topupVal: n.topup_value || "Chưa xác minh số dư từ Muse.ai",
         freePct: Math.max(0, Math.min(100, Number(n.free_plan_percent) || 0)),
         topPct: Math.max(0, Math.min(100, Number(n.topup_percent) || 0)),
         req: Number(n.total_requests) || 0,
@@ -1188,7 +1234,7 @@ function renderPool(){
       '<span class="node-actions"><button type="button" data-nact="sync" data-ni="' + idx + '">Đồng bộ</button>' +
       '<button type="button" data-nact="del" data-ni="' + idx + '">Xoá</button></span></div>' +
       '<div class="meter"><div class="m-row"><span class="mk">Gói miễn phí</span><span class="mv">' + esc(n.freeVal) + '</span></div><div class="bar"><i style="width:' + n.freePct + '%"></i></div></div>' +
-      '<div class="meter"><div class="m-row"><span class="mk">Token bổ sung</span><span class="mv">' + (n.tokens>0 ? "Còn " + fmtTok(n.tokens) + " token · Không bao giờ hết hạn" : "Chưa có dữ liệu") + '</span></div><div class="bar"><i style="width:' + n.topPct + '%"></i></div></div>' +
+      '<div class="meter"><div class="m-row"><span class="mk">Token bổ sung (Muse.ai báo)</span><span class="mv">' + esc(n.topupVal) + '</span></div><div class="bar"><i style="width:' + n.topPct + '%"></i></div></div>' +
       '<div class="node-meta"><span>Lượt gọi <b>' + n.req + '</b></span><span>Lỗi <b>' + n.fail + '</b></span><span>Độ trễ <b>' + (n.lat ? n.lat + "ms" : "—") + '</b></span><span>Thiết bị <b>' + esc(n.dev) + '</b></span><span>Proxy <b>' + esc(n.proxy) + '</b></span></div>' +
       '<div class="node-detail">' + esc(n.detail) + '</div>';
     wrap.appendChild(card);
@@ -1196,12 +1242,11 @@ function renderPool(){
   var ready = POOL.filter(function(n){ return n.status==="ready"; }).length;
   var running = POOL.filter(function(n){ return n.status==="running"; }).length;
   var bad = POOL.filter(function(n){ return n.status==="unavailable"; }).length;
-  var toks = POOL.reduce(function(a,n){ return a + (n.status==="unavailable" ? 0 : n.tokens); }, 0);
   var reqs = POOL.reduce(function(a,n){ return a + n.req; }, 0);
   $("#statNodes").textContent = POOL.length;
   $("#statReady").textContent = ready + " / " + POOL.length;
   $("#statReadySub").textContent = running + " đang chạy · " + bad + " không khả dụng";
-  $("#statTokens").textContent = fmtTok(toks);
+  $("#statTokens").textContent = POOL.length === 1 ? POOL[0].topupVal : (POOL.length ? "Xem từng tài khoản" : "Chưa có dữ liệu");
   $("#statReqs").textContent = reqs;
   $("#poolMiniCount").textContent = POOL.length + " node · " + ready + " phiên hợp lệ";
 }
