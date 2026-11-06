@@ -747,7 +747,8 @@ async function fetchThreads(){
         group: grp,
         title: t.title || "Đoạn chat",
         preview: t.last_preview || t.preview || "",
-        time: timeStr
+        time: timeStr,
+        messages: Array.isArray(t.messages) ? t.messages : []
       };
     });
     renderHistory($("#searchHist") ? $("#searchHist").value : "");
@@ -766,38 +767,43 @@ async function openConversation(c){
   setTitle("Đang tải...");
 
   try {
-    var res = await authedFetch("/api/threads/" + encodeURIComponent(threadId), { cache: "no-store" });
-    if(!res.ok) throw new Error("ERR_LOAD_THREAD");
-    var data = await res.json();
-    var t = data.thread || data;
-    setTitle(t.title || "Đoạn chat");
-    var msgs = t.messages || [];
+    var thread = typeof c === "object" && c ? c : CONVERSATIONS.find(function(item){ return item.id === threadId; });
+    if(!thread || !Array.isArray(thread.messages)){
+      await fetchThreads();
+      thread = CONVERSATIONS.find(function(item){ return item.id === threadId; });
+    }
+    if(!thread) throw new Error("ERR_THREAD_NOT_FOUND");
+    setTitle(thread.title || "Đoạn chat");
+    var msgs = thread.messages || [];
     messagesEl.innerHTML = "";
-    msgCount = msgs.length;
+    msgCount = 0;
     tokenEst = 0;
     msgs.forEach(function(m){
+      var content = String(m.content || "");
+      if(m.role === "assistant" && !content.trim()) return;
       if(m.role === "user"){
-        addUserMsg(m.content);
-        tokenEst += countTokens(m.content);
-      } else {
+        addUserMsg(content);
+        tokenEst += countTokens(content);
+      } else if(m.role === "assistant") {
         var aiWrap = createAiMsgContainer();
         var bubble = aiWrap.querySelector(".bubble");
-        bubble.innerHTML = renderMarkdown(m.content);
+        bubble.innerHTML = renderMarkdown(content);
         wireCodeCopy(bubble);
         var meta = aiWrap.querySelector(".ai-meta");
         if(meta){
-          meta.innerHTML = '<span class="ai-lbl">Mart AI</span><span class="ai-dot"></span><span class="ai-time">'+nowTime()+'</span>';
-          meta.appendChild(actionsBar(function(){ return m.content; }, false));
+          meta.innerHTML = '<span class="ai-lbl">Mart AI</span><span class="ai-dot"></span><span class="ai-time">'+esc(m.timestamp || nowTime())+'</span>';
+          meta.appendChild(actionsBar(function(){ return content; }, false));
         }
         messagesEl.appendChild(aiWrap);
-        tokenEst += countTokens(m.content);
+        tokenEst += countTokens(content);
       }
+      msgCount++;
     });
     updateUsage();
     scrollDown();
   } catch(err){
     setTitle("Đoạn chat");
-    toast("Không thể tải lịch sử đoạn chat");
+    toast("Không tải được nội dung đoạn chat từ máy chủ");
   }
 }
 
