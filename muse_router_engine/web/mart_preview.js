@@ -333,7 +333,10 @@ function runFlow(key){
 }
 
 stopBtn.addEventListener("click", function(){
-  if(streaming) streaming.cancelled = true;
+  if(streaming){
+    streaming.cancelled = true;
+    if(streaming.controller) streaming.controller.abort();
+  }
 });
 
 /* ===== LOGIC KẾT NỐI THẬT VỚI MART AI BACKEND (100% CHAT STREAMING & THREADS THẬT) ===== */
@@ -447,13 +450,15 @@ function addAiError(msg){
 }
 
 var isSending = false;
+var queuedPrompts = [];
+var CHAT_REQUEST_TIMEOUT_MS = 100000;
 
 /* Đảm bảo token JWT RS256 luôn hợp lệ trước mọi thao tác */
-async function ensureValidToken(){
+async function ensureValidToken(signal){
   var tok = localStorage.getItem("mart_jwt_token") || "";
   if(!tok){
     try {
-      var r = await fetch("/api/auth/session", { cache: "no-store" });
+      var r = await fetch("/api/auth/session", { cache: "no-store", signal: signal });
       if(r.ok){
         var d = await r.json();
         if(d && d.token){
@@ -482,12 +487,23 @@ async function authedFetch(url, opts){
 
 /* Gửi tin nhắn thực tế qua SSE Streaming tới /api/chat/send của Mart AI backend */
 async function handleSend(text){
-  if(!text || !text.trim() || isSending) return;
+  if(!text || !text.trim()) return;
   text = text.trim();
+  if(isSending){
+    queuedPrompts.push(text);
+    toast("Câu hỏi đã được xếp hàng; Mart AI sẽ gửi sau câu trả lời hiện tại.");
+    return;
+  }
   isSending = true;
   stopBtn.classList.add("show");
   sendBtn.style.display = "none";
-  streaming = { cancelled: false };
+  var controller = new AbortController();
+  var activeStream = { cancelled: false, timedOut: false, controller: controller };
+  streaming = activeStream;
+  var requestTimer = setTimeout(function(){
+    activeStream.timedOut = true;
+    controller.abort();
+  }, CHAT_REQUEST_TIMEOUT_MS);
   startConversation();
   addUserMsg(text);
   lastUserText = text;
@@ -505,7 +521,7 @@ async function handleSend(text){
   var receivedAnyChunk = false;
 
   try {
-    var authTok = await ensureValidToken();
+    var authTok = await ensureValidToken(controller.signal);
     var headers = {
       "Content-Type": "application/json",
       "Accept": "text/event-stream, application/json",
@@ -525,7 +541,8 @@ async function handleSend(text){
       method: "POST",
       headers: headers,
       body: JSON.stringify(reqBody),
-      cache: "no-store"
+      cache: "no-store",
+      signal: controller.signal
     });
 
     if(!resp.ok){
@@ -550,7 +567,7 @@ async function handleSend(text){
           try { await reader.cancel(); } catch(e){}
           break;
         }
-        buffer += decoder.decode(chunk.value, { stream: true });
+        buffer += decoder.decode(chunk.value, { stream: true }).replace(/\r\n/g, "\n");
         var parts = buffer.split("\n\n");
         buffer = parts.pop();
 
@@ -640,13 +657,24 @@ async function handleSend(text){
     }
   } catch(err){
     hideTyping();
+    if(activeStream.timedOut){
+      addAiError("Muse AI chưa trả lời trong 100 giây. Tác vụ đã được dừng; bạn có thể gửi lại hoặc tiếp tục hỏi.");
+      toast("Đã dừng yêu cầu quá thời gian chờ.");
+      return;
+    }
+    if(activeStream.cancelled) return;
     addAiError(err.message || "Không thể gửi tin nhắn tới Mart AI");
     toast(err.message || "Không thể gửi tin nhắn");
   } finally {
+    clearTimeout(requestTimer);
     isSending = false;
     streaming = null;
     stopBtn.classList.remove("show");
     sendBtn.style.display = "";
+    if(queuedPrompts.length){
+      var nextPrompt = queuedPrompts.shift();
+      setTimeout(function(){ handleSend(nextPrompt); }, 0);
+    }
   }
 }
 
