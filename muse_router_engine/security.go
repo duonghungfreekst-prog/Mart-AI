@@ -233,9 +233,9 @@ func (m *RS256JWTManager) SyncWithSQLStore(store *MySQLStore, masterKey string) 
 	_, _ = store.ExecuteSQL(
 		`INSERT INTO oauth_sessions (session_id, login_url, state, app_id, redirect_uri, cookies_json, created_at)
 		 VALUES (?, 'system://jwt_rs256', 'active', 'mart_ai', '', ?, ?)
-		 ON CONFLICT(session_id) DO UPDATE SET
-		   cookies_json = excluded.cookies_json,
-		   created_at = excluded.created_at`,
+		 ON DUPLICATE KEY UPDATE
+		   cookies_json = VALUES(cookies_json),
+		   created_at = VALUES(created_at)`,
 		[]interface{}{jwtKeyRowID, enc, time.Now().Unix()},
 	)
 }
@@ -554,7 +554,7 @@ func SecurityHeadersMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Strict-Transport-Security", "max-age=31536000")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https: blob:; connect-src 'self'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https: blob:; connect-src 'self' ws: wss: https:;")
 		w.Header().Set("X-XSS-Protection", "1; mode=block")
 
 		// CORS Exact String Match (TUYỆT ĐỐI CẤM wildcard *)
@@ -564,7 +564,8 @@ func SecurityHeadersMiddleware(next http.Handler) http.Handler {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Vary", "Origin")
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Idempotency-Key, X-Mart-Client, X-Mart-Ext-Relay")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Idempotency-Key, X-Mart-Client, X-Mart-Ext-Relay, Accept, Cache-Control, Last-Event-ID")
+				w.Header().Set("Access-Control-Expose-Headers", "Content-Type, Retry-After, X-Accel-Buffering")
 			} else {
 				LogWarn("Blocked disallowed CORS origin: %s", origin)
 				WriteJSONError(w, http.StatusForbidden, "ERR_CORS_ORIGIN_FORBIDDEN")

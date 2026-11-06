@@ -6,7 +6,7 @@ WORKDIR /build
 COPY . .
 
 WORKDIR /build/muse_router_engine
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o /build/app .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o /build/app .
 
 FROM alpine:3.19
 
@@ -20,7 +20,8 @@ RUN apk --no-cache add \
     freetype \
     harfbuzz \
     ttf-freefont \
-    font-noto-emoji
+    font-noto-emoji \
+    && rm -rf /var/cache/apk/* /tmp/*
 
 WORKDIR /app
 
@@ -31,8 +32,11 @@ RUN mkdir -p /app/data
 
 EXPOSE 10000
 
-ENV RENDER=true
-ENV PORT=10000
-ENV CHROME_BIN=/usr/bin/chromium-browser
+ENV RENDER=true \
+    PORT=10000 \
+    CHROME_BIN=/usr/bin/chromium-browser \
+    CHROMIUM_PATH=/usr/bin/chromium-browser \
+    GOMEMLIMIT=220MiB \
+    GOGC=40
 
 CMD ["./app"]

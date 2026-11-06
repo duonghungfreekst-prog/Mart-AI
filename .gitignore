@@ -24,6 +24,7 @@ threads.json
 
 # Build artifacts & caches
 *.zip
+*.exe
 LINK_KHACH_TRUY_CAP.txt
 muse_router.exe
 muse_router_engine/muse_router.exe

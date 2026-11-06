@@ -267,11 +267,13 @@ const cdpMuseSnapshotJS = `
     if (el.closest('.bg-chat-user-bubble, div.items-end, [data-message-author-role="user"]')) return false;
     return true;
   });
-  // Giữ lại container cha cao nhất nếu có để không bị rơi mất thẻ video / player card
-  var topContainers = rawEls.filter(function(el) {
-    return el.matches('div[data-message-author-role="assistant"], div[class*="message-assistant"], .chat-bubble-assistant, div[data-testid*="assistant-message"], div[data-role="assistant"]');
+  // Loại trừ các phần tử con nằm lồng bên trong một phần tử assistant khác đã có trong rawEls để giữ nguyên văn bản, thẻ video, player card
+  var targetEls = rawEls.filter(function(el) {
+    for (var k = 0; k < rawEls.length; k++) {
+      if (rawEls[k] !== el && rawEls[k].contains(el)) return false;
+    }
+    return true;
   });
-  var targetEls = topContainers.length > 0 ? topContainers : rawEls;
 
   // 2. Tìm phần tử tin nhắn của User tương ứng với câu hỏi hiện tại
   var activePromptNorm = (window.__martActivePrompt || "").replace(/\s+/g, " ").trim().toLowerCase();
@@ -282,7 +284,7 @@ const cdpMuseSnapshotJS = `
       '[data-message-author-role="user"], .bg-chat-user-bubble, [data-pel-click="user_message_content"], div[class*="chat-bubble-user"], div[class*="message-user"], div.items-end .hatch-chat-groupable-bubble, div.items-end, div[class*="user"], .hatch-chat-groupable-bubble, p, span'
     )).filter(function(el) {
       if (isIgnoredContainer(el)) return false;
-      if (el.closest('[data-message-author-role="assistant"], div[class*="message-assistant"], .chat-bubble-assistant, div[data-testid*="assistant-message"], div[data-role="assistant"], [data-hatch-assistant-message-body="true"], .prose')) return false;
+      if (el.closest('[data-message-author-role="assistant"], div[class*="message-assistant"], .chat-bubble-assistant, div[data-testid*="assistant-message"], div[data-role="assistant"], [data-hatch-assistant-message-body="true"]')) return false;
       var ut = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
       return ut && ut.indexOf(activePromptSnippet) >= 0;
     });
@@ -626,8 +628,14 @@ func (m *CDPBrowserManager) ensureBrowserLocked(ctx context.Context) (*cdpClient
 		"--disable-sync",
 		"--disable-translate",
 		"--mute-audio",
-		"--renderer-process-limit=2",
-		"--js-flags=--max-old-space-size=192",
+		"--renderer-process-limit=1",
+		"--js-flags=--max-old-space-size=64",
+		"--no-zygote",
+		"--disable-site-isolation-trials",
+		"--enable-low-end-device-mode",
+		"--disk-cache-size=1048576",
+		"--media-cache-size=1048576",
+		"--disable-breakpad",
 		fmt.Sprintf("--window-size=%d,%d", cdpViewportWidth, cdpViewportHeight),
 		"--remote-debugging-address=127.0.0.1",
 		fmt.Sprintf("--remote-debugging-port=%d", port),
@@ -1348,8 +1356,12 @@ func (m *CDPBrowserManager) getOrCreateWarmChatTab(ctx context.Context, fp strin
 		}
 	}
 
-	// Giới hạn tối đa 2 warm tabs để bảo vệ RAM 512MB trên Render
-	if len(m.warmTabs) >= 2 {
+	// Giới hạn tối đa 1 warm tab trên Linux 512MB RAM và 2 trên Windows để bảo vệ RAM
+	maxTabs := 1
+	if runtime.GOOS == "windows" {
+		maxTabs = 2
+	}
+	if len(m.warmTabs) >= maxTabs {
 		var oldestKey string
 		var oldestTime time.Time
 		for k, wt := range m.warmTabs {
@@ -1577,7 +1589,7 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 				var ta = document.querySelector('textarea, [contenteditable="true"]');
 				var root = ta ? ta.parentElement : null;
 				for (var d = 0; d < 6 && root; d++) {
-					var b2 = root.querySelector('button[aria-label*="Gửi" i], button[aria-label*="Send" i], button[data-testid*="send" i], button[type="submit"], button:has(svg)');
+					var b2 = root.querySelector('button[aria-label*="Gửi" i], button[aria-label*="Send" i], button[data-testid*="send" i], button[type="submit"], div[role="button"][aria-label*="Send" i], div[role="button"][aria-label*="Gửi" i]');
 					if (b2) { btn = b2; break; }
 					root = root.parentElement;
 				}
@@ -1745,7 +1757,7 @@ func (m *CDPBrowserManager) idleReaperLoop() {
 			}
 
 			m.mu.Lock()
-			if m.cmd != nil && time.Since(m.lastUsed) > 180*time.Second {
+			if m.cmd != nil && time.Since(m.lastUsed) > 60*time.Second {
 				LogInfo("Reaping idle headless browser to free memory")
 				m.shutdownLocked()
 			}

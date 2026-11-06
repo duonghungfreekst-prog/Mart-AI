@@ -15,6 +15,12 @@ services:
         value: "true"
       - key: CHROME_BIN
         value: "/usr/bin/chromium-browser"
+      - key: CHROMIUM_PATH
+        value: "/usr/bin/chromium-browser"
+      - key: GOMEMLIMIT
+        value: "220MiB"
+      - key: GOGC
+        value: "40"
       # Set this secret in the Render dashboard. Render filesystems are ephemeral,
       # so database connection settings must survive restarts as environment vars.
       - key: DATABASE_URL

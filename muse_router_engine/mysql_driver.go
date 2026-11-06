@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/tls"
@@ -91,9 +92,13 @@ func parseMySQLConnectionURL(rawURL string) (*mysqlDSNConfig, error) {
 	}
 	q := u.Query()
 	sslMode := strings.ToUpper(strings.TrimSpace(q.Get("ssl-mode")))
+	if sslMode == "" {
+		sslMode = strings.ToUpper(strings.TrimSpace(q.Get("sslmode")))
+	}
 	tlsParam := strings.ToLower(strings.TrimSpace(q.Get("tls")))
-	useTLS := sslMode == "REQUIRED" || sslMode == "VERIFY_CA" || sslMode == "VERIFY_IDENTITY" ||
-		tlsParam == "true" || tlsParam == "skip-verify" || tlsParam == "preferred" ||
+	sslParam := strings.ToLower(strings.TrimSpace(q.Get("ssl")))
+	useTLS := sslMode == "REQUIRED" || sslMode == "REQUIRE" || sslMode == "VERIFY_CA" || sslMode == "VERIFY_IDENTITY" ||
+		tlsParam == "true" || tlsParam == "skip-verify" || tlsParam == "preferred" || sslParam == "true" ||
 		strings.Contains(strings.ToLower(host), "aivencloud.com") ||
 		strings.Contains(strings.ToLower(host), "tidbcloud.com") ||
 		strings.Contains(strings.ToLower(host), "tidb")
@@ -127,7 +132,11 @@ type mysqlConn struct {
 
 func dialMySQLConn(cfg *mysqlDSNConfig) (*mysqlConn, error) {
 	addr := net.JoinHostPort(cfg.Host, cfg.Port)
-	rawConn, err := net.DialTimeout("tcp", addr, 12*time.Second)
+	dialer := net.Dialer{
+		Timeout:   12 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+	rawConn, err := dialer.Dial("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("mysql dial %s failed: %w", addr, err)
 	}
@@ -582,6 +591,42 @@ func rewriteSQLForMySQL(rawSQL string) string {
 
 func (c *mysqlConn) Prepare(query string) (driver.Stmt, error) {
 	return &mysqlStmt{conn: c, query: query}, nil
+}
+
+// IsValid implements driver.Validator (Go 1.15+) để pool tự kiểm tra trước khi cấp phát connection
+func (c *mysqlConn) IsValid() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return !c.closed && c.conn != nil
+}
+
+// Ping implements driver.Pinger để kiểm tra kết nối sống thực tế tới TiDB Serverless
+func (c *mysqlConn) Ping(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed || c.conn == nil {
+		return driver.ErrBadConn
+	}
+
+	_ = c.conn.SetDeadline(time.Now().Add(5 * time.Second))
+	defer c.conn.SetDeadline(time.Time{})
+
+	if err := c.writePacket([]byte{mysqlComPing}, 0); err != nil {
+		c.closed = true
+		_ = c.conn.Close()
+		return driver.ErrBadConn
+	}
+
+	pkt, _, err := c.readPacket()
+	if err != nil {
+		c.closed = true
+		_ = c.conn.Close()
+		return driver.ErrBadConn
+	}
+	if len(pkt) > 0 && pkt[0] == 0xff {
+		return parseMySQLErrPacket(pkt)
+	}
+	return nil
 }
 
 func (c *mysqlConn) Close() error {

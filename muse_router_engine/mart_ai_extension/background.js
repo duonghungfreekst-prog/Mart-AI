@@ -587,10 +587,13 @@ function domReadMuseSnapshot() {
     if (el.closest('.bg-chat-user-bubble, div.items-end, [data-message-author-role="user"]')) return false;
     return true;
   });
-  var topContainers = rawEls.filter(function (el) {
-    return el.matches('div[data-message-author-role="assistant"], div[class*="message-assistant"], .chat-bubble-assistant, div[data-testid*="assistant-message"], div[data-role="assistant"]');
+  // Loại trừ các phần tử con nằm lồng bên trong một phần tử assistant khác đã có trong rawEls
+  var targetEls = rawEls.filter(function (el) {
+    for (var k = 0; k < rawEls.length; k++) {
+      if (rawEls[k] !== el && rawEls[k].contains(el)) return false;
+    }
+    return true;
   });
-  var targetEls = topContainers.length > 0 ? topContainers : rawEls;
 
   // 2. Tìm phần tử tin nhắn của User của lượt prompt hiện tại
   var expectedPrompt = String(window.__martActivePrompt || window.__martExpectedPrompt || "").trim();
@@ -602,7 +605,7 @@ function domReadMuseSnapshot() {
       '[data-message-author-role="user"], .bg-chat-user-bubble, [data-pel-click="user_message_content"], div[class*="chat-bubble-user"], div[class*="message-user"], div.items-end .hatch-chat-groupable-bubble, div.items-end, div[class*="user"], .hatch-chat-groupable-bubble, p, span'
     )).filter(function (el) {
       if (isIgnoredContainer(el)) return false;
-      if (el.closest('[data-message-author-role="assistant"], div[class*="message-assistant"], .chat-bubble-assistant, div[data-testid*="assistant-message"], div[data-role="assistant"], [data-hatch-assistant-message-body="true"], .prose')) return false;
+      if (el.closest('[data-message-author-role="assistant"], div[class*="message-assistant"], .chat-bubble-assistant, div[data-testid*="assistant-message"], div[data-role="assistant"], [data-hatch-assistant-message-body="true"]')) return false;
       var ut = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
       return ut && ut.indexOf(expectedSnippet) >= 0;
     });
@@ -756,7 +759,7 @@ function domSubmitMusePrompt(promptText) {
           var root = el.parentElement;
           for (var d = 0; d < 6 && root; d++) {
             var sendBtn = root.querySelector(
-              'button[data-pel-click="chat_send_message"]:not(:disabled), button[aria-label*="Gửi" i]:not(:disabled), button[aria-label*="Send" i]:not(:disabled), button[data-testid*="send" i]:not(:disabled), button[type="submit"]:not(:disabled), button:has(svg)'
+              'button[data-pel-click="chat_send_message"]:not(:disabled), button[aria-label*="Gửi" i]:not(:disabled), button[aria-label*="Send" i]:not(:disabled), button[data-testid*="send" i]:not(:disabled), button[type="submit"]:not(:disabled), div[role="button"][aria-label*="Send" i], div[role="button"][aria-label*="Gửi" i]'
             );
             if (sendBtn) {
               sendBtn.disabled = false;

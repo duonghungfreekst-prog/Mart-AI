@@ -1,0 +1,40 @@
+# Git và config AI
+.git
+.gitignore
+.gitattributes
+.antigravity
+.antigravityrules
+
+# File zip và backup dung lượng lớn (tránh phình build context)
+*.zip
+*.rar
+*.7z
+*.tar.gz
+*.bak
+*.old
+
+# File nhị phân Windows / Build artifacts
+*.exe
+*.dll
+*.pdb
+bin/
+obj/
+muse_router_ui/bin/
+muse_router_ui/obj/
+muse_router_core/target/
+
+# Thư mục dữ liệu local
+data/
+*.enc
+*.db
+*.sqlite
+
+# Script Windows
+*.bat
+*.vbs
+*.ps1
+HUONG_DAN_*.txt
+
+# File Chrome test / cache local
+chrome_bin/
+chrome_libs/

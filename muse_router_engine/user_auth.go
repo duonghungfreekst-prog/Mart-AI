@@ -329,7 +329,9 @@ func (a *ServerApp) resolveActor(r *http.Request) RequestActor {
 
 func isPublicRoute(path string) bool {
 	switch path {
-	case "/api/health",
+	case "/health",
+		"/ping",
+		"/api/health",
 		"/api/auth/session",
 		"/api/users/register",
 		"/api/users/login",
@@ -1195,10 +1197,10 @@ func (a *ServerApp) handleWorkspaceDocs(w http.ResponseWriter, r *http.Request) 
 		if _, err := store.ExecuteSQL(
 			`INSERT INTO muse_documents(id, owner_id, title, content, source_thread_id, updated_at)
 			 VALUES(?, ?, ?, ?, ?, ?)
-			 ON CONFLICT(id) DO UPDATE SET
-			   title = excluded.title,
-			   content = excluded.content,
-			   updated_at = excluded.updated_at`,
+			 ON DUPLICATE KEY UPDATE
+			   title = VALUES(title),
+			   content = VALUES(content),
+			   updated_at = VALUES(updated_at)`,
 			[]interface{}{docID, ownerScope, title, content, strings.TrimSpace(req.SourceThreadID), nowStr},
 		); err != nil {
 			WriteJSONError(w, http.StatusInternalServerError, "ERR_SAVE_DOC_FAILED")
@@ -1286,9 +1288,9 @@ func (a *ServerApp) handleWorkspaceMemories(w http.ResponseWriter, r *http.Reque
 		if _, err := store.ExecuteSQL(
 			`INSERT INTO muse_memories(id, owner_id, title, content, is_active, created_at)
 			 VALUES(?, ?, ?, ?, 1, ?)
-			 ON CONFLICT(id) DO UPDATE SET
-			   title = excluded.title,
-			   content = excluded.content`,
+			 ON DUPLICATE KEY UPDATE
+			   title = VALUES(title),
+			   content = VALUES(content)`,
 			[]interface{}{memID, ownerScope, title, content, nowStr},
 		); err != nil {
 			WriteJSONError(w, http.StatusInternalServerError, "ERR_SAVE_MEMORY_FAILED")
@@ -1407,10 +1409,10 @@ func (a *ServerApp) handleWorkspaceTasks(w http.ResponseWriter, r *http.Request)
 		if _, err := store.ExecuteSQL(
 			`INSERT INTO muse_tasks(id, owner_id, title, prompt, status, updated_at)
 			 VALUES(?, ?, ?, ?, 'pending', ?)
-			 ON CONFLICT(id) DO UPDATE SET
-			   title = excluded.title,
-			   prompt = excluded.prompt,
-			   updated_at = excluded.updated_at`,
+			 ON DUPLICATE KEY UPDATE
+			   title = VALUES(title),
+			   prompt = VALUES(prompt),
+			   updated_at = VALUES(updated_at)`,
 			[]interface{}{taskID, ownerScope, title, strings.TrimSpace(req.Prompt), nowStr},
 		); err != nil {
 			WriteJSONError(w, http.StatusInternalServerError, "ERR_SAVE_TASK_FAILED")

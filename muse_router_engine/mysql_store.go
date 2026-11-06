@@ -254,9 +254,9 @@ func getOrOpenMySQLPool(targetURL string) (*sql.DB, error) {
 		return nil, fmt.Errorf("sql.Open(mysql) error: %w", err)
 	}
 	db.SetMaxOpenConns(16)
-	db.SetMaxIdleConns(8)
-	db.SetConnMaxIdleTime(5 * time.Minute)
-	db.SetConnMaxLifetime(15 * time.Minute)
+	db.SetMaxIdleConns(4)
+	db.SetConnMaxIdleTime(60 * time.Second)
+	db.SetConnMaxLifetime(5 * time.Minute)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -445,18 +445,57 @@ func (s *MySQLStore) Reconfigure(newURL string, newAuthToken string) error {
 	return nil
 }
 
+// CloseAllMySQLPools đóng tất cả connection pool đang mở trong bộ nhớ để giải phóng triệt để phiên TiDB / MySQL
+func CloseAllMySQLPools() {
+	sharedMySQLPools.Range(func(key, value interface{}) bool {
+		if db, ok := value.(*sql.DB); ok && db != nil {
+			_ = db.Close()
+		}
+		sharedMySQLPools.Delete(key)
+		return true
+	})
+}
+
+// PingCheck kiểm tra tính sẵn sàng của cơ sở dữ liệu TiDB / MySQL trong thời gian tối đa timeoutCtx.
+func (s *MySQLStore) PingCheck(ctx context.Context) (connected bool, latencyMs int64, dbInfo string, err error) {
+	if s == nil {
+		return false, 0, "", errors.New("ERR_SQL_STORE_NIL")
+	}
+	s.mu.RLock()
+	db := s.db
+	rawURL := s.dbURL
+	s.mu.RUnlock()
+
+	if db == nil {
+		if strings.TrimSpace(rawURL) == "" {
+			return false, 0, "unconfigured", nil
+		}
+		return false, 0, maskDatabaseURL(rawURL), errors.New("ERR_DATABASE_NOT_CONNECTED")
+	}
+
+	start := time.Now()
+	var one int
+	pingErr := db.QueryRowContext(ctx, "SELECT 1").Scan(&one)
+	latency := time.Since(start).Milliseconds()
+
+	if pingErr != nil {
+		return false, latency, maskDatabaseURL(rawURL), pingErr
+	}
+	return true, latency, maskDatabaseURL(rawURL), nil
+}
+
 func (s *MySQLStore) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var err error
 	if s.db != nil {
-		if !s.sharedPool {
-			err := s.db.Close()
-			s.db = nil
-			return err
+		err = s.db.Close()
+		if s.dbURL != "" {
+			sharedMySQLPools.Delete(s.dbURL)
 		}
 		s.db = nil
 	}
-	return nil
+	return err
 }
 
 func (s *MySQLStore) initSchema() error {
@@ -1036,12 +1075,12 @@ func (s *MySQLStore) SaveThreadWithMessages(t *ChatThread) error {
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO chat_threads (id, owner_id, title, model, workspace, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET
-			owner_id = CASE WHEN chat_threads.owner_id = '' THEN excluded.owner_id ELSE chat_threads.owner_id END,
-			title = excluded.title,
-			model = excluded.model,
-			workspace = excluded.workspace,
-			updated_at = excluded.updated_at
+		ON DUPLICATE KEY UPDATE
+			owner_id = CASE WHEN chat_threads.owner_id = '' THEN VALUES(owner_id) ELSE chat_threads.owner_id END,
+			title = VALUES(title),
+			model = VALUES(model),
+			workspace = VALUES(workspace),
+			updated_at = VALUES(updated_at)
 	`, t.ID, t.OwnerID, t.Title, t.Model, t.Workspace, t.CreatedAt, t.UpdatedAt)
 	if err != nil {
 		return err
@@ -1062,16 +1101,16 @@ func (s *MySQLStore) SaveThreadWithMessages(t *ChatThread) error {
 				id, thread_id, seq_num, role, content, attachments_json,
 				node_label, model, latency_ms, tokens, timestamp
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT(id) DO UPDATE SET
-				seq_num = excluded.seq_num,
-				role = excluded.role,
-				content = excluded.content,
-				attachments_json = excluded.attachments_json,
-				node_label = excluded.node_label,
-				model = excluded.model,
-				latency_ms = excluded.latency_ms,
-				tokens = excluded.tokens,
-				timestamp = excluded.timestamp
+			ON DUPLICATE KEY UPDATE
+				seq_num = VALUES(seq_num),
+				role = VALUES(role),
+				content = VALUES(content),
+				attachments_json = VALUES(attachments_json),
+				node_label = VALUES(node_label),
+				model = VALUES(model),
+				latency_ms = VALUES(latency_ms),
+				tokens = VALUES(tokens),
+				timestamp = VALUES(timestamp)
 		`,
 			msgID,
 			t.ID,
@@ -1142,12 +1181,12 @@ func (s *MySQLStore) SaveOAuthSession(sessionID, loginURL, state, appID, redirec
 	_, err := db.ExecContext(ctx, `
 		INSERT INTO oauth_sessions (session_id, login_url, state, app_id, redirect_uri, cookies_json, created_at)
 		VALUES (?, ?, ?, ?, ?, '{}', ?)
-		ON CONFLICT(session_id) DO UPDATE SET
-			login_url = excluded.login_url,
-			state = excluded.state,
-			app_id = excluded.app_id,
-			redirect_uri = excluded.redirect_uri,
-			created_at = excluded.created_at
+		ON DUPLICATE KEY UPDATE
+			login_url = VALUES(login_url),
+			state = VALUES(state),
+			app_id = VALUES(app_id),
+			redirect_uri = VALUES(redirect_uri),
+			created_at = VALUES(created_at)
 	`, sessionID, loginURL, state, appID, redirectURI, time.Now().Unix())
 	return err
 }
@@ -1532,12 +1571,12 @@ func (s *MySQLStore) SyncFromStore(src *MySQLStore) (map[string]int, error) {
 			_, errExec := s.ExecuteSQL(
 				`INSERT INTO mart_users (id, username, display_name, password_hash, role, is_disabled, created_at, last_login_at)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-				 ON CONFLICT(id) DO UPDATE SET
-				   display_name = excluded.display_name,
-				   password_hash = excluded.password_hash,
-				   role = excluded.role,
-				   is_disabled = excluded.is_disabled,
-				   last_login_at = excluded.last_login_at`,
+				 ON DUPLICATE KEY UPDATE
+				   display_name = VALUES(display_name),
+				   password_hash = VALUES(password_hash),
+				   role = VALUES(role),
+				   is_disabled = VALUES(is_disabled),
+				   last_login_at = VALUES(last_login_at)`,
 				[]interface{}{r["id"], r["username"], r["display_name"], r["password_hash"], r["role"], isDis, r["created_at"], r["last_login_at"]},
 			)
 			if errExec == nil {
@@ -1552,12 +1591,12 @@ func (s *MySQLStore) SyncFromStore(src *MySQLStore) (map[string]int, error) {
 			_, errExec := s.ExecuteSQL(
 				`INSERT INTO muse_documents (id, owner_id, title, content, source_thread_id, updated_at)
 				 VALUES (?, ?, ?, ?, ?, ?)
-				 ON CONFLICT(id) DO UPDATE SET
-				   owner_id = excluded.owner_id,
-				   title = excluded.title,
-				   content = excluded.content,
-				   source_thread_id = excluded.source_thread_id,
-				   updated_at = excluded.updated_at`,
+				 ON DUPLICATE KEY UPDATE
+				   owner_id = VALUES(owner_id),
+				   title = VALUES(title),
+				   content = VALUES(content),
+				   source_thread_id = VALUES(source_thread_id),
+				   updated_at = VALUES(updated_at)`,
 				[]interface{}{r["id"], r["owner_id"], r["title"], r["content"], r["source_thread_id"], r["updated_at"]},
 			)
 			if errExec == nil {
@@ -1573,11 +1612,11 @@ func (s *MySQLStore) SyncFromStore(src *MySQLStore) (map[string]int, error) {
 			_, errExec := s.ExecuteSQL(
 				`INSERT INTO muse_memories (id, owner_id, title, content, is_active, created_at)
 				 VALUES (?, ?, ?, ?, ?, ?)
-				 ON CONFLICT(id) DO UPDATE SET
-				   owner_id = excluded.owner_id,
-				   title = excluded.title,
-				   content = excluded.content,
-				   is_active = excluded.is_active`,
+				 ON DUPLICATE KEY UPDATE
+				   owner_id = VALUES(owner_id),
+				   title = VALUES(title),
+				   content = VALUES(content),
+				   is_active = VALUES(is_active)`,
 				[]interface{}{r["id"], r["owner_id"], r["title"], r["content"], isAct, r["created_at"]},
 			)
 			if errExec == nil {
@@ -1592,13 +1631,14 @@ func (s *MySQLStore) SyncFromStore(src *MySQLStore) (map[string]int, error) {
 			_, errExec := s.ExecuteSQL(
 				`INSERT INTO muse_tasks (id, owner_id, title, prompt, status, assigned_node_id, result_summary, updated_at)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-				 ON CONFLICT(id) DO UPDATE SET
-				   owner_id = excluded.owner_id,
-				   title = excluded.title,
-				   prompt = excluded.prompt,
-				   status = excluded.status,
-				   result_summary = excluded.result_summary,
-				   updated_at = excluded.updated_at`,
+				 ON DUPLICATE KEY UPDATE
+				   owner_id = VALUES(owner_id),
+				   title = VALUES(title),
+				   prompt = VALUES(prompt),
+				   status = VALUES(status),
+				   assigned_node_id = VALUES(assigned_node_id),
+				   result_summary = VALUES(result_summary),
+				   updated_at = VALUES(updated_at)`,
 				[]interface{}{r["id"], r["owner_id"], r["title"], r["prompt"], r["status"], r["assigned_node_id"], r["result_summary"], r["updated_at"]},
 			)
 			if errExec == nil {

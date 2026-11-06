@@ -17,6 +17,8 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -127,17 +129,93 @@ func (a *ServerApp) readJSONBody(r *http.Request, dst interface{}) error {
 	return json.Unmarshal(raw, dst)
 }
 
+var serverStartTime = time.Now()
+
+func (a *ServerApp) handlePing(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("pong"))
+}
+
+func (a *ServerApp) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+
+	components := make(map[string]interface{})
+	isHealthy := true
+	httpStatusCode := http.StatusOK
+
+	sqlStore := a.pool.GetMySQLStore()
+	dbConnected, dbLat, maskedURL, dbErr := sqlStore.PingCheck(ctx)
+	configuredDB := strings.TrimSpace(os.Getenv("DATABASE_URL")) != ""
+
+	if dbErr != nil {
+		if configuredDB {
+			isHealthy = false
+			httpStatusCode = http.StatusServiceUnavailable
+			components["tidb"] = map[string]interface{}{
+				"status":       "unhealthy",
+				"connected":    false,
+				"database_url": maskedURL,
+				"error":        dbErr.Error(),
+				"latency_ms":   dbLat,
+			}
+		} else {
+			components["tidb"] = map[string]interface{}{
+				"status":       "unconfigured",
+				"connected":    false,
+				"database_url": "none",
+				"message":      "Running in in-memory mode, DATABASE_URL not set",
+			}
+		}
+	} else {
+		components["tidb"] = map[string]interface{}{
+			"status":       "healthy",
+			"connected":    dbConnected,
+			"database_url": maskedURL,
+			"latency_ms":   dbLat,
+		}
+	}
+
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	allocMB := float64(m.Alloc) / (1024 * 1024)
+	sysMB := float64(m.Sys) / (1024 * 1024)
+
+	components["system"] = map[string]interface{}{
+		"goroutines": runtime.NumGoroutine(),
+		"alloc_mb":   fmt.Sprintf("%.2f MB", allocMB),
+		"sys_mb":     fmt.Sprintf("%.2f MB", sysMB),
+	}
+
+	statusText := "ok"
+	if !isHealthy {
+		statusText = "unhealthy"
+	}
+
+	WriteJSONResponse(w, httpStatusCode, map[string]interface{}{
+		"status":         statusText,
+		"service":        "muse_router_engine",
+		"timestamp":      time.Now().UTC().Format(time.RFC3339),
+		"uptime_seconds": int64(time.Since(serverStartTime).Seconds()),
+		"jwt_alg":        "RS256",
+		"components":     components,
+	})
+}
+
 func (a *ServerApp) Routes() http.Handler {
 	mux := http.NewServeMux()
 
-	// 1. Health & Auth Session (cấp phát JWT RS256 bất đối xứng)
-	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
-		WriteJSONResponse(w, http.StatusOK, map[string]interface{}{
-			"status":  "ok",
-			"service": "muse_router_engine",
-			"jwt_alg": "RS256",
-		})
-	})
+	// 1. Health & Ping Probes (hỗ trợ Render Zero-Downtime deploy & Liveness)
+	mux.HandleFunc("/health", a.handleHealthCheck)
+	mux.HandleFunc("/api/health", a.handleHealthCheck)
+	mux.HandleFunc("/ping", a.handlePing)
 
 	mux.HandleFunc("/api/auth/session", func(w http.ResponseWriter, r *http.Request) {
 		actor := a.resolveActor(r)
@@ -1445,6 +1523,12 @@ func tryStartLocalPythonBridge(rootDir string) {
 }
 
 func main() {
+	memLimitEnv := os.Getenv("GOMEMLIMIT")
+	if memLimitEnv == "" && (os.Getenv("PORT") != "" || os.Getenv("RENDER") != "") {
+		debug.SetMemoryLimit(220 * 1024 * 1024) // 220MiB cho Go Engine, nhường 290MiB cho Chromium + OS trên Render 512MB
+	}
+	debug.SetGCPercent(40)
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = os.Getenv("MUSE_ENGINE_PORT")
@@ -1528,5 +1612,8 @@ func main() {
 			LogWarn("Graceful shutdown timed out: %v; forcing server close", err)
 			_ = srv.Close()
 		}
+		LogInfo("Releasing TiDB connection pools...")
+		CloseAllMySQLPools()
+		LogInfo("Graceful shutdown completed successfully.")
 	}
 }

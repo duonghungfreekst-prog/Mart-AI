@@ -138,7 +138,7 @@ function probeMartExtension(){
 window.addEventListener("load", probeMartExtension);
 setTimeout(probeMartExtension, 1200);
 window.addEventListener("message", function(ev){
-  if(ev.data && ev.data.__mart_ext_push && ev.data.action === "MART_EXT_SESSION_READY"){
+  if(ev.data && ev.data.__mart_ext_push && (ev.data.action === "MART_EXT_SESSION_READY" || ev.data.event === "MART_EXT_SESSION_READY")){
     hasMartExtension = true;
   }
 });
@@ -508,7 +508,7 @@ function addAiError(msg, retryPrompt){
 
 var isSending = false;
 var queuedPrompts = [];
-var CHAT_REQUEST_TIMEOUT_MS = 100000;
+var CHAT_REQUEST_TIMEOUT_MS = 200000;
 
 /* Đảm bảo token JWT RS256 luôn hợp lệ trước mọi thao tác */
 async function ensureValidToken(forceRefresh, signal){
@@ -591,7 +591,7 @@ async function handleSend(text){
     var canRelay = !!hasMartExtension;
     var headers = {
       "Content-Type": "application/json",
-      "Accept": "application/json",
+      "Accept": "text/event-stream, application/json",
       "X-Mart-Client": "web",
       "X-Mart-Ext-Relay": canRelay ? "1" : "0"
     };
@@ -603,7 +603,7 @@ async function handleSend(text){
       model: modelName,
       client_relay_capable: canRelay,
       skip_browser_relay: !canRelay,
-      stream: false
+      stream: true
     };
 
     updateTypingProgress(0, "Đang gửi yêu cầu tới Mart AI server; chưa có xác nhận từ server.");
@@ -650,6 +650,12 @@ async function handleSend(text){
         }
         var chunk = await reader.read();
         if(chunk.done) break;
+        // Gia hạn timeout thêm 60 giây mỗi khi nhận dữ liệu từ server (chống timeout giả)
+        clearTimeout(requestTimer);
+        requestTimer = setTimeout(function(){
+          activeStream.timedOut = true;
+          controller.abort();
+        }, 60000);
         if(streaming && streaming.cancelled){
           try { await reader.cancel(); } catch(e){}
           break;
@@ -786,7 +792,7 @@ async function handleSend(text){
               action: "execute_muse_chat",
               prompt: dataJson.prompt || text,
               cookie: dataJson.relay_cookie || ""
-            }, 90000);
+            }, 195000);
             if(!relayOut || !relayOut.ok || !String(relayOut.content || "").trim()){
               throw new Error((relayOut && relayOut.error) || "Không nhận được phản hồi mới từ Muse.ai.");
             }
@@ -842,7 +848,7 @@ async function handleSend(text){
       autoGrow();
     }
     if(activeStream.timedOut){
-      addAiError("Thời gian phản hồi từ Muse.ai bị quá hạn (100 giây). Vui lòng bấm 'Thử lại' bên dưới để hệ thống tự động kết nối lại.", lastUserText);
+      addAiError("Thời gian phản hồi từ Muse.ai bị quá hạn. Vui lòng bấm 'Thử lại' bên dưới để hệ thống tự động kết nối lại.", lastUserText);
       toast("Đã dừng yêu cầu do quá thời gian chờ.");
       return;
     }
