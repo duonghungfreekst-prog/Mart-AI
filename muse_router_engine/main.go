@@ -1343,7 +1343,9 @@ func (g *gzipResponseWriter) WriteHeader(code int) {
 	}
 	g.wroteHeader = true
 	ct := strings.ToLower(g.Header().Get("Content-Type"))
-	if code < 200 || code == http.StatusNoContent || code == http.StatusNotModified || strings.Contains(ct, "text/event-stream") {
+	if code < 200 || code == http.StatusNoContent || code == http.StatusNotModified ||
+		strings.Contains(ct, "text/event-stream") ||
+		g.Header().Get("Content-Encoding") != "" {
 		g.passthrough = true
 		g.ResponseWriter.WriteHeader(code)
 		return
@@ -1454,7 +1456,7 @@ func servePrecompressedWebAsset(w http.ResponseWriter, r *http.Request, assetNam
 
 func shouldSkipGzip(path string) bool {
 	switch path {
-	case "/", "/index.html", "/cai-dat", "/admin", "/library/artifacts", "/app.js", "/styles.css", "/favicon.svg":
+	case "/", "/index.html", "/cai-dat", "/admin", "/library/artifacts", "/app.js", "/mart_preview.js", "/styles.css", "/favicon.svg":
 		return true
 	}
 	if path == "/api/chat/send" ||
