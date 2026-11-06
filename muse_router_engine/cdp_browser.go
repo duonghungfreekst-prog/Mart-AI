@@ -1367,7 +1367,7 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 	}
 
 	var baseline *cdpMuseSnap
-	for i := 0; i < 25; i++ {
+	for i := 0; i < 50; i++ {
 		snap, errSnap := evalMuseSnap(ctx, wt.Page)
 		if errSnap == nil && snap.HasComposer {
 			baseline = snap
@@ -1376,7 +1376,7 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 		select {
 		case <-ctx.Done():
 			return "", 0, 0, ctx.Err()
-		case <-time.After(150 * time.Millisecond):
+		case <-time.After(250 * time.Millisecond):
 		}
 	}
 
