@@ -424,6 +424,11 @@ func TestRealSubscriptionSyncAndZeroPctNewAccount(t *testing.T) {
 			_, _ = w.Write([]byte(`{"deploymentId":"dpl_test_2026"}`))
 			return
 		}
+		if r.URL.Path == "/api/session" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"vm_state":"ACTIVE"}`))
+			return
+		}
 		if r.Method == http.MethodPost && r.Header.Get("Next-Action") != "" {
 			w.Header().Set("Content-Type", "text/x-component")
 			if strings.Contains(cookie, "brand_new_sess") {

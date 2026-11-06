@@ -2033,7 +2033,7 @@ func (p *MuseRouterPool) RouteAndExecuteChatForOwner(
 					}
 					continue
 				}
-				if p.cdpManager == nil && !skipClientRelay {
+				if p.cdpManager == nil && forceClientRelay && !skipClientRelay && candidate.AuthType == "cookie" && candidate.HasHatchSess {
 					return p.prepareBrowserRelayResponse(candidate, resolvedThreadID, turnID, model, userPrompt)
 				}
 				errMsg = "Máy chủ chưa thể kết nối Headless Chromium tới Muse.ai"
@@ -2081,7 +2081,7 @@ func (p *MuseRouterPool) RouteAndExecuteChatForOwner(
 			emptyReplyErr := errors.New("Muse AI bridge returned an empty reply")
 			LogWarn("Node %s returned HTTP 200 with empty content; trying fallback", candidate.Label)
 			lastErr = emptyReplyErr
-			if p.cdpManager == nil && !skipClientRelay && candidate.AuthType == "cookie" && candidate.HasHatchSess {
+			if p.cdpManager == nil && forceClientRelay && !skipClientRelay && candidate.AuthType == "cookie" && candidate.HasHatchSess {
 				return p.prepareBrowserRelayResponse(candidate, resolvedThreadID, turnID, model, userPrompt)
 			}
 			p.releaseNode(candidate.ID, 0, latencyMs, false, emptyReplyErr.Error())

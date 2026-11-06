@@ -183,7 +183,7 @@ func (a *ServerApp) handleDownloadExtensionZip(w http.ResponseWriter, r *http.Re
 		if errRead != nil {
 			return errRead
 		}
-		fw, errCreate := zw.Create("mart_ai_extension/" + path)
+		fw, errCreate := zw.Create(path)
 		if errCreate != nil {
 			return errCreate
 		}

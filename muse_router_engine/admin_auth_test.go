@@ -228,7 +228,7 @@ func TestCloudBrowserRelayFlowAndNodeHealth(t *testing.T) {
 	handler := app.Routes()
 
 	// 1) Gửi chat trên Render -> trả 200 browser_relay=true thay vì 502
-	sendReq := httptest.NewRequest(http.MethodPost, "/api/chat/send", strings.NewReader(`{"prompt":"xin chao"}`))
+	sendReq := httptest.NewRequest(http.MethodPost, "/api/chat/send", strings.NewReader(`{"prompt":"xin chao","client_relay_capable":true}`))
 	sendReq.Header.Set("Content-Type", "application/json")
 	sendRec := httptest.NewRecorder()
 	handler.ServeHTTP(sendRec, sendReq)
@@ -263,7 +263,7 @@ func TestCloudBrowserRelayFlowAndNodeHealth(t *testing.T) {
 	}
 
 	// 3) Gửi lại khi đã có tiện ích v1.1 -> hoàn tất trả lời & cập nhật token/request
-	sendReq2 := httptest.NewRequest(http.MethodPost, "/api/chat/send", strings.NewReader(`{"prompt":"xin chao"}`))
+	sendReq2 := httptest.NewRequest(http.MethodPost, "/api/chat/send", strings.NewReader(`{"prompt":"xin chao","client_relay_capable":true}`))
 	sendReq2.Header.Set("Content-Type", "application/json")
 	sendRec2 := httptest.NewRecorder()
 	handler.ServeHTTP(sendRec2, sendReq2)

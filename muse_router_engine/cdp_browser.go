@@ -203,7 +203,7 @@ const cdpMuseSnapshotJS = `
     return true;
   });
   var leafEls = rawEls.filter(function(el) {
-    return !rawEls.some(function(parent) { return parent !== el && parent.contains(el); });
+    return !rawEls.some(function(child) { return child !== el && el.contains(child); });
   });
 
   var unseenUserEls = Array.from(document.querySelectorAll('.bg-chat-user-bubble, div.items-end .hatch-chat-groupable-bubble, [data-message-author-role="user"]')).filter(function(el) {

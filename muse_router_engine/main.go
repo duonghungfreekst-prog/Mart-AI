@@ -580,7 +580,7 @@ func (a *ServerApp) Routes() http.Handler {
 		chatCtx := r.Context()
 		if req.SkipBrowserRelay {
 			chatCtx = context.WithValue(chatCtx, skipBrowserRelayContextKey{}, true)
-		} else if r.Header.Get("X-Mart-Client") == "web" && (req.ClientRelayCapable || r.Header.Get("X-Mart-Ext-Relay") == "1") {
+		} else if req.ClientRelayCapable || r.Header.Get("X-Mart-Ext-Relay") == "1" {
 			chatCtx = context.WithValue(chatCtx, clientBrowserRelayContextKey{}, true)
 		}
 

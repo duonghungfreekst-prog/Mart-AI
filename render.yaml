@@ -1,20 +1,20 @@
 services:
   - type: web
     name: Mart-AI
-    runtime: go
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
     region: singapore
     # Paid compute stays running; Render Free instances sleep after inactivity.
     plan: 0.5c-512mb
-    buildCommand: bash build.sh
-    startCommand: ./app
     healthCheckPath: /api/health
     maxShutdownDelaySeconds: 30
     autoDeployTrigger: commit
     envVars:
-      - key: CGO_ENABLED
-        value: "0"
       - key: RENDER
         value: "true"
+      - key: CHROME_BIN
+        value: "/usr/bin/chromium-browser"
       # Set this secret in the Render dashboard. Render filesystems are ephemeral,
       # so database connection settings must survive restarts as environment vars.
       - key: DATABASE_URL

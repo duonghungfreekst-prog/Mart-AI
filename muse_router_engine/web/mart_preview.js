@@ -126,6 +126,23 @@ var messagesEl = $("#messages"), welcomeEl = $("#welcome"), scrollEl = $("#chatS
 var input = $("#composerInput"), sendBtn = $("#sendBtn"), stopBtn = $("#stopBtn"), charCount = $("#charCount");
 var started = false, streaming = null, lastUserText = "";
 
+var hasMartExtension = false;
+var MART_EXTENSION_ID = "mjlkhmjhbhkjfccffeoimoindodmglaj";
+function probeMartExtension(){
+  requestChromeExtension({ action: "ping" }, 1200).then(function(resp){
+    if(resp && resp.ok) hasMartExtension = true;
+  }).catch(function(){
+    hasMartExtension = false;
+  });
+}
+window.addEventListener("load", probeMartExtension);
+setTimeout(probeMartExtension, 1200);
+window.addEventListener("message", function(ev){
+  if(ev.data && ev.data.__mart_ext_push && ev.data.action === "MART_EXT_SESSION_READY"){
+    hasMartExtension = true;
+  }
+});
+
 var MASCOT_HTML = '<span class="mascot"><img src="/avatars/mart_mascot.webp" alt="" draggable="false"/></span>';
 var ICON_COPY = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
 var ICON_LIKE = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10v12H4a1 1 0 0 1-1-1V11a1 1 0 0 1 1-1h3Zm0 0 4.2-7.4c1.5 0 2.6 1.3 2.3 2.8L12.6 10H20a2 2 0 0 1 2 2.4l-1.2 7.2a2 2 0 0 1-2 1.6H7"/></svg>';
@@ -274,10 +291,10 @@ function updateTypingProgress(stage, detail){ if(workPhaseSetter) workPhaseSette
 function showTyping(){
   var wrap = document.createElement("div");
   wrap.className = "msg ai work-row"; wrap.id = "typingRow";
-  var phases = ["\u0110ang g\u1eedi c\u00e2u h\u1ecfi t\u1edbi m\u00e1y ch\u1ee7 Mart AI...", "\u0110\u00e3 nh\u1eadn ph\u1ea3n h\u1ed3i t\u1eeb m\u00e1y ch\u1ee7; \u0111ang chuy\u1ec3n t\u1edbi Muse.ai...", "\u0110ang ch\u1edd Muse.ai tr\u1ea3 l\u1eddi qua Chrome..."];
-  var stepLabels = ["G\u1eedi c\u00e2u h\u1ecfi t\u1edbi m\u00e1y ch\u1ee7 Mart AI", "Mart AI chuy\u1ec3n c\u00e2u h\u1ecfi t\u1edbi Muse.ai", "Nh\u1eadn c\u00e2u tr\u1ea3 l\u1eddi t\u1eeb Muse.ai"];
+  var phases = ["Đang gửi câu hỏi tới máy chủ Mart AI...", "Máy chủ đã kết nối; đang điều phối tới Muse.ai...", "Đang nhận phản hồi từ Muse.ai..."];
+  var stepLabels = ["Gửi câu hỏi tới máy chủ Mart AI", "Điều phối câu hỏi tới Muse.ai", "Nhận câu trả lời từ Muse.ai"];
   var stepsHtml = stepLabels.map(function(s, idx){ return '<li data-step="' + idx + '"><span class="ws-ic"></span><span>' + esc(s) + '</span></li>'; }).join("");
-  wrap.innerHTML = '<div class="work-stage"><img class="work-avatar" src="/avatars/mart_mascot.webp" alt="" width="56" height="56" decoding="async"></div>' +
+  wrap.innerHTML = '<div class="work-stage"><img class="work-avatar" src="/avatars/mart_mascot.webp" alt="" width="42" height="42" decoding="async"></div>' +
     '<div class="m-body"><div class="m-name">Mart AI · '+currentModelShort()+'</div>' +
     '<div class="work-card"><div class="work-badge"><span class="bw-pulse"></span>MART ĐANG LÀM VIỆC</div>' +
     '<div class="work-status"><span class="work-phase">'+phases[0]+'</span><span class="live-dots"><i></i><i></i><i></i></span></div>' +
@@ -399,11 +416,12 @@ function createAiMsgContainer(){
   var row = document.createElement("div");
   row.className = "msg ai";
   row.innerHTML =
-    '<div class="ai-head">' + MASCOT_HTML +
-      '<span class="ai-name">Mart AI</span><span class="ai-pill">' + currentModelShort() + '</span>' +
-    '</div>' +
-    '<div class="bubble"></div>' +
-    '<div class="ai-meta"><span class="ai-lbl">Mart AI</span><span class="ai-dot"></span><span class="ai-time">' + nowTime() + '</span></div>';
+    '<div class="m-av">' + MASCOT_HTML + '</div>' +
+    '<div class="m-body">' +
+      '<div class="m-name">Mart AI · ' + esc(currentModelShort()) + ' <span>' + nowTime() + '</span></div>' +
+      '<div class="bubble"></div>' +
+      '<div class="ai-meta"><span class="ai-lbl">Mart AI</span><span class="ai-dot"></span><span class="ai-time">' + nowTime() + '</span></div>' +
+    '</div>';
   return row;
 }
 
@@ -438,13 +456,30 @@ function finalizeAiBubble(rowEl, fullText, tokensUsed){
   }
 }
 
-function addAiError(msg){
+function addAiError(msg, retryPrompt){
   var row = createAiMsgContainer();
   var bubble = row.querySelector(".bubble");
-  bubble.innerHTML = '<div style="color:var(--err,#e53e3e);background:rgba(229,62,62,0.08);padding:10px 14px;border-radius:10px;font-weight:600;display:flex;align-items:center;gap:8px">' +
-    '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>' +
-    '<span>' + esc(msg) + '</span>' +
-    '</div>';
+  var displayMsg = msg || "Không thể gửi tin nhắn tới Mart AI";
+  var html = '<div class="ai-error-box" style="border:1px solid var(--line-strong);background:var(--surface-2);padding:13px 16px;border-radius:12px;display:flex;flex-direction:column;gap:8px;">' +
+    '<div style="display:flex;align-items:center;gap:8px;font-weight:700;color:var(--ink);">' +
+      '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--ink-2);"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>' +
+      '<span>Không thể hoàn thành câu trả lời</span>' +
+    '</div>' +
+    '<div style="font-size:14px;color:var(--ink-2);line-height:1.5;">' + esc(displayMsg) + '</div>';
+  if(retryPrompt){
+    html += '<div style="margin-top:6px;"><button type="button" class="btn-retry-chat" style="padding:7px 16px;border-radius:8px;border:1px solid var(--brand);background:var(--brand-soft);color:var(--brand-ink);font-weight:700;font-size:13px;cursor:pointer;">Thử lại</button></div>';
+  }
+  html += '</div>';
+  bubble.innerHTML = html;
+  if(retryPrompt){
+    var btn = bubble.querySelector(".btn-retry-chat");
+    if(btn){
+      btn.addEventListener("click", function(){
+        row.remove();
+        handleSend(retryPrompt);
+      });
+    }
+  }
   messagesEl.appendChild(row);
   scrollDown();
 }
@@ -522,11 +557,12 @@ async function handleSend(text){
 
   try {
     var authTok = await ensureValidToken(controller.signal);
+    var canRelay = !!hasMartExtension;
     var headers = {
       "Content-Type": "application/json",
       "Accept": "application/json",
       "X-Mart-Client": "web",
-      "X-Mart-Ext-Relay": "1"
+      "X-Mart-Ext-Relay": canRelay ? "1" : "0"
     };
     if(authTok) headers["Authorization"] = "Bearer " + authTok;
 
@@ -534,8 +570,8 @@ async function handleSend(text){
       prompt: text,
       thread_id: activeConvId || "",
       model: modelName,
-      client_relay_capable: true,
-      skip_browser_relay: false,
+      client_relay_capable: canRelay,
+      skip_browser_relay: !canRelay,
       stream: false
     };
 
@@ -646,49 +682,96 @@ async function handleSend(text){
     } else {
       var dataJson = await resp.json();
       if(dataJson && dataJson.browser_relay){
-        updateTypingProgress(2, "Server \u0111\u00e3 nh\u1eadn y\u00eau c\u1ea7u; \u0111ang g\u1eedi c\u00e2u h\u1ecfi t\u1edbi Muse.ai qua Chrome.");
-        var relayOut;
+        var extAvailable = false;
         try {
-          var extension = await requestChromeExtension({ action: "ping" }, 5000);
-          if(!extension || !extension.ok || extension.supportsChatRelay === false){
-            throw new Error("Chrome extension chua ket noi; hay bat tien ich, dang nhap Muse.ai va tai lai trang.");
+          var extCheck = await requestChromeExtension({ action: "ping" }, 1500);
+          if(extCheck && extCheck.ok && extCheck.supportsChatRelay !== false){
+            extAvailable = true;
+            hasMartExtension = true;
           }
-          relayOut = await requestChromeExtension({
-            action: "execute_muse_chat",
-            prompt: dataJson.prompt || text,
-            cookie: dataJson.relay_cookie || ""
-          }, 90000);
-          if(!relayOut || !relayOut.ok || !String(relayOut.content || "").trim()){
-            throw new Error((relayOut && relayOut.error) || "Chrome chua nhan duoc cau tra loi moi tu Muse.ai.");
-          }
-        } catch(relayErr) {
-          var relayError = (relayErr && relayErr.message) || "Khong nhan duoc phan hoi moi tu Muse.ai.";
+        } catch(e){
+          extAvailable = false;
+          hasMartExtension = false;
+        }
+
+        if(!extAvailable){
+          // Extension khong co san -> Khong quăng loi do! Tu dong fallback ve Server CDP / Failover
+          updateTypingProgress(1, "Máy chủ đang tự động điều phối câu trả lời...");
           await authedFetch("/api/chat/relay-complete", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ thread_id: dataJson.thread_id, turn_id: dataJson.turn_id, node_id: dataJson.node_id, model: dataJson.model, error: relayError })
+            body: JSON.stringify({
+              thread_id: dataJson.thread_id,
+              turn_id: dataJson.turn_id,
+              node_id: dataJson.node_id,
+              model: dataJson.model || modelName,
+              error: "client_no_relay_extension"
+            })
           }).catch(function(){});
-          throw new Error(relayError);
+
+          var fallbackRes = await authedFetch("/api/chat/send", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Accept": "application/json",
+              "X-Mart-Client": "web",
+              "X-Mart-Ext-Relay": "0"
+            },
+            body: JSON.stringify({
+              prompt: text,
+              thread_id: dataJson.thread_id || activeConvId || "",
+              model: modelName,
+              client_relay_capable: false,
+              skip_browser_relay: true,
+              stream: false
+            })
+          });
+          if(!fallbackRes.ok){
+            var fbErr = await fallbackRes.json().catch(function(){ return {}; });
+            throw new Error(fbErr.error || "Máy chủ tạm thời bận; vui lòng thử lại sau.");
+          }
+          dataJson = await fallbackRes.json();
+        } else {
+          updateTypingProgress(2, "Đang nhận phản hồi từ Muse.ai...");
+          var relayOut;
+          try {
+            relayOut = await requestChromeExtension({
+              action: "execute_muse_chat",
+              prompt: dataJson.prompt || text,
+              cookie: dataJson.relay_cookie || ""
+            }, 90000);
+            if(!relayOut || !relayOut.ok || !String(relayOut.content || "").trim()){
+              throw new Error((relayOut && relayOut.error) || "Không nhận được phản hồi mới từ Muse.ai.");
+            }
+          } catch(relayErr) {
+            var relayError = (relayErr && relayErr.message) || "Không nhận được phản hồi từ Muse.ai.";
+            await authedFetch("/api/chat/relay-complete", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ thread_id: dataJson.thread_id, turn_id: dataJson.turn_id, node_id: dataJson.node_id, model: dataJson.model, error: relayError })
+            }).catch(function(){});
+            throw new Error(relayError);
+          }
+          updateTypingProgress(2, "Muse.ai đã trả lời; Mart AI đang lưu kết quả.");
+          var completeRes = await authedFetch("/api/chat/relay-complete", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              thread_id: dataJson.thread_id,
+              turn_id: dataJson.turn_id,
+              node_id: dataJson.node_id,
+              model: dataJson.model || modelName,
+              reply: relayOut.content,
+              tokens_used: relayOut.tokens_used || countTokens(relayOut.content),
+              latency_ms: relayOut.latency_ms || 0
+            })
+          });
+          var completed = await completeRes.json().catch(function(){ return {}; });
+          if(!completeRes.ok || !String(completed.reply || "").trim()){
+            throw new Error(completed.error || "Máy chủ chưa lưu được câu trả lời.");
+          }
+          dataJson = completed;
         }
-        updateTypingProgress(2, "Muse.ai \u0111\u00e3 tr\u1ea3 l\u1eddi; Mart AI \u0111ang l\u01b0u k\u1ebft qu\u1ea3.");
-        var completeRes = await authedFetch("/api/chat/relay-complete", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            thread_id: dataJson.thread_id,
-            turn_id: dataJson.turn_id,
-            node_id: dataJson.node_id,
-            model: dataJson.model || modelName,
-            reply: relayOut.content,
-            tokens_used: relayOut.tokens_used || countTokens(relayOut.content),
-            latency_ms: relayOut.latency_ms || 0
-          })
-        });
-        var completed = await completeRes.json().catch(function(){ return {}; });
-        if(!completeRes.ok || !String(completed.reply || "").trim()){
-          throw new Error(completed.error || "Server chua luu duoc cau tra loi nhan tu Chrome.");
-        }
-        dataJson = completed;
       }
       updateTypingProgress(2, "Mart AI \u0111ang hi\u1ec3n th\u1ecb ph\u1ea3n h\u1ed3i t\u1eeb m\u00e1y ch\u1ee7.");
       hideTyping();
@@ -707,13 +790,17 @@ async function handleSend(text){
     }
   } catch(err){
     hideTyping();
+    if(!input.value && lastUserText){
+      input.value = lastUserText;
+      autoGrow();
+    }
     if(activeStream.timedOut){
-      addAiError("Muse AI chưa trả lời trong 100 giây. Tác vụ đã được dừng; bạn có thể gửi lại hoặc tiếp tục hỏi.");
+      addAiError("Muse AI chưa trả lời trong 100 giây. Bạn có thể gửi lại câu hỏi.", lastUserText);
       toast("Đã dừng yêu cầu quá thời gian chờ.");
       return;
     }
     if(activeStream.cancelled) return;
-    addAiError(err.message || "Không thể gửi tin nhắn tới Mart AI");
+    addAiError(err.message || "Không thể hoàn thành câu trả lời", lastUserText);
     toast(err.message || "Không thể gửi tin nhắn");
   } finally {
     clearTimeout(requestTimer);
@@ -1306,12 +1393,17 @@ $("#accAuth").addEventListener("change", function(){
 function requestChromeExtension(payload, timeoutMs){
   return new Promise(function(resolve, reject){
     var reqId = "mart-ext-" + Date.now() + "-" + Math.random().toString(36).slice(2);
+    var resolved = false;
     var timer = setTimeout(function(){
+      if(resolved) return;
+      resolved = true;
       window.removeEventListener("message", onMessage);
       reject(new Error("Không nhận được phản hồi từ tiện ích Chrome. Hãy cài/bật Mart AI Extension, sau đó tải lại trang."));
     }, timeoutMs || 5000);
     function onMessage(ev){
+      if(resolved) return;
       if(ev.source !== window || ev.origin !== window.location.origin || !ev.data || ev.data.__mart_ext_resp !== true || ev.data.reqId !== reqId) return;
+      resolved = true;
       clearTimeout(timer);
       window.removeEventListener("message", onMessage);
       if(ev.data.error) reject(new Error(ev.data.error));
@@ -1319,6 +1411,21 @@ function requestChromeExtension(payload, timeoutMs){
     }
     window.addEventListener("message", onMessage);
     window.postMessage({ __mart_ext_req: true, reqId: reqId, payload: payload }, window.location.origin);
+
+    if(window.chrome && window.chrome.runtime && window.chrome.runtime.sendMessage){
+      try {
+        window.chrome.runtime.sendMessage(MART_EXTENSION_ID, payload, function(resp){
+          if(resolved) return;
+          if(!window.chrome.runtime.lastError && resp){
+            resolved = true;
+            clearTimeout(timer);
+            window.removeEventListener("message", onMessage);
+            if(resp.error) reject(new Error(resp.error));
+            else resolve(resp);
+          }
+        });
+      } catch(e){}
+    }
   });
 }
 $("#btnCaptureMuseChrome").addEventListener("click", async function(){
