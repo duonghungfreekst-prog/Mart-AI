@@ -238,25 +238,46 @@ const cdpMuseSnapshotJS = `
   var composer = findComposer();
   var compVal = composer ? ((composer.value !== undefined ? composer.value : composer.textContent) || "").trim() : "";
   var isGen = !!document.querySelector('.animate-spin, button[aria-label*="Stop" i], button[aria-label*="Dừng" i], button.stop-button, [data-is-generating="true"], .typing-indicator');
-  // Muse's rendered assistant bubble has changed markup over time. Keep the
-  // explicit assistant hooks, but also retain the container selectors used by
-  // the Chrome relay so a valid login does not look like an empty API reply.
-  var rawEls = Array.from(document.querySelectorAll('[data-hatch-assistant-message-body="true"], [data-pel-click="assistant_message_content"], .prose, div.mb-6.flex.flex-col.gap-5, div.flex.flex-col.gap-5, div[class*="message-assistant"], .chat-bubble-assistant, [data-message-author-role="assistant"]')).filter(function(el) {
+  // 1. Tìm các phần tử chứa câu trả lời của trợ lý (Assistant), loại trừ container bọc danh sách
+  var assistantSelectors = [
+    '[data-hatch-assistant-message-body="true"]',
+    '[data-pel-click="assistant_message_content"]',
+    '.prose',
+    'div[data-message-author-role="assistant"]',
+    'div[class*="message-assistant"]',
+    '.chat-bubble-assistant',
+    'div[data-testid*="assistant-message"]',
+    'div[data-role="assistant"]'
+  ];
+  var rawEls = Array.from(document.querySelectorAll(assistantSelectors.join(", "))).filter(function(el) {
     if (el.closest('form, textarea, [contenteditable="true"]')) return false;
-    if (el.closest('.bg-chat-user-bubble, div.items-end')) return false;
+    if (el.closest('.bg-chat-user-bubble, div.items-end, [data-message-author-role="user"]')) return false;
     return true;
   });
   var leafEls = rawEls.filter(function(el) {
     return !rawEls.some(function(child) { return child !== el && el.contains(child); });
   });
 
-  var unseenUserEls = Array.from(document.querySelectorAll('.bg-chat-user-bubble, div.items-end .hatch-chat-groupable-bubble, [data-message-author-role="user"]')).filter(function(el) {
-    return el.getAttribute("data-mart-seen") !== "1";
-  });
-  var userTurnSent = unseenUserEls.length > 0;
+  // 2. Tìm phần tử tin nhắn của User tương ứng với câu hỏi hiện tại
+  var activePromptNorm = (window.__martActivePrompt || "").replace(/\s+/g, " ").trim().toLowerCase();
+  var activePromptSnippet = activePromptNorm.length > 20 ? activePromptNorm.slice(0, 20) : activePromptNorm;
+  var userTurnEl = null;
+  if (activePromptSnippet) {
+    var userCandidates = Array.from(document.querySelectorAll('.bg-chat-user-bubble, div.items-end .hatch-chat-groupable-bubble, [data-message-author-role="user"], div[class*="user"], .hatch-chat-groupable-bubble, div'));
+    for (var u = userCandidates.length - 1; u >= 0; u--) {
+      var uc = userCandidates[u];
+      if (uc.closest('form, textarea, [contenteditable="true"]')) continue;
+      var ut = (uc.innerText || uc.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+      if (ut && ut.indexOf(activePromptSnippet) >= 0) {
+        userTurnEl = uc;
+        break;
+      }
+    }
+  }
 
+  // 3. Trích xuất markdown cho toàn bộ assistant elements & khối nằm sau User
   var mdList = [];
-  var unseenMdList = [];
+  var postUserMdList = [];
   var targetEls = leafEls.length > 0 ? leafEls : rawEls;
   for (var i = 0; i < targetEls.length; i++) {
     var m = nodeToMd(targetEls[i], 0).replace(/\n{3,}/g, "\n\n").trim();
@@ -265,20 +286,24 @@ const cdpMuseSnapshotJS = `
     }
     if (m.length > 0) {
       mdList.push(m);
-      if (targetEls[i].getAttribute("data-mart-seen") !== "1") {
-        unseenMdList.push(m);
+      if (userTurnEl) {
+        // Kiểm tra phần tử này có nằm SAU phần tử User trong thứ tự DOM không (Node.DOCUMENT_POSITION_FOLLOWING = 4)
+        if (Boolean(userTurnEl.compareDocumentPosition(targetEls[i]) & 4)) {
+          postUserMdList.push(m);
+        }
       }
     }
   }
+
   var count = mdList.length;
   var lastMd = count > 0 ? mdList[count - 1] : "";
-  var unseenCount = unseenMdList.length;
-  var unseenLastMd = unseenCount > 0 ? unseenMdList[unseenCount - 1] : "";
+  var unseenCount = postUserMdList.length;
+  var unseenLastMd = unseenCount > 0 ? postUserMdList[unseenCount - 1] : "";
   return JSON.stringify({
     hasComposer: !!composer,
     composerValue: compVal,
     isGenerating: isGen,
-    userTurnSent: userTurnSent,
+    userTurnSent: !!userTurnEl,
     count: count,
     lastMd: lastMd,
     unseenCount: unseenCount,
@@ -1436,18 +1461,10 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 		baselineCount = baseline.Count
 	}
 
-	// 1. Đánh dấu toàn bộ bong bóng cũ trên DOM với data-mart-seen='1' để tuyệt đối không đọc nhầm tin cũ
-	markSeenJS := `(function(){
-		Array.from(document.querySelectorAll('[data-hatch-assistant-message-body="true"], .prose, div[class*="message-assistant"], [data-message-author-role], div.mb-6.flex.flex-col.gap-5, div.flex.flex-col.gap-5, [data-pel-click="assistant_message_content"]')).forEach(function(el){
-			el.setAttribute('data-mart-seen', '1');
-			Array.from(el.querySelectorAll('*')).forEach(function(c){ c.setAttribute('data-mart-seen', '1'); });
-		});
-	})()`
-	_ = wt.Page.Call(ctx, "Runtime.evaluate", map[string]interface{}{"expression": markSeenJS}, nil)
-
-	// 2. Điền nội dung vào ô nhập theo chuẩn React 16+ State Tracker & ContentEditable
+	// 1. Điền nội dung vào ô nhập theo chuẩn React 16+ State Tracker & ContentEditable
 	promptJSON, _ := json.Marshal(userPrompt)
 	typeReactJS := fmt.Sprintf(`(function(txt){
+		window.__martActivePrompt = txt;
 		var selectors = [
 			'textarea[aria-label*="Nhắn tin" i]',
 			'textarea[placeholder*="Nhắn tin" i]',
@@ -1498,7 +1515,10 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 			} else {
 				ta.value = txt;
 			}
-			ta.dispatchEvent(new Event('input', { bubbles: true }));
+			if (ta._valueTracker) {
+				try { ta._valueTracker.setValue(''); } catch(_) {}
+			}
+			ta.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: txt }));
 			ta.dispatchEvent(new Event('change', { bubbles: true }));
 		} else {
 			try {
@@ -1519,10 +1539,9 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 	})(%s)`, string(promptJSON))
 
 	_ = wt.Page.Call(ctx, "Runtime.evaluate", map[string]interface{}{"expression": typeReactJS}, nil)
-	// Chờ 350ms để React state kích hoạt và mount button Gửi
-	time.Sleep(350 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond)
 
-	// 3. Hàm kích hoạt nút Gửi với đầy đủ chuỗi Pointer/Mouse Events & native Enter key
+	// 2. Kích hoạt nút Gửi với cơ chế đa tầng (Button click + Form submit + CDP Enter key)
 	clickSendOrEnter := func() {
 		clickSendJS := `(function(){
 			var selectors = [
@@ -1534,18 +1553,34 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 				'button[data-testid*="send" i]:not(:disabled)',
 				'button[type="submit"]:not(:disabled)'
 			];
+			var btn = null;
 			for (var s = 0; s < selectors.length; s++) {
-				var btn = document.querySelector(selectors[s]);
-				if (btn && !btn.disabled) {
-					btn.focus();
-					var opts = { bubbles: true, cancelable: true, view: window };
-					btn.dispatchEvent(new PointerEvent('pointerdown', opts));
-					btn.dispatchEvent(new MouseEvent('mousedown', opts));
-					btn.dispatchEvent(new PointerEvent('pointerup', opts));
-					btn.dispatchEvent(new MouseEvent('mouseup', opts));
-					btn.click();
-					return true;
+				var b = document.querySelector(selectors[s]);
+				if (b && !b.disabled) { btn = b; break; }
+			}
+			if (!btn) {
+				var ta = document.querySelector('textarea, [contenteditable="true"]');
+				var root = ta ? ta.parentElement : null;
+				for (var d = 0; d < 6 && root; d++) {
+					var b2 = root.querySelector('button[aria-label*="Gửi" i], button[aria-label*="Send" i], button[data-testid*="send" i], button[type="submit"], button:has(svg)');
+					if (b2) { btn = b2; break; }
+					root = root.parentElement;
 				}
+			}
+			if (btn) {
+				btn.disabled = false;
+				btn.focus();
+				var opts = { bubbles: true, cancelable: true, view: window };
+				btn.dispatchEvent(new PointerEvent('pointerdown', opts));
+				btn.dispatchEvent(new MouseEvent('mousedown', opts));
+				btn.dispatchEvent(new PointerEvent('pointerup', opts));
+				btn.dispatchEvent(new MouseEvent('mouseup', opts));
+				btn.click();
+				return true;
+			}
+			var activeTa = document.querySelector('textarea, [contenteditable="true"]');
+			if (activeTa && activeTa.form) {
+				try { activeTa.form.requestSubmit(); return true; } catch(_) {}
 			}
 			return false;
 		})()`
@@ -1599,24 +1634,29 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 			continue
 		}
 
-		// Nếu văn bản vẫn còn nguyên trong ô nhập sau 1.5s (chưa gửi đi được), gửi lại
-		if cur.ComposerValue != "" && resendAttempts < 5 {
+		// Nếu văn bản vẫn còn nguyên trong ô nhập sau 1.2s (chưa gửi đi được), gửi lại
+		if cur.ComposerValue != "" && resendAttempts < 4 {
 			resendAttempts++
 			clickSendOrEnter()
 			continue
 		}
 
 		replyMd := ""
-		// Bảo vệ thép: Ưu tiên các phần tử mới sinh ra (không có data-mart-seen="1")
-		if cur.UnseenLastMd != "" && cur.UnseenLastMd != cleanPrompt && (baselineLastMd == "" || cur.UnseenLastMd != baselineLastMd) {
+		// 1. Ưu tiên hàng đầu: Nội dung assistant nằm SAU tin nhắn User vừa gửi (PostUserMd)
+		if cur.UnseenLastMd != "" && cur.UnseenLastMd != cleanPrompt {
 			replyMd = strings.TrimSpace(cur.UnseenLastMd)
-		} else if cur.Count > baselineCount && cur.LastMd != "" && cur.LastMd != cleanPrompt && (baselineLastMd == "" || cur.LastMd != baselineLastMd) {
+		} else if cur.Count > baselineCount && cur.LastMd != "" && cur.LastMd != cleanPrompt {
+			// 2. Số lượng khối assistant tăng lên so với ban đầu
 			replyMd = strings.TrimSpace(cur.LastMd)
-		} else if cur.IsGenerating && cur.LastMd != "" && cur.LastMd != cleanPrompt && (baselineLastMd == "" || cur.LastMd != baselineLastMd) {
+		} else if baselineLastMd != "" && cur.LastMd != "" && cur.LastMd != baselineLastMd && cur.LastMd != cleanPrompt {
+			// 3. Khối assistant cuối cùng đã thay đổi nội dung (streaming / cập nhật)
+			replyMd = strings.TrimSpace(cur.LastMd)
+		} else if baselineLastMd == "" && cur.LastMd != "" && cur.LastMd != cleanPrompt {
+			// 4. Ban đầu chưa có tin nào, nay xuất hiện tin mới
 			replyMd = strings.TrimSpace(cur.LastMd)
 		}
 
-		if replyMd == "" || (baselineLastMd != "" && replyMd == baselineLastMd) {
+		if replyMd == "" {
 			continue
 		}
 

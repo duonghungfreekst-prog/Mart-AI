@@ -57,7 +57,7 @@ async function broadcastSessionReadyToOpenTabs(injectIfMissing) {
                 event: "MART_EXT_SESSION_READY",
                 cookie: cookies.sess ? cookies.header : "",
                 hasExistingSession: !!cookies.sess,
-                version: "1.2.6",
+                version: "1.2.7",
               },
               function () {
                 void chrome.runtime.lastError;
@@ -73,7 +73,7 @@ async function broadcastSessionReadyToOpenTabs(injectIfMissing) {
             event: "MART_EXT_SESSION_READY",
             cookie: cookies.sess ? cookies.header : "",
             hasExistingSession: !!cookies.sess,
-            version: "1.2.6",
+            version: "1.2.7",
           },
           function () {
             void chrome.runtime.lastError;
@@ -531,30 +531,47 @@ function domReadMuseSnapshot() {
   var composer = findCurrentMuseComposer();
   var compVal = composer ? ((composer.value !== undefined ? composer.value : composer.textContent) || "").trim() : "";
   var isGen = !!document.querySelector('.animate-spin, button[aria-label*="Stop" i], button[aria-label*="Dừng" i], button.stop-button, [data-is-generating="true"], .typing-indicator, .pulse, button:has(span[class*="rounded-sm"]), .rounded-sm.bg-fill-primary');
-  var rawEls = Array.from(document.querySelectorAll('div.mb-6.flex.flex-col.gap-5, div.flex.flex-col.gap-5, .prose, [data-message-author-role="assistant"], div[class*="message-assistant"], .chat-bubble-assistant')).filter(function (el) {
-    return !el.closest('form, textarea, [contenteditable="true"]');
+
+  // 1. Tìm các phần tử chứa câu trả lời của trợ lý (Assistant)
+  var assistantSelectors = [
+    '[data-hatch-assistant-message-body="true"]',
+    '[data-pel-click="assistant_message_content"]',
+    '.prose',
+    'div[data-message-author-role="assistant"]',
+    'div[class*="message-assistant"]',
+    '.chat-bubble-assistant',
+    'div[data-testid*="assistant-message"]',
+    'div[data-role="assistant"]'
+  ];
+  var rawEls = Array.from(document.querySelectorAll(assistantSelectors.join(", "))).filter(function (el) {
+    if (el.closest('form, textarea, [contenteditable="true"]')) return false;
+    if (el.closest('.bg-chat-user-bubble, div.items-end, [data-message-author-role="user"]')) return false;
+    return true;
   });
   var leafEls = rawEls.filter(function (el) {
     return !rawEls.some(function (parent) { return parent !== el && parent.contains(el); });
   });
-  var expectedNorm = String(window.__martExpectedPrompt || "").replace(/\s+/g, " ").trim().toLowerCase();
+
+  // 2. Tìm phần tử tin nhắn của User của lượt prompt hiện tại
+  var expectedNorm = String(window.__martActivePrompt || window.__martExpectedPrompt || "").replace(/\s+/g, " ").trim().toLowerCase();
   var expectedSnippet = expectedNorm.length > 20 ? expectedNorm.slice(0, 20) : expectedNorm;
-  var userCandidates = Array.from(document.querySelectorAll('.hatch-chat-groupable-bubble, div.flex.flex-col.gap-2, [data-message-author-role="user"], div[class*="message"]')).filter(function (el) {
-    if (el.getAttribute("data-mart-seen") === "1") return false;
-    if (el.closest('form, textarea, [contenteditable="true"]')) return false;
-    if (el.querySelector('.prose, div.mb-6.flex.flex-col.gap-5')) return false;
-    var tNorm = (el.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
-    if (!tNorm) return false;
-    if (expectedSnippet && tNorm.indexOf(expectedSnippet) >= 0) return true;
-    var isUserRole = el.classList.contains('hatch-chat-groupable-bubble') ||
-                     el.getAttribute("data-message-author-role") === "user" ||
-                     /^(bạn|you|user|tin nhắn của người dùng):/i.test(tNorm);
-    return isUserRole;
-  });
-  var lastUnseenUserEl = userCandidates.length > 0 ? userCandidates[userCandidates.length - 1] : null;
-  var userTurnSent = !!lastUnseenUserEl;
+  var userTurnEl = null;
+  if (expectedSnippet) {
+    var userCandidates = Array.from(document.querySelectorAll('.bg-chat-user-bubble, div.items-end .hatch-chat-groupable-bubble, [data-message-author-role="user"], div[class*="user"], .hatch-chat-groupable-bubble, div'));
+    for (var u = userCandidates.length - 1; u >= 0; u--) {
+      var uc = userCandidates[u];
+      if (uc.closest('form, textarea, [contenteditable="true"]')) continue;
+      var ut = (uc.innerText || uc.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+      if (ut && ut.indexOf(expectedSnippet) >= 0) {
+        userTurnEl = uc;
+        break;
+      }
+    }
+  }
+
+  // 3. Trích xuất danh sách markdown assistant & khối nằm sau User
   var mdList = [];
-  var unseenMdList = [];
+  var postUserMdList = [];
   var targetEls = leafEls.length > 0 ? leafEls : rawEls;
   for (var i = 0; i < targetEls.length; i++) {
     var m = nodeToMd(targetEls[i], 0).replace(/\n{3,}/g, "\n\n").trim();
@@ -563,32 +580,29 @@ function domReadMuseSnapshot() {
     }
     if (m.length > 0) {
       mdList.push(m);
-      if (targetEls[i].getAttribute("data-mart-seen") !== "1") {
-        if (lastUnseenUserEl) {
-          if (Boolean(lastUnseenUserEl.compareDocumentPosition(targetEls[i]) & 4)) {
-            unseenMdList.push(m);
-          }
-        } else {
-          unseenMdList.push(m);
+      if (userTurnEl) {
+        if (Boolean(userTurnEl.compareDocumentPosition(targetEls[i]) & 4)) {
+          postUserMdList.push(m);
         }
       }
     }
   }
   var count = mdList.length;
   var lastMd = count > 0 ? mdList[count - 1] : "";
-  var unseenCount = unseenMdList.length;
-  var unseenLastMd = unseenCount > 0 ? unseenMdList[unseenCount - 1] : "";
+  var unseenCount = postUserMdList.length;
+  var unseenLastMd = unseenCount > 0 ? postUserMdList[unseenCount - 1] : "";
   return {
     hasComposer: !!composer,
     composerValue: compVal,
     isGenerating: isGen,
-    userTurnSent: userTurnSent,
+    userTurnSent: !!userTurnEl,
     count: count,
     lastMd: lastMd,
     unseenCount: unseenCount,
     unseenLastMd: unseenLastMd,
     url: location.href,
   };
+}
 }
 
 // Hàm chạy bên trong trang https://muse.ai: điền prompt vào composer và nhấn gửi (kèm polling retry thông minh)
@@ -655,10 +669,8 @@ function domSubmitMusePrompt(promptText) {
       });
 
       var el = valid[0];
-      window.__martExpectedPrompt = String(promptText || "").trim();
-      Array.from(document.querySelectorAll("div.mb-6.flex.flex-col.gap-5, div.flex.flex-col.gap-5, .hatch-chat-groupable-bubble, .prose, div.flex.flex-col.gap-2, [data-message-author-role]")).forEach(function (p) {
-        p.setAttribute("data-mart-seen", "1");
-      });
+      window.__martActivePrompt = String(promptText || "").trim();
+      window.__martExpectedPrompt = window.__martActivePrompt;
 
       try {
         el.focus();
@@ -671,6 +683,9 @@ function domSubmitMusePrompt(promptText) {
           desc.set.call(el, promptText);
         } else {
           el.value = promptText;
+        }
+        if (el._valueTracker) {
+          try { el._valueTracker.setValue(''); } catch (_) {}
         }
         el.dispatchEvent(new InputEvent("input", { bubbles: true, data: promptText, inputType: "insertText" }));
         el.dispatchEvent(new Event("change", { bubbles: true }));
@@ -692,7 +707,7 @@ function domSubmitMusePrompt(promptText) {
 
       setTimeout(function () {
         function tryClickSendButton() {
-          var directBtn = document.querySelector('button[data-pel-click="chat_send_message"]:not(:disabled), button[aria-label="Gửi"]:not(:disabled), button[aria-label*="Gửi" i]:not(:disabled), button[aria-label="Send"]:not(:disabled), button[aria-label*="Send" i]:not(:disabled), button[data-testid*="send" i]:not(:disabled)');
+          var directBtn = document.querySelector('button[data-pel-click="chat_send_message"]:not(:disabled), button[aria-label="Gửi"]:not(:disabled), button[aria-label*="Gửi" i]:not(:disabled), button[aria-label="Send"]:not(:disabled), button[aria-label*="Send" i]:not(:disabled), button[data-testid*="send" i]:not(:disabled), button[type="submit"]:not(:disabled)');
           if (directBtn) {
             directBtn.click();
             return true;
@@ -700,13 +715,17 @@ function domSubmitMusePrompt(promptText) {
           var root = el.parentElement;
           for (var d = 0; d < 6 && root; d++) {
             var sendBtn = root.querySelector(
-              'button[data-pel-click="chat_send_message"]:not(:disabled), button[aria-label="Gửi"]:not(:disabled), button[aria-label*="Gửi" i]:not(:disabled), button[aria-label="Send"]:not(:disabled), button[aria-label*="Send" i]:not(:disabled), button[data-testid*="send" i]:not(:disabled)'
+              'button[data-pel-click="chat_send_message"]:not(:disabled), button[aria-label*="Gửi" i]:not(:disabled), button[aria-label*="Send" i]:not(:disabled), button[data-testid*="send" i]:not(:disabled), button[type="submit"]:not(:disabled), button:has(svg)'
             );
             if (sendBtn) {
+              sendBtn.disabled = false;
               sendBtn.click();
               return true;
             }
             root = root.parentElement;
+          }
+          if (el.form) {
+            try { el.form.requestSubmit(); return true; } catch (_) {}
           }
           return false;
         }
@@ -821,9 +840,17 @@ async function executeMuseChatDirect(prompt, cookieHeader, forceReload) {
     if (!cur) continue;
 
     var replyMd = "";
+    // 1. Ưu tiên hàng đầu: Khối assistant nằm SAU User message vừa hỏi
     if (cur.unseenLastMd && cur.unseenLastMd !== cleanPrompt) {
       replyMd = (cur.unseenLastMd || "").trim();
-    } else if (cur.count > 0 && cur.lastMd && cur.lastMd !== cleanPrompt) {
+    } else if (baseline && cur.count > baseline.count && cur.lastMd && cur.lastMd !== cleanPrompt) {
+      // 2. Số lượng khối assistant tăng
+      replyMd = (cur.lastMd || "").trim();
+    } else if (baseline && baseline.lastMd && cur.lastMd && cur.lastMd !== baseline.lastMd && cur.lastMd !== cleanPrompt) {
+      // 3. Khối assistant cuối cùng đã thay đổi nội dung (streaming / cập nhật)
+      replyMd = (cur.lastMd || "").trim();
+    } else if ((!baseline || !baseline.lastMd) && cur.lastMd && cur.lastMd !== cleanPrompt) {
+      // 4. Ban đầu chưa có tin nào, nay xuất hiện
       replyMd = (cur.lastMd || "").trim();
     }
     if (!replyMd) {
@@ -885,7 +912,7 @@ function handleBridgeAction(msg, sendResponse) {
   var action = (msg && msg.action) || "";
   if (action === "ping") {
     martCollectMuseCookies().then(function (c) {
-      sendResponse({ ok: true, version: "1.2.6", hasExistingSession: !!c.sess, supportsChatRelay: true });
+      sendResponse({ ok: true, version: "1.2.7", hasExistingSession: !!c.sess, supportsChatRelay: true });
     });
     return true;
   }
@@ -893,7 +920,7 @@ function handleBridgeAction(msg, sendResponse) {
     martCollectMuseCookies().then(function (c) {
       sendResponse({
         ok: true,
-        version: "1.2.6",
+        version: "1.2.7",
         hasExistingSession: !!c.sess,
         supportsChatRelay: true,
         cookie: c.sess ? c.header : "",

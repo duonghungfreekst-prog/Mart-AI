@@ -842,8 +842,8 @@ async function handleSend(text){
       autoGrow();
     }
     if(activeStream.timedOut){
-      addAiError("Muse AI chưa trả lời trong 100 giây. Bạn có thể gửi lại câu hỏi.", lastUserText);
-      toast("Đã dừng yêu cầu quá thời gian chờ.");
+      addAiError("Thời gian phản hồi từ Muse.ai bị quá hạn (100 giây). Vui lòng bấm 'Thử lại' bên dưới để hệ thống tự động kết nối lại.", lastUserText);
+      toast("Đã dừng yêu cầu do quá thời gian chờ.");
       return;
     }
     if(activeStream.cancelled) return;
