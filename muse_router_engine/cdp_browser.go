@@ -191,7 +191,51 @@ const cdpMuseSnapshotJS = `
     return Array.from(n.childNodes).map(function(c){ return nodeToMd(c, listDepth); }).join("");
   }
 
-  var composer = document.querySelector('textarea[aria-label="Nhắn tin"], textarea[placeholder="Nhắn tin"], textarea[aria-label="Message"], textarea, [contenteditable="true"]');
+  function findComposer() {
+    var selectors = [
+      'textarea[aria-label*="Nhắn tin" i]',
+      'textarea[placeholder*="Nhắn tin" i]',
+      'textarea[aria-label*="Message" i]',
+      'textarea[placeholder*="Message" i]',
+      'textarea[placeholder*="Prompt" i]',
+      'textarea[placeholder*="Ask" i]',
+      'textarea[data-testid*="composer" i]',
+      'textarea[data-testid*="chat" i]',
+      'div[data-testid*="composer" i]',
+      'div[data-testid*="chat-input" i]',
+      '[contenteditable="true"]',
+      '[contenteditable="plaintext-only"]',
+      '[role="textbox"]',
+      '[data-lexical-editor="true"]',
+      '[data-slate-editor="true"]',
+      'textarea',
+      'input[type="text"][placeholder*="Nhắn tin" i]',
+      'input[type="text"][placeholder*="Message" i]',
+      'input[type="text"][aria-label*="Message" i]'
+    ];
+    var all = Array.from(document.querySelectorAll(selectors.join(", ")));
+    var valid = all.filter(function(item) {
+      if (item.disabled) return false;
+      var ph = (item.getAttribute("placeholder") || "").toLowerCase();
+      var al = (item.getAttribute("aria-label") || "").toLowerCase();
+      if (ph.includes("tìm kiếm") || ph.includes("search") || al.includes("search")) return false;
+      var style = window.getComputedStyle(item);
+      if (style.display === "none" || style.visibility === "hidden") return false;
+      var rect = item.getBoundingClientRect();
+      return (rect.width > 0 && rect.height > 0) || item.offsetParent !== null || style.opacity !== "0";
+    });
+    if (valid.length === 0) return null;
+    valid.sort(function(a, b) {
+      var aLabel = ((a.getAttribute("aria-label") || "") + " " + (a.getAttribute("placeholder") || "") + " " + (a.className || "")).toLowerCase();
+      var bLabel = ((b.getAttribute("aria-label") || "") + " " + (b.getAttribute("placeholder") || "") + " " + (b.className || "")).toLowerCase();
+      var aScore = (/message|chat|nhắn tin|tin nhắn|composer|prompt/i.test(aLabel) ? 100000 : 0) + (a.getBoundingClientRect().bottom || 0);
+      var bScore = (/message|chat|nhắn tin|tin nhắn|composer|prompt/i.test(bLabel) ? 100000 : 0) + (b.getBoundingClientRect().bottom || 0);
+      return bScore - aScore;
+    });
+    return valid[0];
+  }
+
+  var composer = findComposer();
   var compVal = composer ? ((composer.value !== undefined ? composer.value : composer.textContent) || "").trim() : "";
   var isGen = !!document.querySelector('.animate-spin, button[aria-label*="Stop" i], button[aria-label*="Dừng" i], button.stop-button, [data-is-generating="true"], .typing-indicator');
   // Muse's rendered assistant bubble has changed markup over time. Keep the
@@ -1292,7 +1336,6 @@ func (m *CDPBrowserManager) getOrCreateWarmChatTab(ctx context.Context, fp strin
 		isHTTPS := strings.HasPrefix(strings.ToLower(targetOrigin), "https://")
 		for k, v := range cMap {
 			entry := map[string]interface{}{
-				"url":      targetOrigin + "/",
 				"name":     k,
 				"value":    v,
 				"path":     "/",
@@ -1301,13 +1344,15 @@ func (m *CDPBrowserManager) getOrCreateWarmChatTab(ctx context.Context, fp strin
 			}
 			if strings.Contains(targetOrigin, "muse.ai") {
 				entry["domain"] = ".muse.ai"
+			} else {
+				entry["url"] = targetOrigin + "/"
 			}
 			cdpCookies = append(cdpCookies, entry)
 		}
 		_ = page.Call(ctx, "Network.setCookies", map[string]interface{}{"cookies": cdpCookies}, nil)
 	}
 
-	if err := page.Call(ctx, "Page.navigate", map[string]interface{}{"url": targetOrigin + "/thread/new"}, nil); err != nil {
+	if err := page.Call(ctx, "Page.navigate", map[string]interface{}{"url": targetOrigin + "/"}, nil); err != nil {
 		m.closeIsolatedPage(browserCtxID, targetID, page)
 		return nil, err
 	}
@@ -1346,9 +1391,7 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 		return "", 0, 0, err
 	}
 
-	// Kiểm tra URL hiện tại của tab. Nếu tab chưa vào trang hội thoại sạch hoặc đang ở thread cũ,
-	// điều hướng tới /thread/new để cách ly hoàn toàn cuộc trò chuyện sạch, không dính tin cũ.
-	cleanThreadURL := targetOrigin + "/thread/new"
+	// Kiểm tra URL hiện tại của tab. Nếu tab chưa vào muse.ai thì điều hướng về targetOrigin
 	var checkURLVal struct {
 		Result struct {
 			Value string `json:"value"`
@@ -1359,10 +1402,10 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 		"returnByValue": true,
 	}, &checkURLVal)
 
-	currentTabURL := checkURLVal.Result.Value
-	needsNav := currentTabURL == "" || (!strings.Contains(currentTabURL, "/thread/") && !strings.Contains(currentTabURL, "/c/"))
-	if needsNav {
-		_ = wt.Page.Call(ctx, "Page.navigate", map[string]interface{}{"url": cleanThreadURL}, nil)
+	currentTabURL := strings.ToLower(checkURLVal.Result.Value)
+	cleanOrigin := strings.ToLower(targetOrigin)
+	if currentTabURL == "" || (!strings.HasPrefix(currentTabURL, cleanOrigin) && !strings.Contains(currentTabURL, "muse.ai")) {
+		_ = wt.Page.Call(ctx, "Page.navigate", map[string]interface{}{"url": targetOrigin + "/"}, nil)
 		time.Sleep(1200 * time.Millisecond)
 	}
 
@@ -1402,20 +1445,76 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 	})()`
 	_ = wt.Page.Call(ctx, "Runtime.evaluate", map[string]interface{}{"expression": markSeenJS}, nil)
 
-	// 2. Điền nội dung vào ô nhập theo chuẩn React 16+ State Tracker
+	// 2. Điền nội dung vào ô nhập theo chuẩn React 16+ State Tracker & ContentEditable
 	promptJSON, _ := json.Marshal(userPrompt)
 	typeReactJS := fmt.Sprintf(`(function(txt){
-		var ta = document.querySelector('textarea[aria-label="Nhắn tin"], textarea[placeholder="Nhắn tin"], textarea[aria-label="Message"], textarea, [contenteditable="true"]');
-		if (!ta) return {ok: false, err: "no textarea"};
+		var selectors = [
+			'textarea[aria-label*="Nhắn tin" i]',
+			'textarea[placeholder*="Nhắn tin" i]',
+			'textarea[aria-label*="Message" i]',
+			'textarea[placeholder*="Message" i]',
+			'textarea[placeholder*="Prompt" i]',
+			'textarea[placeholder*="Ask" i]',
+			'textarea[data-testid*="composer" i]',
+			'textarea[data-testid*="chat" i]',
+			'div[data-testid*="composer" i]',
+			'div[data-testid*="chat-input" i]',
+			'[contenteditable="true"]',
+			'[contenteditable="plaintext-only"]',
+			'[role="textbox"]',
+			'[data-lexical-editor="true"]',
+			'[data-slate-editor="true"]',
+			'textarea',
+			'input[type="text"][placeholder*="Nhắn tin" i]',
+			'input[type="text"][placeholder*="Message" i]',
+			'input[type="text"][aria-label*="Message" i]'
+		];
+		var all = Array.from(document.querySelectorAll(selectors.join(", ")));
+		var valid = all.filter(function(item) {
+			if (item.disabled) return false;
+			var ph = (item.getAttribute("placeholder") || "").toLowerCase();
+			var al = (item.getAttribute("aria-label") || "").toLowerCase();
+			if (ph.includes("tìm kiếm") || ph.includes("search") || al.includes("search")) return false;
+			var style = window.getComputedStyle(item);
+			if (style.display === "none" || style.visibility === "hidden") return false;
+			var rect = item.getBoundingClientRect();
+			return (rect.width > 0 && rect.height > 0) || item.offsetParent !== null || style.opacity !== "0";
+		});
+		if (valid.length === 0) return {ok: false, err: "no composer"};
+		valid.sort(function(a, b) {
+			var aLabel = ((a.getAttribute("aria-label") || "") + " " + (a.getAttribute("placeholder") || "") + " " + (a.className || "")).toLowerCase();
+			var bLabel = ((b.getAttribute("aria-label") || "") + " " + (b.getAttribute("placeholder") || "") + " " + (b.className || "")).toLowerCase();
+			var aScore = (/message|chat|nhắn tin|tin nhắn|composer|prompt/i.test(aLabel) ? 100000 : 0) + (a.getBoundingClientRect().bottom || 0);
+			var bScore = (/message|chat|nhắn tin|tin nhắn|composer|prompt/i.test(bLabel) ? 100000 : 0) + (b.getBoundingClientRect().bottom || 0);
+			return bScore - aScore;
+		});
+		var ta = valid[0];
 		ta.focus();
-		var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
-		if (nativeSetter && nativeSetter.set) {
-			nativeSetter.set.call(ta, txt);
+		if (ta.tagName === "TEXTAREA" || ta.tagName === "INPUT") {
+			var proto = ta.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+			var nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value');
+			if (nativeSetter && nativeSetter.set) {
+				nativeSetter.set.call(ta, txt);
+			} else {
+				ta.value = txt;
+			}
+			ta.dispatchEvent(new Event('input', { bubbles: true }));
+			ta.dispatchEvent(new Event('change', { bubbles: true }));
 		} else {
-			ta.value = txt;
+			try {
+				var sel = window.getSelection();
+				var range = document.createRange();
+				range.selectNodeContents(ta);
+				sel.removeAllRanges();
+				sel.addRange(range);
+				document.execCommand("insertText", false, txt);
+			} catch (_) {}
+			if ((ta.textContent || "").trim() !== txt.trim()) {
+				ta.textContent = txt;
+			}
+			ta.dispatchEvent(new InputEvent("input", { bubbles: true, data: txt, inputType: "insertText" }));
+			ta.dispatchEvent(new Event("change", { bubbles: true }));
 		}
-		ta.dispatchEvent(new Event('input', { bubbles: true }));
-		ta.dispatchEvent(new Event('change', { bubbles: true }));
 		return {ok: true};
 	})(%s)`, string(promptJSON))
 
@@ -1426,29 +1525,27 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 	// 3. Hàm kích hoạt nút Gửi với đầy đủ chuỗi Pointer/Mouse Events & native Enter key
 	clickSendOrEnter := func() {
 		clickSendJS := `(function(){
-			var ta = document.querySelector('textarea[aria-label="Nhắn tin"], textarea[placeholder="Nhắn tin"], textarea[aria-label="Message"], textarea, [contenteditable="true"]');
-			if (!ta) return false;
-			var rem = ((ta.value !== undefined ? ta.value : ta.textContent) || '').trim();
-			if (!rem) return true; // đã được gửi đi và ô nhập trống
-
-			var btn = document.querySelector('button[data-pel-click="chat_send_message"], button[aria-label="Gửi"]:not(:disabled), button[aria-label*="Gửi" i]:not(:disabled), button[aria-label="Send"]:not(:disabled)');
-			if (!btn) {
-				var root = ta.parentElement;
-				for (var d = 0; d < 6 && root; d++) {
-					btn = root.querySelector('button[data-pel-click="chat_send_message"], button[aria-label*="Gửi" i]:not(:disabled), button[aria-label*="Send" i]:not(:disabled)');
-					if (btn) break;
-					root = root.parentElement;
+			var selectors = [
+				'button[data-pel-click="chat_send_message"]:not(:disabled)',
+				'button[aria-label="Gửi"]:not(:disabled)',
+				'button[aria-label*="Gửi" i]:not(:disabled)',
+				'button[aria-label="Send"]:not(:disabled)',
+				'button[aria-label*="Send" i]:not(:disabled)',
+				'button[data-testid*="send" i]:not(:disabled)',
+				'button[type="submit"]:not(:disabled)'
+			];
+			for (var s = 0; s < selectors.length; s++) {
+				var btn = document.querySelector(selectors[s]);
+				if (btn && !btn.disabled) {
+					btn.focus();
+					var opts = { bubbles: true, cancelable: true, view: window };
+					btn.dispatchEvent(new PointerEvent('pointerdown', opts));
+					btn.dispatchEvent(new MouseEvent('mousedown', opts));
+					btn.dispatchEvent(new PointerEvent('pointerup', opts));
+					btn.dispatchEvent(new MouseEvent('mouseup', opts));
+					btn.click();
+					return true;
 				}
-			}
-			if (btn && !btn.disabled) {
-				btn.focus();
-				var opts = { bubbles: true, cancelable: true, view: window };
-				btn.dispatchEvent(new PointerEvent('pointerdown', opts));
-				btn.dispatchEvent(new MouseEvent('mousedown', opts));
-				btn.dispatchEvent(new PointerEvent('pointerup', opts));
-				btn.dispatchEvent(new MouseEvent('mouseup', opts));
-				btn.click();
-				return true;
 			}
 			return false;
 		})()`

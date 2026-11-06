@@ -57,7 +57,7 @@ async function broadcastSessionReadyToOpenTabs(injectIfMissing) {
                 event: "MART_EXT_SESSION_READY",
                 cookie: cookies.sess ? cookies.header : "",
                 hasExistingSession: !!cookies.sess,
-                version: "1.2.5",
+                version: "1.2.6",
               },
               function () {
                 void chrome.runtime.lastError;
@@ -73,7 +73,7 @@ async function broadcastSessionReadyToOpenTabs(injectIfMissing) {
             event: "MART_EXT_SESSION_READY",
             cookie: cookies.sess ? cookies.header : "",
             hasExistingSession: !!cookies.sess,
-            version: "1.2.5",
+            version: "1.2.6",
           },
           function () {
             void chrome.runtime.lastError;
@@ -319,15 +319,17 @@ async function ensureMuseWorkerTab(switchedAccount) {
   var candidateTab = candidates[0] || null;
 
   if (candidateTab) {
-    if (switchedAccount || candidateTab.status !== "complete" || !candidateTab.url.includes("/thread/new#mart_worker")) {
-      await chrome.tabs.update(candidateTab.id, { url: "https://muse.ai/thread/new#mart_worker" });
+    var tabUrl = candidateTab.url || "";
+    var isReady = tabUrl.startsWith("https://muse.ai/") && candidateTab.status === "complete";
+    if (switchedAccount || !isReady) {
+      await chrome.tabs.update(candidateTab.id, { url: "https://muse.ai/#mart_worker" });
       await waitForTabComplete(candidateTab.id, 18000);
     }
     return candidateTab.id;
   }
 
   var created = await chrome.tabs.create({
-    url: "https://muse.ai/thread/new#mart_worker",
+    url: "https://muse.ai/#mart_worker",
     active: false,
     pinned: true,
   });
@@ -478,7 +480,55 @@ function domReadMuseSnapshot() {
     return Array.from(n.childNodes).map(function (c) { return nodeToMd(c, listDepth); }).join("");
   }
 
-  var composer = document.querySelector('textarea[aria-label="Nhắn tin"], textarea[placeholder="Nhắn tin"], textarea[aria-label="Message"], textarea, [contenteditable="true"]');
+  // Bộ chọn toàn diện cho mọi phiên bản Muse AI (React, Lexical, Slate, Draft, textarea native, contenteditable)
+  function findCurrentMuseComposer() {
+    var selectors = [
+      'textarea[aria-label*="Nhắn tin" i]',
+      'textarea[placeholder*="Nhắn tin" i]',
+      'textarea[aria-label*="Message" i]',
+      'textarea[placeholder*="Message" i]',
+      'textarea[placeholder*="Prompt" i]',
+      'textarea[placeholder*="Ask" i]',
+      'textarea[data-testid*="composer" i]',
+      'textarea[data-testid*="chat" i]',
+      'div[data-testid*="composer" i]',
+      'div[data-testid*="chat-input" i]',
+      '[contenteditable="true"]',
+      '[contenteditable="plaintext-only"]',
+      '[role="textbox"]',
+      '[data-lexical-editor="true"]',
+      '[data-slate-editor="true"]',
+      'textarea',
+      'input[type="text"][placeholder*="Nhắn tin" i]',
+      'input[type="text"][placeholder*="Message" i]',
+      'input[type="text"][aria-label*="Message" i]'
+    ];
+    var all = Array.from(document.querySelectorAll(selectors.join(", ")));
+    var valid = all.filter(function (item) {
+      if (item.disabled) return false;
+      var ph = (item.getAttribute("placeholder") || "").toLowerCase();
+      var al = (item.getAttribute("aria-label") || "").toLowerCase();
+      if (ph.includes("tìm kiếm") || ph.includes("search") || al.includes("search")) {
+        return false;
+      }
+      var style = window.getComputedStyle(item);
+      if (style.display === "none" || style.visibility === "hidden") return false;
+      var rect = item.getBoundingClientRect();
+      // Chấp nhận cả element trong background tab khi layout chưa tính xong (offsetParent hoặc visible style)
+      return (rect.width > 0 && rect.height > 0) || item.offsetParent !== null || style.opacity !== "0";
+    });
+    if (valid.length === 0) return null;
+    valid.sort(function (a, b) {
+      var aLabel = ((a.getAttribute("aria-label") || "") + " " + (a.getAttribute("placeholder") || "") + " " + (a.className || "")).toLowerCase();
+      var bLabel = ((b.getAttribute("aria-label") || "") + " " + (b.getAttribute("placeholder") || "") + " " + (b.className || "")).toLowerCase();
+      var aScore = (/message|chat|nhắn tin|tin nhắn|composer|prompt/i.test(aLabel) ? 100000 : 0) + (a.getBoundingClientRect().bottom || 0);
+      var bScore = (/message|chat|nhắn tin|tin nhắn|composer|prompt/i.test(bLabel) ? 100000 : 0) + (b.getBoundingClientRect().bottom || 0);
+      return bScore - aScore;
+    });
+    return valid[0];
+  }
+
+  var composer = findCurrentMuseComposer();
   var compVal = composer ? ((composer.value !== undefined ? composer.value : composer.textContent) || "").trim() : "";
   var isGen = !!document.querySelector('.animate-spin, button[aria-label*="Stop" i], button[aria-label*="Dừng" i], button.stop-button, [data-is-generating="true"], .typing-indicator, .pulse, button:has(span[class*="rounded-sm"]), .rounded-sm.bg-fill-primary');
   var rawEls = Array.from(document.querySelectorAll('div.mb-6.flex.flex-col.gap-5, div.flex.flex-col.gap-5, .prose, [data-message-author-role="assistant"], div[class*="message-assistant"], .chat-bubble-assistant')).filter(function (el) {
@@ -541,95 +591,158 @@ function domReadMuseSnapshot() {
   };
 }
 
-// Hàm chạy bên trong trang https://muse.ai: điền prompt vào composer và nhấn gửi
+// Hàm chạy bên trong trang https://muse.ai: điền prompt vào composer và nhấn gửi (kèm polling retry thông minh)
 function domSubmitMusePrompt(promptText) {
-  window.__martExpectedPrompt = String(promptText || "").trim();
-  Array.from(document.querySelectorAll("div.mb-6.flex.flex-col.gap-5, div.flex.flex-col.gap-5, .hatch-chat-groupable-bubble, .prose, div.flex.flex-col.gap-2, [data-message-author-role]")).forEach(function (p) {
-    p.setAttribute("data-mart-seen", "1");
-  });
-  var composers = Array.from(document.querySelectorAll('textarea, [contenteditable="true"]')).filter(function (item) {
-    var rect = item.getBoundingClientRect();
-    var style = window.getComputedStyle(item);
-    return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none" && !item.disabled;
-  });
-  composers.sort(function (a, b) {
-    var aRect = a.getBoundingClientRect();
-    var bRect = b.getBoundingClientRect();
-    var aScore = (/message|chat|nhắn tin|tin nhắn/i.test((a.getAttribute("aria-label") || "") + " " + (a.getAttribute("placeholder") || "")) ? 100000 : 0) + aRect.bottom;
-    var bScore = (/message|chat|nhắn tin|tin nhắn/i.test((b.getAttribute("aria-label") || "") + " " + (b.getAttribute("placeholder") || "")) ? 100000 : 0) + bRect.bottom;
-    return bScore - aScore;
-  });
-  var el = composers[0];
-  if (!el) return { ok: false, error: "Không tìm thấy ô nhập tin nhắn trên muse.ai" };
-
-  el.focus();
-  if (el.tagName === "TEXTAREA" || el.tagName === "INPUT") {
-    var proto = el.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-    var desc = Object.getOwnPropertyDescriptor(proto, "value");
-    if (desc && desc.set) {
-      desc.set.call(el, promptText);
-    } else {
-      el.value = promptText;
-    }
-    el.dispatchEvent(new InputEvent("input", { bubbles: true, data: promptText, inputType: "insertText" }));
-    el.dispatchEvent(new Event("change", { bubbles: true }));
-  } else {
-    document.execCommand("selectAll", false, null);
-    document.execCommand("insertText", false, promptText);
-    el.dispatchEvent(new InputEvent("input", { bubbles: true, data: promptText, inputType: "insertText" }));
-  }
-
   return new Promise(function (resolve) {
-    setTimeout(function () {
-      function tryClickSendButton() {
-        var directBtn = document.querySelector('button[aria-label="Gửi"]:not(:disabled), button[aria-label*="Gửi" i]:not(:disabled), button[aria-label="Send"]:not(:disabled)');
-        if (directBtn) {
-          directBtn.click();
-          return true;
-        }
-        var root = el.parentElement;
-        for (var d = 0; d < 6 && root; d++) {
-          var sendBtn = root.querySelector(
-            'button[aria-label="Gửi"]:not(:disabled), button[aria-label*="Gửi" i]:not(:disabled), button[aria-label="Send"]:not(:disabled), button[aria-label*="Send" i]:not(:disabled), button[data-testid*="send" i]:not(:disabled)'
-          );
-          if (sendBtn) {
-            sendBtn.click();
-            return true;
-          }
-          root = root.parentElement;
-        }
-        return false;
-      }
-      function pressEnterOnEl() {
-        var evOpts = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
-        el.dispatchEvent(new KeyboardEvent("keydown", evOpts));
-        el.dispatchEvent(new KeyboardEvent("keypress", evOpts));
-        el.dispatchEvent(new KeyboardEvent("keyup", evOpts));
+    var maxWaitMs = 12000;
+    var startWait = Date.now();
+
+    function pollAndSubmit() {
+      var curUrl = location.href || "";
+      if (curUrl.includes("/login") || curUrl.includes("/oidc/start") || curUrl.includes("/auth")) {
+        resolve({ ok: false, error: "Phiên đăng nhập Muse.ai đã hết hạn hoặc trang yêu cầu đăng nhập lại." });
+        return;
       }
 
-      var clicked = tryClickSendButton();
-      if (!clicked) {
-        pressEnterOnEl();
-      }
-      setTimeout(function () {
-        var remaining = (el.value !== undefined ? el.value : el.textContent || "").trim();
-        if (remaining.length > 0) {
-          if (!tryClickSendButton()) {
-            pressEnterOnEl();
-          }
-          setTimeout(function () {
-            var rem2 = (el.value !== undefined ? el.value : el.textContent || "").trim();
-            if (rem2.length > 0) {
-              resolve({ ok: false, error: "Muse.ai chưa nhận lệnh gửi (nội dung vẫn còn trong ô chat)." });
-              return;
-            }
-            resolve({ ok: true });
-          }, 450);
+      var selectors = [
+        'textarea[aria-label*="Nhắn tin" i]',
+        'textarea[placeholder*="Nhắn tin" i]',
+        'textarea[aria-label*="Message" i]',
+        'textarea[placeholder*="Message" i]',
+        'textarea[placeholder*="Prompt" i]',
+        'textarea[placeholder*="Ask" i]',
+        'textarea[data-testid*="composer" i]',
+        'textarea[data-testid*="chat" i]',
+        'div[data-testid*="composer" i]',
+        'div[data-testid*="chat-input" i]',
+        '[contenteditable="true"]',
+        '[contenteditable="plaintext-only"]',
+        '[role="textbox"]',
+        '[data-lexical-editor="true"]',
+        '[data-slate-editor="true"]',
+        'textarea',
+        'input[type="text"][placeholder*="Nhắn tin" i]',
+        'input[type="text"][placeholder*="Message" i]',
+        'input[type="text"][aria-label*="Message" i]'
+      ];
+      var all = Array.from(document.querySelectorAll(selectors.join(", ")));
+      var valid = all.filter(function (item) {
+        if (item.disabled) return false;
+        var ph = (item.getAttribute("placeholder") || "").toLowerCase();
+        var al = (item.getAttribute("aria-label") || "").toLowerCase();
+        if (ph.includes("tìm kiếm") || ph.includes("search") || al.includes("search")) return false;
+        var style = window.getComputedStyle(item);
+        if (style.display === "none" || style.visibility === "hidden") return false;
+        var rect = item.getBoundingClientRect();
+        return (rect.width > 0 && rect.height > 0) || item.offsetParent !== null || style.opacity !== "0";
+      });
+
+      if (valid.length === 0) {
+        if (Date.now() - startWait > maxWaitMs) {
+          resolve({ ok: false, error: "Không tìm thấy ô nhập tin nhắn trên muse.ai (vui lòng đảm bảo bạn đã đăng nhập và trang chat đã tải xong)." });
           return;
         }
-        resolve({ ok: true });
-      }, 400);
-    }, 160);
+        setTimeout(pollAndSubmit, 300);
+        return;
+      }
+
+      valid.sort(function (a, b) {
+        var aLabel = ((a.getAttribute("aria-label") || "") + " " + (a.getAttribute("placeholder") || "") + " " + (a.className || "")).toLowerCase();
+        var bLabel = ((b.getAttribute("aria-label") || "") + " " + (b.getAttribute("placeholder") || "") + " " + (b.className || "")).toLowerCase();
+        var aScore = (/message|chat|nhắn tin|tin nhắn|composer|prompt/i.test(aLabel) ? 100000 : 0) + (a.getBoundingClientRect().bottom || 0);
+        var bScore = (/message|chat|nhắn tin|tin nhắn|composer|prompt/i.test(bLabel) ? 100000 : 0) + (b.getBoundingClientRect().bottom || 0);
+        return bScore - aScore;
+      });
+
+      var el = valid[0];
+      window.__martExpectedPrompt = String(promptText || "").trim();
+      Array.from(document.querySelectorAll("div.mb-6.flex.flex-col.gap-5, div.flex.flex-col.gap-5, .hatch-chat-groupable-bubble, .prose, div.flex.flex-col.gap-2, [data-message-author-role]")).forEach(function (p) {
+        p.setAttribute("data-mart-seen", "1");
+      });
+
+      try {
+        el.focus();
+      } catch (_) {}
+
+      if (el.tagName === "TEXTAREA" || el.tagName === "INPUT") {
+        var proto = el.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+        var desc = Object.getOwnPropertyDescriptor(proto, "value");
+        if (desc && desc.set) {
+          desc.set.call(el, promptText);
+        } else {
+          el.value = promptText;
+        }
+        el.dispatchEvent(new InputEvent("input", { bubbles: true, data: promptText, inputType: "insertText" }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      } else {
+        try {
+          var sel = window.getSelection();
+          var range = document.createRange();
+          range.selectNodeContents(el);
+          sel.removeAllRanges();
+          sel.addRange(range);
+          document.execCommand("insertText", false, promptText);
+        } catch (_) {}
+        if ((el.textContent || "").trim() !== promptText.trim()) {
+          el.textContent = promptText;
+        }
+        el.dispatchEvent(new InputEvent("input", { bubbles: true, data: promptText, inputType: "insertText" }));
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+
+      setTimeout(function () {
+        function tryClickSendButton() {
+          var directBtn = document.querySelector('button[data-pel-click="chat_send_message"]:not(:disabled), button[aria-label="Gửi"]:not(:disabled), button[aria-label*="Gửi" i]:not(:disabled), button[aria-label="Send"]:not(:disabled), button[aria-label*="Send" i]:not(:disabled), button[data-testid*="send" i]:not(:disabled)');
+          if (directBtn) {
+            directBtn.click();
+            return true;
+          }
+          var root = el.parentElement;
+          for (var d = 0; d < 6 && root; d++) {
+            var sendBtn = root.querySelector(
+              'button[data-pel-click="chat_send_message"]:not(:disabled), button[aria-label="Gửi"]:not(:disabled), button[aria-label*="Gửi" i]:not(:disabled), button[aria-label="Send"]:not(:disabled), button[aria-label*="Send" i]:not(:disabled), button[data-testid*="send" i]:not(:disabled)'
+            );
+            if (sendBtn) {
+              sendBtn.click();
+              return true;
+            }
+            root = root.parentElement;
+          }
+          return false;
+        }
+        function pressEnterOnEl() {
+          var evOpts = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
+          el.dispatchEvent(new KeyboardEvent("keydown", evOpts));
+          el.dispatchEvent(new KeyboardEvent("keypress", evOpts));
+          el.dispatchEvent(new KeyboardEvent("keyup", evOpts));
+        }
+
+        var clicked = tryClickSendButton();
+        if (!clicked) {
+          pressEnterOnEl();
+        }
+        setTimeout(function () {
+          var remaining = (el.value !== undefined ? el.value : el.textContent || "").trim();
+          if (remaining.length > 0) {
+            if (!tryClickSendButton()) {
+              pressEnterOnEl();
+            }
+            setTimeout(function () {
+              var rem2 = (el.value !== undefined ? el.value : el.textContent || "").trim();
+              if (rem2.length > 0) {
+                resolve({ ok: false, error: "Muse.ai chưa nhận lệnh gửi (nội dung vẫn còn trong ô chat)." });
+                return;
+              }
+              resolve({ ok: true });
+            }, 450);
+            return;
+          }
+          resolve({ ok: true });
+        }, 400);
+      }, 200);
+    }
+
+    pollAndSubmit();
   });
 }
 
@@ -678,16 +791,21 @@ async function executeMuseChatDirect(prompt, cookieHeader, forceReload) {
     await sleepMs(250);
   }
 
+  var sendRes = null;
   if (!baseline || !baseline.hasComposer) {
-    return {
-      ok: false,
-      error: "Phiên đăng nhập muse.ai đã hết hạn hoặc trang chưa sẵn sàng — hãy bấm Đồng bộ lại tài khoản.",
-    };
-  }
-
-  var sendRes = await evalInTab(tabId, domSubmitMusePrompt, [prompt]);
-  if (!sendRes || !sendRes.ok) {
-    return { ok: false, error: (sendRes && sendRes.error) || "Không gửi được tin nhắn vào muse.ai." };
+    // Thử gửi trực tiếp vì domSubmitMusePrompt có cơ chế smart polling 12 giây
+    sendRes = await evalInTab(tabId, domSubmitMusePrompt, [prompt]);
+    if (!sendRes || !sendRes.ok) {
+      return {
+        ok: false,
+        error: (sendRes && sendRes.error) || "Phiên đăng nhập muse.ai đã hết hạn hoặc trang chưa sẵn sàng — hãy bấm Đồng bộ lại tài khoản.",
+      };
+    }
+  } else {
+    sendRes = await evalInTab(tabId, domSubmitMusePrompt, [prompt]);
+    if (!sendRes || !sendRes.ok) {
+      return { ok: false, error: (sendRes && sendRes.error) || "Không gửi được tin nhắn vào muse.ai." };
+    }
   }
 
   var deadline = Date.now() + 75000;
@@ -767,7 +885,7 @@ function handleBridgeAction(msg, sendResponse) {
   var action = (msg && msg.action) || "";
   if (action === "ping") {
     martCollectMuseCookies().then(function (c) {
-      sendResponse({ ok: true, version: "1.2.5", hasExistingSession: !!c.sess, supportsChatRelay: true });
+      sendResponse({ ok: true, version: "1.2.6", hasExistingSession: !!c.sess, supportsChatRelay: true });
     });
     return true;
   }
@@ -775,7 +893,7 @@ function handleBridgeAction(msg, sendResponse) {
     martCollectMuseCookies().then(function (c) {
       sendResponse({
         ok: true,
-        version: "1.2.5",
+        version: "1.2.6",
         hasExistingSession: !!c.sess,
         supportsChatRelay: true,
         cookie: c.sess ? c.header : "",
