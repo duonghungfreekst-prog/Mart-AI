@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"mime"
 	"net/http"
 	"os"
 	"os/exec"
@@ -23,6 +24,21 @@ import (
 	"syscall"
 	"time"
 )
+
+func init() {
+	_ = mime.AddExtensionType(".webp", "image/webp")
+	_ = mime.AddExtensionType(".png", "image/png")
+	_ = mime.AddExtensionType(".jpg", "image/jpeg")
+	_ = mime.AddExtensionType(".jpeg", "image/jpeg")
+	_ = mime.AddExtensionType(".svg", "image/svg+xml")
+	_ = mime.AddExtensionType(".ico", "image/x-icon")
+	_ = mime.AddExtensionType(".woff2", "font/woff2")
+	_ = mime.AddExtensionType(".mp4", "video/mp4")
+	_ = mime.AddExtensionType(".js", "application/javascript; charset=utf-8")
+	_ = mime.AddExtensionType(".css", "text/css; charset=utf-8")
+	_ = mime.AddExtensionType(".html", "text/html; charset=utf-8")
+	_ = mime.AddExtensionType(".json", "application/json; charset=utf-8")
+}
 
 //go:embed all:web
 var embeddedWebFS embed.FS
@@ -1181,6 +1197,11 @@ func (a *ServerApp) Routes() http.Handler {
 		}
 		if r.Method == http.MethodGet && servePrecompressedWebAsset(w, r, targetAsset) {
 			return
+		}
+		if ext := strings.ToLower(filepath.Ext(p)); ext != "" {
+			if ctype := mime.TypeByExtension(ext); ctype != "" {
+				w.Header().Set("Content-Type", ctype)
+			}
 		}
 		if p == "/cai-dat" || p == "/admin" || p == "/library/artifacts" {
 			r2 := new(http.Request)

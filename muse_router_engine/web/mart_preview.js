@@ -143,7 +143,7 @@ window.addEventListener("message", function(ev){
   }
 });
 
-var MASCOT_HTML = '<span class="mascot"><img src="/avatars/mart_mascot.webp" alt="" draggable="false"/></span>';
+var MASCOT_HTML = '<span class="mascot"><img src="/avatars/mart_mascot.webp" onerror="this.onerror=null;this.src=\'/avatars/mart_cat.png\';" alt="Mart AI" draggable="false"/></span>';
 var ICON_COPY = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
 var ICON_LIKE = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10v12H4a1 1 0 0 1-1-1V11a1 1 0 0 1 1-1h3Zm0 0 4.2-7.4c1.5 0 2.6 1.3 2.3 2.8L12.6 10H20a2 2 0 0 1 2 2.4l-1.2 7.2a2 2 0 0 1-2 1.6H7"/></svg>';
 var ICON_DISLIKE = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="transform:rotate(180deg)"><path d="M7 10v12H4a1 1 0 0 1-1-1V11a1 1 0 0 1 1-1h3Zm0 0 4.2-7.4c1.5 0 2.6 1.3 2.3 2.8L12.6 10H20a2 2 0 0 1 2 2.4l-1.2 7.2a2 2 0 0 1-2 1.6H7"/></svg>';
@@ -294,7 +294,7 @@ function showTyping(){
   var phases = ["Đang gửi câu hỏi tới máy chủ Mart AI...", "Máy chủ đã kết nối; đang điều phối tới Muse.ai...", "Đang nhận phản hồi từ Muse.ai..."];
   var stepLabels = ["Gửi câu hỏi tới máy chủ Mart AI", "Điều phối câu hỏi tới Muse.ai", "Nhận câu trả lời từ Muse.ai"];
   var stepsHtml = stepLabels.map(function(s, idx){ return '<li data-step="' + idx + '"><span class="ws-ic"></span><span>' + esc(s) + '</span></li>'; }).join("");
-  wrap.innerHTML = '<div class="work-stage"><img class="work-avatar" src="/avatars/mart_mascot.webp" alt="" width="42" height="42" decoding="async"></div>' +
+  wrap.innerHTML = '<div class="work-stage"><img class="work-avatar" src="/avatars/mart_mascot.webp" onerror="this.onerror=null;this.src=\'/avatars/mart_cat.png\';" alt="Mart AI" width="42" height="42" decoding="async"></div>' +
     '<div class="m-body"><div class="m-name">Mart AI · '+currentModelShort()+'</div>' +
     '<div class="work-card"><div class="work-badge"><span class="bw-pulse"></span>MART ĐANG LÀM VIỆC</div>' +
     '<div class="work-status"><span class="work-phase">'+phases[0]+'</span><span class="live-dots"><i></i><i></i><i></i></span></div>' +
