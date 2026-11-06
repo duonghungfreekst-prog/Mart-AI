@@ -39,10 +39,7 @@ function beep(){
 }
 
 /* Activity (session context) */
-var activityItems = [
-  { t:"Giải thích đệ quy", s:"Khái niệm · Ví dụ xếp hàng lấy đồ", time:"Hôm qua" },
-  { t:"So sánh React và Vue", s:"Phân tích · Đã chốt tiêu chí", time:"Hôm qua" }
-];
+var activityItems = [];
 function renderActivity(){
   var wrap = $("#activityList"); wrap.innerHTML = "";
   if(!activityItems.length){ wrap.innerHTML = '<div class="ctx-note">Chưa có hoạt động nào trong phiên này.</div>'; return; }
@@ -76,16 +73,7 @@ function updateUsage(){
 function countTokens(text){ return Math.max(1, Math.round(text.split(/\s+/).filter(Boolean).length * 1.35)); }
 
 /* History */
-var CONVERSATIONS = [
-  { id:"c1", group:"Hôm nay", title:"Hàm debounce trong JavaScript", preview:"Kèm ví dụ search input và nút Sao chép code", time:"10:24", flow:"code" },
-  { id:"c2", group:"Hôm nay", title:"Viết email xin nghỉ phép", preview:"Mẫu lịch sự, có chỗ điền ngày và lý do", time:"09:02", flow:"write" },
-  { id:"c3", group:"Hôm qua", title:"So sánh React và Vue", preview:"Theo đường cong học, hệ sinh thái, hiệu năng", time:"21:40", flow:"analyze" },
-  { id:"c4", group:"Hôm qua", title:"Giải thích đệ quy cho người mới", preview:"Ví dụ đời thường + code Python minh hoạ", time:"20:15", flow:"explain" },
-  { id:"c5", group:"Trước đó", title:"Thủ đô của Việt Nam là gì?", preview:"Thủ đô của Việt Nam là Hà Nội.", time:"T4",
-    msgs:[ ["user","Thủ đô của Việt Nam là gì?"], ["ai","Thủ đô của Việt Nam là <b>Hà Nội</b> nhé Sean."] ] },
-  { id:"c6", group:"Trước đó", title:"128 nhân 46 bằng bao nhiêu?", preview:"128 × 46 = 5.888", time:"T4",
-    msgs:[ ["user","128 nhân 46 bằng bao nhiêu?"], ["ai","Kết quả là: <b>128 × 46 = 5.888</b>."] ] }
-];
+var CONVERSATIONS = [];
 var activeConvId = null;
 var ICON_MSG = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5Z"/></svg>';
 function renderHistory(filter){
@@ -780,25 +768,44 @@ document.addEventListener("keydown", function(e){
 async function fetchPoolReal(){
   try {
     var res = await authedFetch("/api/router/summary", { cache: "no-store" });
-    if(!res.ok) return;
+    if(!res.ok) throw new Error("Khong tai duoc danh sach Pool (HTTP " + res.status + ")");
     var data = await res.json();
-    var nodes = data.nodes || [];
+    var nodes = Array.isArray(data.nodes) ? data.nodes : [];
+    if(typeof data.routing_strategy === "string" && STRAT_NAMES[data.routing_strategy]){
+      strategy = pendingStrategy = data.routing_strategy;
+      $$("#stratGrid .strat-card").forEach(function(card){ card.classList.toggle("on", card.getAttribute("data-strat") === strategy); });
+    }
+    if(typeof data.auto_failover === "boolean"){
+      failover = pendingFailover = data.auto_failover;
+      $("#swFailover").classList.toggle("on", failover);
+    }
+    $("#routerCurrent").textContent = (STRAT_NAMES[strategy] || strategy) + " - Auto-Failover " + (failover ? "enabled" : "disabled");
+    $("#poolMiniStrat").textContent = STRAT_NAMES[strategy] || strategy;
+    $("#poolMiniFail").textContent = failover ? "Enabled" : "Disabled";
     POOL = nodes.map(function(n){
       return {
         id: n.id,
-        name: n.label || n.id,
-        status: n.status || "ready",
-        auth: n.auth_type || "cookie",
-        fp: n.fingerprint || n.id,
-        tokens: n.tokens_used || 0,
-        lat: n.avg_latency_ms || 0,
-        req: n.total_requests || 0,
-        tier: "Standard",
-        note: n.proxy_url ? "Proxy" : "Trực tiếp"
+        label: n.label || n.id || "Muse",
+        plan: n.plan_tier || n.free_plan_label || "Muse.ai",
+        status: n.status || "unavailable",
+        auth: n.auth_type === "api_key" ? "API Key" : "Cookie",
+        fp: n.fingerprint || n.id || "",
+        tokens: Number(n.tokens_remaining) || 0,
+        freeVal: n.free_plan_value || "Chưa lấy được dữ liệu mức sử dụng",
+        freePct: Math.max(0, Math.min(100, Number(n.free_plan_percent) || 0)),
+        topPct: Math.max(0, Math.min(100, Number(n.topup_percent) || 0)),
+        req: Number(n.total_requests) || 0,
+        fail: Number(n.fail_count) || 0,
+        lat: Number(n.latency_ms) || 0,
+        dev: "Không thu thập",
+        proxy: n.proxy_url ? "Da cau hinh" : "Truc tiep",
+        detail: n.status_detail || (n.status === "ready" ? "Phien da xac thuc" : "Chua xac minh duoc phien")
       };
     });
     renderPool();
-  } catch(e){}
+  } catch(e){
+    toast(e.message || "Khong tai duoc Pool tu may chu");
+  }
 }
 
 /* Mode segmented control */
@@ -898,7 +905,7 @@ $("#exportBtn").addEventListener("click", function(){
   $$("#messages .msg").forEach(function(mEl){
     var isUser = mEl.classList.contains("user");
     var txt = mEl.querySelector(".bubble") ? mEl.querySelector(".bubble").textContent.trim() : "";
-    if(txt) lines.push((isUser ? "Sean: " : "Mart AI: ") + txt, "");
+    if(txt) lines.push((isUser ? "Bạn: " : "Mart AI: ") + txt, "");
   });
   if(lines.length <= 4) lines.push("(Chưa có tin nhắn nào trong phiên này.)");
   var blob = new Blob([lines.join("\n")], { type:"text/plain;charset=utf-8" });
@@ -970,57 +977,47 @@ $("#clearAllBtn").addEventListener("click", function(){
 document.addEventListener("keydown", function(e){ if(e.key==="Escape"){ closeModal(); closeDrawers(); attachMenu.classList.remove("open"); } });
 
 
-/* ===== v8: Model picker · Admin Pool · Điều phối · Tài khoản con · Xem theo quyền ===== */
-/* Danh sách model KHÔNG viết cứng: quét từ các tài khoản / AI trong Pool trên server.
-   Bản preview mô phỏng lời gọi API quét bằng dữ liệu Pool mẫu (POOL ở dưới) — mỗi node
-   trong Pool quét ra các model của chính tài khoản đó, kèm trạng thái của node. */
+/* Model picker and account state come from the server. */
 var MODELS = [];
-var DEFAULT_MODEL = { id:"claude-auto", name:"Muse · Tự động", short:"Muse" };
-var NODE_MODELS = {
-  "Muse #1":[
-    { id:"claude-auto", name:"Muse · Tự động", short:"Muse", desc:"Model mặc định của hệ thống — cân bằng tốc độ và chất lượng, hợp với mọi việc." },
-    { id:"claude-deep", name:"Muse · Suy luận sâu", short:"Muse Sâu", desc:"Nghĩ kỹ từng bước và hiện khối “Quá trình suy luận” — cho phân tích và bài toán khó." }
-  ],
-  "Muse #2":[
-    { id:"claude-code", name:"Muse · Code", short:"Muse Code", desc:"Tối ưu cho lập trình: ưu tiên code chạy được, review và debug, tự chuyển sang chế độ Code." },
-    { id:"claude-fast", name:"Muse · Nhanh", short:"Muse Nhanh", desc:"Trả lời gọn, tốc độ cao — hợp cho tính toán và hỏi đáp nhanh hằng ngày." }
-  ],
-  "Muse #3":[
-    { id:"claude-api", name:"Muse · Qua API Key", short:"Muse API", desc:"Model đi qua API Key của node này — chưa chọn được vì tài khoản đang không khả dụng." }
-  ]
-};
-var currentModelId = "claude-auto";
+var DEFAULT_MODEL = { id:"muse", name:"Muse", short:"Muse" };
+var currentModelId = "muse";
 function currentModel(){
   for(var i=0;i<MODELS.length;i++) if(MODELS[i].id===currentModelId) return MODELS[i];
   return DEFAULT_MODEL;
 }
-var scanState = "idle", scanTimer = null, scanTimeStr = "";
-function nodeStatusLabel(st){ return st==="ready" ? "Sẵn sàng" : (st==="running" ? "Đang chạy" : "Không khả dụng"); }
+var scanState = "idle", scanTimeStr = "";
+function nodeStatusLabel(st){ return st==="ready" ? "Phiên hợp lệ" : (st==="running" ? "Đang chạy" : "Không khả dụng"); }
 function nodeStatusCls(st){ return st==="ready" ? "st-ready" : (st==="running" ? "st-running" : "st-bad"); }
 function renderModelMenu(){
   var list = $("#modelList"), status = $("#scanStatus"), btn = $("#rescanModels");
   if(!list) return;
-  if(scanState==="scanning"){
-    status.textContent = "Đang quét model từ server…";
+  if(scanState === "scanning"){
+    status.textContent = "Đang kiểm tra Pool tài khoản Muse...";
     btn.disabled = true;
-    list.innerHTML = '<div class="scan-loading"><span class="spinner"></span>Đang quét các tài khoản trong Pool để lấy danh sách model…</div>';
+    list.innerHTML = '<div class="scan-loading"><span class="spinner"></span>Đang kiểm tra trạng thái tài khoản trên máy chủ.</div>';
     return;
   }
   btn.disabled = false;
-  if(scanState!=="done"){
-    status.textContent = "Chưa quét model";
-    list.innerHTML = '<div class="scan-loading">Danh sách model sẽ được quét từ các tài khoản trong Pool trên server.</div>';
+  if(scanState === "error"){
+    status.textContent = scanTimeStr || "Không đọc được Pool từ máy chủ";
+    list.innerHTML = '<div class="scan-loading">Không thể tải trạng thái tài khoản. Hãy thử lại.</div>';
     return;
   }
-  var avail = MODELS.filter(function(m){ return m.status!=="unavailable"; }).length;
-  status.textContent = "Đã quét " + scanTimeStr + " · " + POOL.length + " tài khoản · " + MODELS.length + " model · " + avail + " khả dụng";
+  if(scanState !== "done"){
+    status.textContent = "Chưa kiểm tra Pool";
+    list.innerHTML = '<div class="scan-loading">Danh sách sẽ hiện sau khi đọc trạng thái từ máy chủ.</div>';
+    return;
+  }
+  var avail = MODELS.filter(function(m){ return m.status !== "unavailable"; }).length;
+  status.textContent = "Muse Pool: " + avail + " phiên hợp lệ";
   list.innerHTML = "";
+  if(!MODELS.length){ list.innerHTML = '<div class="scan-loading">Máy chủ không trả về tài khoản Muse khả dụng.</div>'; return; }
   MODELS.forEach(function(m){
     var b = document.createElement("button");
     b.type = "button";
-    b.className = "model-opt" + (m.id===currentModelId ? " on" : "");
+    b.className = "model-opt" + (m.id === currentModelId ? " on" : "");
     b.setAttribute("data-model", m.id);
-    if(m.status==="unavailable") b.disabled = true;
+    if(m.status === "unavailable") b.disabled = true;
     b.innerHTML = '<span><span class="mo-t">' + esc(m.name) + '</span>' +
       '<span class="mo-meta"><span class="mo-src">' + esc(m.node) + ' · ' + esc(m.plan) + ' · ' + esc(m.auth) + '</span><span class="chip-mini ' + nodeStatusCls(m.status) + '">' + nodeStatusLabel(m.status) + '</span></span>' +
       '<span class="mo-d">' + esc(m.desc) + '</span></span>' +
@@ -1028,26 +1025,26 @@ function renderModelMenu(){
     list.appendChild(b);
   });
 }
-function scanModels(){
+async function scanModels(){
   if(scanState==="scanning") return;
   scanState = "scanning";
   renderModelMenu();
-  clearTimeout(scanTimer);
-  scanTimer = setTimeout(function(){
-    MODELS = [];
-    POOL.forEach(function(node){
-      var found = NODE_MODELS[node.label];
-      if(!found){
-        found = [{ id:"scan-" + node.label.replace(/[^a-z0-9]+/gi,"-").toLowerCase(), name:node.plan + " · Tự động", short:node.plan, desc:"Model quét được từ tài khoản này trong Pool." }];
-      }
-      found.forEach(function(m){
-        MODELS.push({ id:m.id, name:m.name, short:m.short, desc:m.desc, node:node.label, plan:node.plan, auth:node.auth, status:node.status });
-      });
-    });
+  try {
+    var res = await authedFetch("/api/router/summary", { cache: "no-store" });
+    var data = await res.json().catch(function(){ return {}; });
+    if(!res.ok) throw new Error(data.error || "Pool API unavailable");
+    var nodes = Array.isArray(data.nodes) ? data.nodes : [];
+    var readyCount = Math.max(Number(data.ready_nodes) || 0, nodes.filter(function(n){ return n.status === "ready" || n.status === "running"; }).length);
+    MODELS = readyCount ? [{ id:"muse", name:"Muse", short:"Muse", desc:"Phiên Muse đã xác thực; chưa xác minh khả năng chat.", node:readyCount + " phiên hợp lệ", plan:"Muse.ai", auth:"Pool", status:"ready" }] : [];
+    currentModelId = "muse";
     scanState = "done";
     scanTimeStr = nowTime();
-    renderModelMenu();
-  }, 900);
+  } catch(err) {
+    MODELS = [];
+    scanState = "error";
+    scanTimeStr = err.message || "API error";
+  }
+  renderModelMenu();
 }
 function currentModelShort(){ return currentModel().short; }
 function setModeUI(m){
@@ -1064,9 +1061,6 @@ function selectModel(id, silent){
   $$(".set-info-model").forEach(function(el){ el.textContent = m.name; });
   $("#welcomeModel").textContent = m.short;
   $$(".model-opt").forEach(function(o){ o.classList.toggle("on", o.getAttribute("data-model")===id); });
-  if(id==="claude-deep"){ deepThink = true; $("#swDeep").classList.add("on"); }
-  if(id==="claude-fast"){ verbosity = "short"; $("#verbositySel").value = "short"; }
-  if(id==="claude-code"){ setModeUI("code"); }
   if(!silent) toast("Đã chọn model " + m.name + " cho đoạn chat này");
 }
 var modelMenu = $("#modelMenu");
@@ -1086,13 +1080,9 @@ $("#modelList").addEventListener("click", function(e){
 });
 
 /* Admin view open/close & Khôi phục quyền Quản trị viên */
-async function restoreAdminLogin(forcePrompt){
-  var defPw = "Admin@123456";
-  var pw = defPw;
-  if(forcePrompt){
-    pw = prompt("Nhập mật khẩu Quản trị viên (Admin):", defPw);
-    if(!pw) return;
-  }
+async function restoreAdminLogin(){
+  var pw = prompt("Nhập mật khẩu tài khoản quản trị:", "");
+  if(!pw) return;
   try {
     var res = await fetch("/api/users/login", {
       method: "POST",
@@ -1100,26 +1090,20 @@ async function restoreAdminLogin(forcePrompt){
       body: JSON.stringify({ username: "admin", password: pw })
     });
     var data = await res.json().catch(function(){ return {}; });
-    if(!res.ok){
-      if(!forcePrompt){
-        // Thử lại bằng prompt nếu mật khẩu mặc định bị đổi
-        restoreAdminLogin(true);
-        return;
-      }
-      toast(data.error || "Sai mật khẩu Quản trị viên");
+    if(!res.ok){ toast(data.error || "Không xác thực được tài khoản quản trị"); return; }
+    if(!data.token || !data.user || data.user.role !== "admin"){
+      toast("Máy chủ không trả về phiên quản trị hợp lệ");
       return;
     }
-    if(data.token){
-      localStorage.setItem("mart_jwt_token", data.token);
-      localStorage.setItem("mart_user", JSON.stringify(data.user || { role: "admin", username: "admin", display_name: "Sean" }));
-      setRoleView("admin");
-      await fetchUsersReal();
-      await fetchThreads();
-      document.body.classList.add("admin-open");
-      $("#adminView").scrollTop = 0;
-      closeDrawers();
-      toast("Đã khôi phục thành công quyền Quản trị viên (Sean Admin)");
-    }
+    localStorage.setItem("mart_jwt_token", data.token);
+    localStorage.setItem("mart_user", JSON.stringify(data.user));
+    setRoleView("admin", data.user);
+    await fetchUsersReal();
+    await fetchThreads();
+    document.body.classList.add("admin-open");
+    $("#adminView").scrollTop = 0;
+    closeDrawers();
+    toast("Đã xác thực quyền quản trị: " + (data.user.display_name || data.user.username));
   } catch(e){
     toast("Không thể kết nối máy chủ để xác thực");
   }
@@ -1127,7 +1111,7 @@ async function restoreAdminLogin(forcePrompt){
 
 function openAdmin(){
   if(document.body.classList.contains("user-view")){
-    restoreAdminLogin(false);
+    restoreAdminLogin();
     return;
   }
   document.body.classList.add("admin-open");
@@ -1160,7 +1144,7 @@ function fmtTok(n){
   return String(n);
 }
 function nodeStatusChip(st){
-  if(st==="ready") return '<span class="chip-mini st-ready">Sẵn sàng</span>';
+  if(st==="ready") return '<span class="chip-mini st-ready">Phiên hợp lệ</span>';
   if(st==="running") return '<span class="chip-mini st-running">Đang chạy</span>';
   if(st==="checking") return '<span class="chip-mini st-running">Đang kiểm tra…</span>';
   return '<span class="chip-mini st-bad">Không khả dụng</span>';
@@ -1191,63 +1175,77 @@ function renderPool(){
   $("#statReadySub").textContent = running + " đang chạy · " + bad + " không khả dụng";
   $("#statTokens").textContent = fmtTok(toks);
   $("#statReqs").textContent = reqs;
-  $("#poolMiniCount").textContent = POOL.length + " node · " + ready + " sẵn sàng";
+  $("#poolMiniCount").textContent = POOL.length + " node · " + ready + " phiên hợp lệ";
 }
-$("#poolList").addEventListener("click", function(e){
+$("#poolList").addEventListener("click", async function(e){
   var b = e.target.closest("[data-nact]"); if(!b) return;
   var idx = parseInt(b.getAttribute("data-ni"), 10);
-  var n = POOL[idx]; if(!n) return;
-  if(b.getAttribute("data-nact")==="sync"){
-    n.status = "ready"; n.lat = 340 + ((idx * 47) % 160);
-    n.detail = "Đã đồng bộ muse.ai (" + n.lat + "ms · vừa xong)";
-    if(n.freePct===0){ n.freePct = 18; n.freeVal = "Đã dùng 18% giới hạn tuần"; }
-    renderPool(); toast("Đã đồng bộ " + n.label + " với muse.ai");
+  var n = POOL[idx]; if(!n || !n.id) return;
+  var action = b.getAttribute("data-nact");
+  if(action === "del" && b.getAttribute("data-armed") !== "1"){
+    b.setAttribute("data-armed", "1"); b.classList.add("danger-armed"); b.textContent = "Xoa that?";
+    setTimeout(function(){ b.removeAttribute("data-armed"); b.classList.remove("danger-armed"); b.textContent = "Xoa"; }, 2600);
+    return;
   }
-  if(b.getAttribute("data-nact")==="del"){
-    if(b.getAttribute("data-armed")==="1"){
-      POOL.splice(idx, 1); renderPool(); toast("Đã xoá " + n.label + " khỏi Pool");
-    } else {
-      b.setAttribute("data-armed","1"); b.classList.add("danger-armed"); b.textContent = "Xoá thật?";
-      setTimeout(function(){ b.removeAttribute("data-armed"); b.classList.remove("danger-armed"); b.textContent = "Xoá"; }, 2600);
-    }
-  }
+  b.disabled = true;
+  try {
+    var path = action === "sync" ? "/api/accounts/wake" : "/api/accounts/delete";
+    var result = await authedFetch(path, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(action === "sync" ? { node_id: n.id } : { node_id: n.id })
+    });
+    var data = await result.json().catch(function(){ return {}; });
+    if(!result.ok) throw new Error(data.error || "Account operation failed (HTTP " + result.status + ")");
+    await fetchPoolReal();
+    toast(action === "sync" ? (data.detail || "Muse session checked") : ("Removed " + n.label));
+  } catch(err) { toast(err.message || "Account operation failed"); }
+  finally { b.disabled = false; }
 });
-$("#btnSyncAll").addEventListener("click", function(){
-  POOL.forEach(function(n, i){
-    n.status = "ready"; n.lat = 330 + ((i * 53) % 170);
-    n.detail = "Đã đồng bộ muse.ai (" + n.lat + "ms · vừa xong)";
-    if(n.freePct===0){ n.freePct = 18; n.freeVal = "Đã dùng 18% giới hạn tuần"; }
-  });
-  renderPool(); toast("Đã đồng bộ tất cả tài khoản Pool với muse.ai");
+$("#btnSyncAll").addEventListener("click", async function(){
+  var btn = this; btn.disabled = true;
+  try {
+    var res = await authedFetch("/api/accounts/wake", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ node_id: "all" })
+    });
+    var data = await res.json().catch(function(){ return {}; });
+    if(!res.ok) throw new Error(data.error || "Pool sync failed (HTTP " + res.status + ")");
+    await fetchPoolReal();
+    toast("Checked " + (data.probed || 0) + " Muse account(s)");
+  } catch(err) { toast(err.message || "Pool sync failed"); }
+  finally { btn.disabled = false; }
 });
-$("#addNodeForm").addEventListener("submit", function(e){
+$("#accAuth").addEventListener("change", function(){
+  var field = $("#accUpstreamField");
+  if(field) field.style.display = this.value === "api_key" ? "block" : "none";
+});
+$("#addNodeForm").addEventListener("submit", async function(e){
   e.preventDefault();
   var cred = $("#accCred").value.trim();
-  if(!cred){ toast("Hãy dán Cookie / Link Callback hoặc API Key trước"); $("#accCred").focus(); return; }
-  var auth = $("#accAuth").value === "api_key" ? "API Key" : "Cookie";
-  var baseLabel = $("#accLabel").value.trim();
+  if(!cred){ toast("Paste an account credential first"); $("#accCred").focus(); return; }
+  var authType = $("#accAuth").value === "api_key" ? "api_key" : "cookie";
+  var label = $("#accLabel").value.trim();
   var proxy = $("#accProxy").value.trim();
-  var lines = cred.split(/\n+/).filter(function(x){ return x.trim(); });
-  var count = Math.max(1, lines.length);
-  for(var i=0;i<count;i++){
-    POOL.push({ label: baseLabel || ("Muse #" + (POOL.length + 1)), plan:"Muse.ai", auth:auth, status:"checking",
-      freePct:0, freeVal:"Đang kiểm tra xác thực…", topPct:0, tokens:0, req:0, fail:0, lat:0,
-      dev:"Đang tạo hồ sơ thiết bị…", proxy: proxy ? ("Riêng · " + proxy) : "Để trống · chống trùng IP",
-      detail:"Đang kiểm tra xác thực với muse.ai…" });
-  }
-  renderPool();
-  $("#accCred").value = ""; $("#accLabel").value = "";
-  toast("Đang xác thực " + count + " tài khoản với muse.ai…");
-  setTimeout(function(){
-    POOL.forEach(function(n){
-      if(n.status==="checking"){
-        n.status = "ready"; n.lat = 356; n.freePct = 6; n.freeVal = "Đã dùng 6% giới hạn tuần";
-        n.tokens = 250000; n.topPct = 2; n.dev = "DEV-MỚI · Chrome 131 · Win11 · 1920×1080";
-        n.detail = "Đã đồng bộ muse.ai (356ms)";
-      }
-    });
-    renderPool(); toast("Đã thêm tài khoản vào Pool — trạng thái Sẵn sàng");
-  }, 1300);
+  var upstream = authType === "api_key" ? $("#accUpstream").value.trim() : "https://muse.ai";
+  if(authType === "api_key" && !upstream){ toast("Enter the official API endpoint for this key"); $("#accUpstream").focus(); return; }
+  var lines = cred.split(/\r?\n+/).map(function(x){ return x.trim(); }).filter(Boolean);
+  var submit = $("#addNodeForm").querySelector('[type="submit"]');
+  if(submit) submit.disabled = true;
+  try {
+    var path = lines.length > 1 ? "/api/accounts/batch" : "/api/accounts/add";
+    var body = lines.length > 1
+      ? { lines: lines, plan_tier: "Muse.ai", auth_type: authType, upstream_url: upstream, proxy_url: proxy, tokens_per_account: 0 }
+      : { label: label, plan_tier: "Muse.ai", auth_type: authType, upstream_url: upstream, proxy_url: proxy, credential: cred, tokens_remaining: 0 };
+    var res = await authedFetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    var data = await res.json().catch(function(){ return {}; });
+    if(!res.ok) throw new Error(data.error || "Account was not saved (HTTP " + res.status + ")");
+    $("#accCred").value = ""; $("#accLabel").value = "";
+    if($("#accUpstream")) $("#accUpstream").value = "";
+    await fetchPoolReal();
+    if(lines.length > 1) toast("Saved " + (data.added || 0) + "; verified " + (data.verified_ready || 0));
+    else toast(data.status_detail || (data.status === "ready" ? "Account verified" : "Account saved; verification failed"));
+  } catch(err) { toast(err.message || "Could not add account"); }
+  finally { if(submit) submit.disabled = false; }
 });
 
 /* Điều phối xoay tài khoản */
@@ -1262,12 +1260,25 @@ $$("#stratGrid .strat-card").forEach(function(c){
 $("#swFailover").addEventListener("click", function(){
   this.classList.toggle("on"); pendingFailover = this.classList.contains("on");
 });
-$("#btnSaveRouter").addEventListener("click", function(){
-  strategy = pendingStrategy; failover = pendingFailover;
-  $("#poolMiniStrat").textContent = STRAT_NAMES[strategy];
-  $("#poolMiniFail").textContent = failover ? "Đang bật" : "Đang tắt";
-  $("#routerCurrent").textContent = STRAT_NAMES[strategy] + " · Auto-Failover " + (failover ? "bật" : "tắt");
-  toast("Đã lưu cài đặt điều phối — áp dụng cho Chat, Batch Tasks và API");
+$("#btnSaveRouter").addEventListener("click", async function(){
+  var btn = this; btn.disabled = true;
+  try {
+    var res = await authedFetch("/api/router/config", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ routing_strategy: pendingStrategy, auto_failover: pendingFailover })
+    });
+    var data = await res.json().catch(function(){ return {}; });
+    if(!res.ok) throw new Error(data.error || "Router settings were not saved");
+    strategy = data.routing_strategy || pendingStrategy;
+    pendingStrategy = strategy;
+    failover = typeof data.auto_failover === "boolean" ? data.auto_failover : pendingFailover;
+    pendingFailover = failover;
+    $("#poolMiniStrat").textContent = STRAT_NAMES[strategy] || strategy;
+    $("#poolMiniFail").textContent = failover ? "Enabled" : "Disabled";
+    $("#routerCurrent").textContent = (STRAT_NAMES[strategy] || strategy) + " - Auto-Failover " + (failover ? "enabled" : "disabled");
+    toast("Router settings saved on server");
+  } catch(err) { toast(err.message || "Router settings could not be saved"); }
+  finally { btn.disabled = false; }
 });
 
 /* Tài khoản con & người dùng thật kết nối trực tiếp MySQL / TiDB (mart_users) */
@@ -1451,31 +1462,22 @@ $("#createUserForm").addEventListener("submit", async function(e){
 });
 
 /* Xem theo quyền: Admin <-> Tài khoản con */
-function setRoleView(v, customUser){
-  var isUser = v==="user";
+function setRoleView(v, actualUser){
+  var user = actualUser || {};
+  var isUser = v === "user" || user.role === "user";
+  var displayName = user.display_name || user.username || "Tài khoản";
+  var username = user.username || "";
   document.body.classList.toggle("user-view", isUser);
-  $("#roleBanner").hidden = !isUser;
-  if(isUser){
-    closeAdmin();
-    var uname = (customUser && customUser.username) || "minhanh";
-    var dname = (customUser && customUser.display_name) || "Minh Anh";
-    $("#personaAvatar").textContent = dname.charAt(0).toUpperCase();
-    $("#personaName").textContent = dname;
-    $("#personaStatus").textContent = "Không gian riêng · @" + uname;
-    $("#personaRole").textContent = "Tài khoản con";
-    $("#setPersonaLine").textContent = dname + " · Tài khoản con (@" + uname + ")";
-    toast("Đang xem như tài khoản con — Pool và Quản trị đã ẩn");
-  } else {
-    $("#personaAvatar").textContent = "S";
-    $("#personaName").textContent = "Sean";
-    $("#personaStatus").textContent = "Đang hoạt động";
-    $("#personaRole").textContent = "Admin";
-    $("#setPersonaLine").textContent = "Sean · Quản trị viên (Admin)";
-    toast("Đã quay lại quyền Quản trị viên");
-  }
+  closeAdmin();
+  $("#personaAvatar").textContent = displayName.charAt(0).toUpperCase() || "?";
+  $("#personaName").textContent = displayName;
+  $("#personaStatus").textContent = isUser ? ("Không gian riêng · @" + username) : "Đang hoạt động";
+  $("#personaRole").textContent = isUser ? "Tài khoản" : "Admin";
+  $("#setPersonaLine").textContent = isUser ? (displayName + " · Tài khoản (@" + username + ")") : (displayName + " · Quản trị viên");
+  var brandSub = $(".brand-sub");
+  if(brandSub) brandSub.textContent = "Trợ lý AI cá nhân";
 }
-$("#btnViewAsUser").addEventListener("click", function(){ setRoleView("user"); window.scrollTo(0,0); });
-$("#backToAdmin").addEventListener("click", function(){ restoreAdminLogin(false); });
+
 
 /* Khởi động toàn diện hệ thống Web */
 async function initApp(){
@@ -1484,15 +1486,15 @@ async function initApp(){
     var meRes = await authedFetch("/api/users/me");
     if(meRes.ok){
       var meData = await meRes.json();
-      if(meData && meData.user && meData.user.role === "user"){
-        setRoleView("user", meData.user);
+      if(meData && meData.user){
+        setRoleView(meData.user.role, meData.user);
       }
     }
   } catch(e){}
   fetchThreads();
   fetchPoolReal();
   fetchUsersReal();
-  selectModel("claude-auto", true);
+  selectModel("muse", true);
   scanModels();
   renderHistory("");
   renderActivity();
