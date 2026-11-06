@@ -456,10 +456,29 @@ function finalizeAiBubble(rowEl, fullText, tokensUsed){
   }
 }
 
+function isJwtExpired(token){
+  if(!token || typeof token !== "string") return true;
+  var parts = token.split(".");
+  if(parts.length !== 3) return true;
+  try {
+    var b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    while(b64.length % 4) b64 += "=";
+    var jsonStr = decodeURIComponent(escape(atob(b64)));
+    var payload = JSON.parse(jsonStr);
+    if(!payload.exp) return false;
+    var nowSec = Math.floor(Date.now() / 1000);
+    return nowSec >= (payload.exp - 30);
+  } catch(e){
+    return true;
+  }
+}
+
 function addAiError(msg, retryPrompt){
   var row = createAiMsgContainer();
   var bubble = row.querySelector(".bubble");
-  var displayMsg = msg || "Không thể gửi tin nhắn tới Mart AI";
+  var displayMsg = (msg === "ERR_AUTH_REQUIRED" || msg === "ERR_UNAUTHORIZED" || msg === "ERR_ADMIN_AUTH_REQUIRED")
+    ? "Phiên kết nối đã được tự động làm mới. Vui lòng bấm Thử lại để tiếp tục."
+    : (msg || "Không thể gửi tin nhắn tới Mart AI");
   var html = '<div class="ai-error-box" style="border:1px solid var(--line-strong);background:var(--surface-2);padding:13px 16px;border-radius:12px;display:flex;flex-direction:column;gap:8px;">' +
     '<div style="display:flex;align-items:center;gap:8px;font-weight:700;color:var(--ink);">' +
       '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--ink-2);"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>' +
@@ -476,7 +495,10 @@ function addAiError(msg, retryPrompt){
     if(btn){
       btn.addEventListener("click", function(){
         row.remove();
-        handleSend(retryPrompt);
+        localStorage.removeItem("mart_jwt_token");
+        ensureValidToken(true).then(function(){
+          handleSend(retryPrompt);
+        });
       });
     }
   }
@@ -489,10 +511,11 @@ var queuedPrompts = [];
 var CHAT_REQUEST_TIMEOUT_MS = 100000;
 
 /* Đảm bảo token JWT RS256 luôn hợp lệ trước mọi thao tác */
-async function ensureValidToken(signal){
+async function ensureValidToken(forceRefresh, signal){
   var tok = localStorage.getItem("mart_jwt_token") || "";
-  if(!tok){
+  if(forceRefresh || !tok || isJwtExpired(tok)){
     try {
+      localStorage.removeItem("mart_jwt_token");
       var r = await fetch("/api/auth/session", { cache: "no-store", signal: signal });
       if(r.ok){
         var d = await r.json();
@@ -507,7 +530,7 @@ async function ensureValidToken(signal){
 }
 
 /* Hàm fetch bọc xác thực tự động kèm Bearer token và X-Mart-Client */
-async function authedFetch(url, opts){
+async function authedFetch(url, opts, isRetry){
   opts = opts || {};
   opts.headers = opts.headers || {};
   var tok = await ensureValidToken();
@@ -517,7 +540,15 @@ async function authedFetch(url, opts){
   if(!opts.headers["X-Mart-Client"]){
     opts.headers["X-Mart-Client"] = "web";
   }
-  return fetch(url, opts);
+  var res = await fetch(url, opts);
+  if(res.status === 401 && !isRetry){
+    var newTok = await ensureValidToken(true);
+    if(newTok){
+      opts.headers["Authorization"] = "Bearer " + newTok;
+      return authedFetch(url, opts, true);
+    }
+  }
+  return res;
 }
 
 /* Gửi tin nhắn thực tế qua SSE Streaming tới /api/chat/send của Mart AI backend */
@@ -575,7 +606,7 @@ async function handleSend(text){
       stream: false
     };
 
-    updateTypingProgress(0, "\u0110ang g\u1eedi y\u00eau c\u1ea7u t\u1edbi Mart AI server; ch\u01b0a c\u00f3 x\u00e1c nh\u1eadn t\u1eeb server.");
+    updateTypingProgress(0, "Đang gửi yêu cầu tới Mart AI server; chưa có xác nhận từ server.");
     var resp = await fetch("/api/chat/send", {
       method: "POST",
       headers: headers,
@@ -583,6 +614,22 @@ async function handleSend(text){
       cache: "no-store",
       signal: controller.signal
     });
+
+    // Tự động phục hồi nếu phiên bị hết hạn (HTTP 401 ERR_AUTH_REQUIRED)
+    if(resp.status === 401){
+      updateTypingProgress(0, "Phiên kết nối đã hết hạn, đang tự động cấp lại phiên mới...");
+      var refreshedTok = await ensureValidToken(true, controller.signal);
+      if(refreshedTok){
+        headers["Authorization"] = "Bearer " + refreshedTok;
+        resp = await fetch("/api/chat/send", {
+          method: "POST",
+          headers: headers,
+          body: JSON.stringify(reqBody),
+          cache: "no-store",
+          signal: controller.signal
+        });
+      }
+    }
 
     updateTypingProgress(1, "Mart AI server \u0111\u00e3 ph\u1ea3n h\u1ed3i HTTP " + resp.status + ".");
     if(!resp.ok){

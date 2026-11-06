@@ -419,7 +419,19 @@ func (a *ServerApp) AuthAndRoleMiddleware(next http.Handler) http.Handler {
 		}
 
 		if isWebClient {
-			WriteJSONError(w, http.StatusUnauthorized, "ERR_AUTH_REQUIRED")
+			if adminPassword() != "" {
+				WriteJSONError(w, http.StatusUnauthorized, "ERR_AUTH_REQUIRED")
+				return
+			}
+			localAdmin := RequestActor{
+				UserID:        "admin",
+				Username:      "admin",
+				DisplayName:   "Quản trị viên",
+				Role:          "admin",
+				Authenticated: true,
+			}
+			ctx := context.WithValue(r.Context(), actorCtxKey, localAdmin)
+			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
 
