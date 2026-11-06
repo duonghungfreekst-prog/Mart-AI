@@ -1885,7 +1885,7 @@
     var timeoutMs =
       act === "ping" || act === "ping_with_cookie" || act === "open_native_muse"
         ? 3000
-        : 95000;
+        : 195000;
 
     return new Promise(function (resolve) {
       var reqId = "mext_" + Date.now() + "_" + ++extReqCounter;

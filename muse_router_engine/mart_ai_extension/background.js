@@ -57,7 +57,7 @@ async function broadcastSessionReadyToOpenTabs(injectIfMissing) {
                 event: "MART_EXT_SESSION_READY",
                 cookie: cookies.sess ? cookies.header : "",
                 hasExistingSession: !!cookies.sess,
-                version: "1.2.7",
+                version: "1.2.8",
               },
               function () {
                 void chrome.runtime.lastError;
@@ -73,7 +73,7 @@ async function broadcastSessionReadyToOpenTabs(injectIfMissing) {
             event: "MART_EXT_SESSION_READY",
             cookie: cookies.sess ? cookies.header : "",
             hasExistingSession: !!cookies.sess,
-            version: "1.2.7",
+            version: "1.2.8",
           },
           function () {
             void chrome.runtime.lastError;
@@ -310,15 +310,40 @@ function waitForTabComplete(tabId, timeoutMs) {
   });
 }
 
+var martCachedWorkerTabId = null;
+
+chrome.tabs.onRemoved.addListener(function (tabId) {
+  if (tabId === martCachedWorkerTabId) {
+    martCachedWorkerTabId = null;
+  }
+});
+
 async function ensureMuseWorkerTab(switchedAccount) {
+  // 1. Tái sử dụng tab worker đã mở trong cùng một phiên làm việc (tránh tạo tab mới hoặc tải lại thread cũ giữa các câu hỏi)
+  if (martCachedWorkerTabId !== null) {
+    try {
+      var cachedTab = await chrome.tabs.get(martCachedWorkerTabId);
+      if (cachedTab && cachedTab.id && cachedTab.url && cachedTab.url.startsWith("https://muse.ai/")) {
+        if (switchedAccount) {
+          await chrome.tabs.update(cachedTab.id, { url: "https://muse.ai/#mart_worker" });
+          await waitForTabComplete(cachedTab.id, 18000);
+        }
+        return cachedTab.id;
+      }
+    } catch (_) {
+      martCachedWorkerTabId = null;
+    }
+  }
+
+  // 2. Tìm tab hiện có mang hash #mart_worker
   var tabs = await chrome.tabs.query({ url: "https://muse.ai/*" });
-  // TUYỆT ĐỐI CHỈ DÙNG TAB CỦA WORKER CÓ HASH #mart_worker, KHÔNG BAO GIỜ CHẠM VÀO TAB CÁ NHÂN CỦA NGƯỜI DÙNG!
   var candidates = (tabs || []).filter(function (tab) {
     return tab && tab.id && (tab.url || "").includes("#mart_worker");
   });
   var candidateTab = candidates[0] || null;
 
   if (candidateTab) {
+    martCachedWorkerTabId = candidateTab.id;
     var tabUrl = candidateTab.url || "";
     var isReady = tabUrl.startsWith("https://muse.ai/") && candidateTab.status === "complete";
     if (switchedAccount || !isReady) {
@@ -328,11 +353,13 @@ async function ensureMuseWorkerTab(switchedAccount) {
     return candidateTab.id;
   }
 
+  // 3. Nếu chưa có tab worker nào, tạo mới và lưu ID
   var created = await chrome.tabs.create({
     url: "https://muse.ai/#mart_worker",
     active: false,
     pinned: true,
   });
+  martCachedWorkerTabId = created.id;
   await waitForTabComplete(created.id, 20000);
   return created.id;
 }
@@ -532,47 +559,61 @@ function domReadMuseSnapshot() {
   var compVal = composer ? ((composer.value !== undefined ? composer.value : composer.textContent) || "").trim() : "";
   var isGen = !!document.querySelector('.animate-spin, button[aria-label*="Stop" i], button[aria-label*="Dừng" i], button.stop-button, [data-is-generating="true"], .typing-indicator, .pulse, button:has(span[class*="rounded-sm"]), .rounded-sm.bg-fill-primary');
 
-  // 1. Tìm các phần tử chứa câu trả lời của trợ lý (Assistant)
+  // Hàm loại trừ triệt để toàn bộ phần tử thuộc Sidebar, Drawer, Menu, Navigation, Lịch sử cũ
+  function isIgnoredContainer(el) {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE) return true;
+    if (el.closest('nav, aside, header, footer, [role="navigation"], [aria-label*="sidebar" i], [class*="sidebar" i], [data-testid*="sidebar" i], [class*="history" i], [id*="sidebar" i], [aria-label*="Lịch sử" i], [aria-label*="threads" i]')) {
+      return true;
+    }
+    if (el.closest('form, textarea, input, [contenteditable="true"]')) {
+      return true;
+    }
+    return false;
+  }
+
+  // 1. Tìm các phần tử chứa câu trả lời của trợ lý (Assistant) - CHỈ trong khung chat chính
   var assistantSelectors = [
     '[data-hatch-assistant-message-body="true"]',
     '[data-pel-click="assistant_message_content"]',
-    '.prose',
     'div[data-message-author-role="assistant"]',
     'div[class*="message-assistant"]',
     '.chat-bubble-assistant',
     'div[data-testid*="assistant-message"]',
-    'div[data-role="assistant"]'
+    'div[data-role="assistant"]',
+    '.prose'
   ];
   var rawEls = Array.from(document.querySelectorAll(assistantSelectors.join(", "))).filter(function (el) {
-    if (el.closest('form, textarea, [contenteditable="true"]')) return false;
+    if (isIgnoredContainer(el)) return false;
     if (el.closest('.bg-chat-user-bubble, div.items-end, [data-message-author-role="user"]')) return false;
     return true;
   });
-  var leafEls = rawEls.filter(function (el) {
-    return !rawEls.some(function (parent) { return parent !== el && parent.contains(el); });
+  var topContainers = rawEls.filter(function (el) {
+    return el.matches('div[data-message-author-role="assistant"], div[class*="message-assistant"], .chat-bubble-assistant, div[data-testid*="assistant-message"], div[data-role="assistant"]');
   });
+  var targetEls = topContainers.length > 0 ? topContainers : rawEls;
 
   // 2. Tìm phần tử tin nhắn của User của lượt prompt hiện tại
-  var expectedNorm = String(window.__martActivePrompt || window.__martExpectedPrompt || "").replace(/\s+/g, " ").trim().toLowerCase();
-  var expectedSnippet = expectedNorm.length > 20 ? expectedNorm.slice(0, 20) : expectedNorm;
+  var expectedPrompt = String(window.__martActivePrompt || window.__martExpectedPrompt || "").trim();
+  var expectedNorm = expectedPrompt.replace(/\s+/g, " ").toLowerCase();
+  var expectedSnippet = expectedNorm.length > 25 ? expectedNorm.slice(0, 25) : expectedNorm;
   var userTurnEl = null;
   if (expectedSnippet) {
-    var userCandidates = Array.from(document.querySelectorAll('.bg-chat-user-bubble, div.items-end .hatch-chat-groupable-bubble, [data-message-author-role="user"], div[class*="user"], .hatch-chat-groupable-bubble, div'));
-    for (var u = userCandidates.length - 1; u >= 0; u--) {
-      var uc = userCandidates[u];
-      if (uc.closest('form, textarea, [contenteditable="true"]')) continue;
-      var ut = (uc.innerText || uc.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
-      if (ut && ut.indexOf(expectedSnippet) >= 0) {
-        userTurnEl = uc;
-        break;
-      }
+    var userCandidates = Array.from(document.querySelectorAll(
+      '[data-message-author-role="user"], .bg-chat-user-bubble, [data-pel-click="user_message_content"], div[class*="chat-bubble-user"], div[class*="message-user"], div.items-end .hatch-chat-groupable-bubble, div.items-end, div[class*="user"], .hatch-chat-groupable-bubble, p, span'
+    )).filter(function (el) {
+      if (isIgnoredContainer(el)) return false;
+      if (el.closest('[data-message-author-role="assistant"], div[class*="message-assistant"], .chat-bubble-assistant, div[data-testid*="assistant-message"], div[data-role="assistant"], [data-hatch-assistant-message-body="true"], .prose')) return false;
+      var ut = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+      return ut && ut.indexOf(expectedSnippet) >= 0;
+    });
+    if (userCandidates.length > 0) {
+      userTurnEl = userCandidates[userCandidates.length - 1];
     }
   }
 
-  // 3. Trích xuất danh sách markdown assistant & khối nằm sau User
+  // 3. Trích xuất danh sách markdown assistant & khối nằm SAU User message
   var mdList = [];
   var postUserMdList = [];
-  var targetEls = leafEls.length > 0 ? leafEls : rawEls;
   for (var i = 0; i < targetEls.length; i++) {
     var m = nodeToMd(targetEls[i], 0).replace(/\n{3,}/g, "\n\n").trim();
     if (!m) {
@@ -827,7 +868,7 @@ async function executeMuseChatDirect(prompt, cookieHeader, forceReload) {
     }
   }
 
-  var deadline = Date.now() + 75000;
+  var deadline = Date.now() + 180000;
   var lastNewMd = "";
   var stableTicks = 0;
   var cleanPrompt = (prompt || "").trim();
@@ -839,22 +880,29 @@ async function executeMuseChatDirect(prompt, cookieHeader, forceReload) {
     var cur = await evalInTab(tabId, domReadMuseSnapshot, []);
     if (!cur) continue;
 
-    var replyMd = "";
-    // 1. Ưu tiên hàng đầu: Khối assistant nằm SAU User message vừa hỏi
-    if (cur.unseenLastMd && cur.unseenLastMd !== cleanPrompt) {
-      replyMd = (cur.unseenLastMd || "").trim();
-    } else if (baseline && cur.count > baseline.count && cur.lastMd && cur.lastMd !== cleanPrompt) {
-      // 2. Số lượng khối assistant tăng
-      replyMd = (cur.lastMd || "").trim();
-    } else if (baseline && baseline.lastMd && cur.lastMd && cur.lastMd !== baseline.lastMd && cur.lastMd !== cleanPrompt) {
-      // 3. Khối assistant cuối cùng đã thay đổi nội dung (streaming / cập nhật)
-      replyMd = (cur.lastMd || "").trim();
-    } else if ((!baseline || !baseline.lastMd) && cur.lastMd && cur.lastMd !== cleanPrompt) {
-      // 4. Ban đầu chưa có tin nào, nay xuất hiện
-      replyMd = (cur.lastMd || "").trim();
+    // Tự động gia hạn deadline nếu Muse đang tiếp tục sinh nội dung (tạo video / render dự án / streaming)
+    if (cur.isGenerating) {
+      if (deadline - Date.now() < 35000) {
+        deadline = Date.now() + 45000;
+      }
     }
-    if (!replyMd) {
-      if (cur.composerValue && refillAttempts < 4) {
+
+    var replyMd = "";
+    // NGUYÊN TẮC BẤT DI BẤT DỊCH:
+    // 1. BẮT BUỘC phải thấy tin nhắn của User xuất hiện trong khung chat chính (cur.userTurnSent)
+    // 2. CHỈ trích xuất khối Assistant nằm SAU tin nhắn của User (cur.unseenLastMd)
+    // 3. TUYỆT ĐỐI KHÔNG fallback bừa bãi lấy cur.lastMd của thread/lịch sử cũ!
+    if (cur.userTurnSent && cur.unseenLastMd && cur.unseenLastMd !== cleanPrompt) {
+      replyMd = (cur.unseenLastMd || "").trim();
+    } else if (!cur.userTurnSent && baseline && cur.count > baseline.count && cur.lastMd && cur.lastMd !== baseline.lastMd && cur.lastMd !== cleanPrompt) {
+      // Dự phòng an toàn: BẮT BUỘC số lượng khối Assistant phải tăng lên so với baseline (count > baseline.count)
+      // VÀ nội dung tin nhắn cuối cùng phải KHÁC HOÀN TOÀN so với tin nhắn cuối trước khi gửi (lastMd !== baseline.lastMd)
+      replyMd = (cur.lastMd || "").trim();
+    } else {
+      noUserTurnTicks++;
+      // Nếu sau ~1.8 giây (7 nhịp) chưa thấy User Turn xuất hiện hoặc composer còn dính text:
+      if (noUserTurnTicks >= 7 && refillAttempts < 4) {
+        noUserTurnTicks = 0;
         refillAttempts++;
         await evalInTab(tabId, domSubmitMusePrompt, [prompt]);
       }
@@ -892,8 +940,8 @@ function enqueueMuseChat(prompt, cookieHeader, forceReload) {
   function executeWithDeadline() {
     return withTimeout(
       executeMuseChatDirect(prompt, cookieHeader, forceReload),
-      88000,
-      "Hết thời gian chờ tab Muse; hãy mở lại tab Muse rồi gửi lại."
+      195000,
+      "Hết thời gian chờ Muse hoàn tất tác vụ (tác vụ tạo video/web có thể cần nhiều thời gian hơn); hãy thử lại."
     );
   }
   var next = chatLockPromise.then(
@@ -912,7 +960,7 @@ function handleBridgeAction(msg, sendResponse) {
   var action = (msg && msg.action) || "";
   if (action === "ping") {
     martCollectMuseCookies().then(function (c) {
-      sendResponse({ ok: true, version: "1.2.7", hasExistingSession: !!c.sess, supportsChatRelay: true });
+      sendResponse({ ok: true, version: "1.2.8", hasExistingSession: !!c.sess, supportsChatRelay: true });
     });
     return true;
   }
@@ -920,7 +968,7 @@ function handleBridgeAction(msg, sendResponse) {
     martCollectMuseCookies().then(function (c) {
       sendResponse({
         ok: true,
-        version: "1.2.7",
+        version: "1.2.8",
         hasExistingSession: !!c.sess,
         supportsChatRelay: true,
         cookie: c.sess ? c.header : "",

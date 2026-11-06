@@ -117,13 +117,13 @@ func (p *MuseRouterPool) prepareBrowserRelayResponse(
 		cookieHeader = "hatch_sess=" + cookieHeader
 	}
 
-	// Phòng hờ trình duyệt người dùng đóng tab giữa chừng: tự giải phóng slot và dọn turn pending sau 95 giây.
+	// Phòng hờ trình duyệt người dùng đóng tab giữa chừng: tự giải phóng slot và dọn turn pending sau 195 giây (hỗ trợ tác vụ tạo video/web lâu).
 	go func(nodeID, tID, trnID string) {
-		time.Sleep(95 * time.Second)
+		time.Sleep(195 * time.Second)
 		p.mu.Lock()
 		for _, n := range p.nodes {
 			if n.ID == nodeID && n.ActiveRequests > 0 {
-				if time.Now().UnixMilli()-n.LastUsedUnixMs >= 90000 {
+				if time.Now().UnixMilli()-n.LastUsedUnixMs >= 180000 {
 					n.ActiveRequests = 0
 					if n.Status == "running" {
 						n.Status = "ready"

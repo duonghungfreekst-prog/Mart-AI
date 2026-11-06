@@ -237,48 +237,63 @@ const cdpMuseSnapshotJS = `
 
   var composer = findComposer();
   var compVal = composer ? ((composer.value !== undefined ? composer.value : composer.textContent) || "").trim() : "";
-  var isGen = !!document.querySelector('.animate-spin, button[aria-label*="Stop" i], button[aria-label*="Dừng" i], button.stop-button, [data-is-generating="true"], .typing-indicator');
-  // 1. Tìm các phần tử chứa câu trả lời của trợ lý (Assistant), loại trừ container bọc danh sách
+  var isGen = !!document.querySelector('.animate-spin, button[aria-label*="Stop" i], button[aria-label*="Dừng" i], button.stop-button, [data-is-generating="true"], .typing-indicator, .pulse, .animate-pulse, [aria-busy="true"], [data-status="generating"], [data-status="processing"], [class*="generating" i], [class*="progress" i], div[role="progressbar"]');
+
+  // Hàm loại trừ triệt để toàn bộ phần tử thuộc Sidebar, Drawer, Menu, Navigation, Lịch sử cũ
+  function isIgnoredContainer(el) {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE) return true;
+    if (el.closest('nav, aside, header, footer, [role="navigation"], [aria-label*="sidebar" i], [class*="sidebar" i], [data-testid*="sidebar" i], [class*="history" i], [id*="sidebar" i], [aria-label*="Lịch sử" i], [aria-label*="threads" i]')) {
+      return true;
+    }
+    if (el.closest('form, textarea, input, [contenteditable="true"]')) {
+      return true;
+    }
+    return false;
+  }
+
+  // 1. Tìm các phần tử chứa câu trả lời của trợ lý (Assistant) - CHỈ trong khung chat chính
   var assistantSelectors = [
-    '[data-hatch-assistant-message-body="true"]',
-    '[data-pel-click="assistant_message_content"]',
-    '.prose',
     'div[data-message-author-role="assistant"]',
     'div[class*="message-assistant"]',
     '.chat-bubble-assistant',
     'div[data-testid*="assistant-message"]',
-    'div[data-role="assistant"]'
+    'div[data-role="assistant"]',
+    '[data-hatch-assistant-message-body="true"]',
+    '[data-pel-click="assistant_message_content"]',
+    '.prose'
   ];
   var rawEls = Array.from(document.querySelectorAll(assistantSelectors.join(", "))).filter(function(el) {
-    if (el.closest('form, textarea, [contenteditable="true"]')) return false;
+    if (isIgnoredContainer(el)) return false;
     if (el.closest('.bg-chat-user-bubble, div.items-end, [data-message-author-role="user"]')) return false;
     return true;
   });
-  var leafEls = rawEls.filter(function(el) {
-    return !rawEls.some(function(child) { return child !== el && el.contains(child); });
+  // Giữ lại container cha cao nhất nếu có để không bị rơi mất thẻ video / player card
+  var topContainers = rawEls.filter(function(el) {
+    return el.matches('div[data-message-author-role="assistant"], div[class*="message-assistant"], .chat-bubble-assistant, div[data-testid*="assistant-message"], div[data-role="assistant"]');
   });
+  var targetEls = topContainers.length > 0 ? topContainers : rawEls;
 
   // 2. Tìm phần tử tin nhắn của User tương ứng với câu hỏi hiện tại
   var activePromptNorm = (window.__martActivePrompt || "").replace(/\s+/g, " ").trim().toLowerCase();
-  var activePromptSnippet = activePromptNorm.length > 20 ? activePromptNorm.slice(0, 20) : activePromptNorm;
+  var activePromptSnippet = activePromptNorm.length > 25 ? activePromptNorm.slice(0, 25) : activePromptNorm;
   var userTurnEl = null;
   if (activePromptSnippet) {
-    var userCandidates = Array.from(document.querySelectorAll('.bg-chat-user-bubble, div.items-end .hatch-chat-groupable-bubble, [data-message-author-role="user"], div[class*="user"], .hatch-chat-groupable-bubble, div'));
-    for (var u = userCandidates.length - 1; u >= 0; u--) {
-      var uc = userCandidates[u];
-      if (uc.closest('form, textarea, [contenteditable="true"]')) continue;
-      var ut = (uc.innerText || uc.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
-      if (ut && ut.indexOf(activePromptSnippet) >= 0) {
-        userTurnEl = uc;
-        break;
-      }
+    var userCandidates = Array.from(document.querySelectorAll(
+      '[data-message-author-role="user"], .bg-chat-user-bubble, [data-pel-click="user_message_content"], div[class*="chat-bubble-user"], div[class*="message-user"], div.items-end .hatch-chat-groupable-bubble, div.items-end, div[class*="user"], .hatch-chat-groupable-bubble, p, span'
+    )).filter(function(el) {
+      if (isIgnoredContainer(el)) return false;
+      if (el.closest('[data-message-author-role="assistant"], div[class*="message-assistant"], .chat-bubble-assistant, div[data-testid*="assistant-message"], div[data-role="assistant"], [data-hatch-assistant-message-body="true"], .prose')) return false;
+      var ut = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+      return ut && ut.indexOf(activePromptSnippet) >= 0;
+    });
+    if (userCandidates.length > 0) {
+      userTurnEl = userCandidates[userCandidates.length - 1];
     }
   }
 
-  // 3. Trích xuất markdown cho toàn bộ assistant elements & khối nằm sau User
+  // 3. Trích xuất markdown cho toàn bộ assistant elements & khối nằm SAU User message
   var mdList = [];
   var postUserMdList = [];
-  var targetEls = leafEls.length > 0 ? leafEls : rawEls;
   for (var i = 0; i < targetEls.length; i++) {
     var m = nodeToMd(targetEls[i], 0).replace(/\n{3,}/g, "\n\n").trim();
     if (!m) {
@@ -1403,7 +1418,7 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 	defer m.chatMu.Unlock()
 
 	startTs := time.Now()
-	ctx, cancel := context.WithTimeout(parentCtx, 90*time.Second)
+	ctx, cancel := context.WithTimeout(parentCtx, 190*time.Second)
 	defer cancel()
 
 	targetOrigin := strings.TrimRight(strings.TrimSpace(candidate.UpstreamURL), "/")
@@ -1617,7 +1632,7 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 	clickSendOrEnter()
 
 	cleanPrompt := strings.TrimSpace(userPrompt)
-	deadline := time.Now().Add(60 * time.Second)
+	deadline := time.Now().Add(90 * time.Second)
 	lastNewMd := ""
 	stableTicks := 0
 	resendAttempts := 0
@@ -1634,36 +1649,36 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 			continue
 		}
 
-		// Nếu văn bản vẫn còn nguyên trong ô nhập sau 1.2s (chưa gửi đi được), gửi lại
-		if cur.ComposerValue != "" && resendAttempts < 4 {
-			resendAttempts++
-			clickSendOrEnter()
-			continue
+		// Tự động gia hạn deadline nếu Muse đang tiếp tục sinh nội dung (tạo video / render dự án / streaming)
+		if cur.IsGenerating {
+			if time.Until(deadline) < 35*time.Second {
+				deadline = time.Now().Add(45 * time.Second)
+			}
 		}
 
 		replyMd := ""
-		// 1. Ưu tiên hàng đầu: Nội dung assistant nằm SAU tin nhắn User vừa gửi (PostUserMd)
-		if cur.UnseenLastMd != "" && cur.UnseenLastMd != cleanPrompt {
+		// NGUYÊN TẮC BẤT DI BẤT DỊCH:
+		// 1. BẮT BUỘC phải thấy tin nhắn của User xuất hiện trong khung chat chính (cur.UserTurnSent)
+		// 2. CHỈ trích xuất khối Assistant nằm SAU tin nhắn của User (cur.UnseenLastMd)
+		// 3. TUYỆT ĐỐI KHÔNG fallback bừa bãi lấy cur.LastMd của thread/lịch sử cũ!
+		if cur.UserTurnSent && cur.UnseenLastMd != "" && cur.UnseenLastMd != cleanPrompt {
 			replyMd = strings.TrimSpace(cur.UnseenLastMd)
-		} else if cur.Count > baselineCount && cur.LastMd != "" && cur.LastMd != cleanPrompt {
-			// 2. Số lượng khối assistant tăng lên so với ban đầu
+		} else if !cur.UserTurnSent && cur.Count > baselineCount && cur.LastMd != "" && cur.LastMd != baselineLastMd && cur.LastMd != cleanPrompt {
+			// Dự phòng an toàn: BẮT BUỘC số lượng khối Assistant phải tăng lên so với baseline (Count > baselineCount)
+			// VÀ nội dung tin nhắn cuối cùng phải KHÁC HOÀN TOÀN so với tin nhắn cuối trước khi gửi (LastMd != baselineLastMd)
 			replyMd = strings.TrimSpace(cur.LastMd)
-		} else if baselineLastMd != "" && cur.LastMd != "" && cur.LastMd != baselineLastMd && cur.LastMd != cleanPrompt {
-			// 3. Khối assistant cuối cùng đã thay đổi nội dung (streaming / cập nhật)
-			replyMd = strings.TrimSpace(cur.LastMd)
-		} else if baselineLastMd == "" && cur.LastMd != "" && cur.LastMd != cleanPrompt {
-			// 4. Ban đầu chưa có tin nào, nay xuất hiện tin mới
-			replyMd = strings.TrimSpace(cur.LastMd)
-		}
-
-		if replyMd == "" {
+		} else {
+			// Nếu văn bản vẫn còn nguyên trong ô nhập sau một số nhịp (chưa gửi đi được), gửi lại
+			if cur.ComposerValue != "" && resendAttempts < 5 {
+				resendAttempts++
+				clickSendOrEnter()
+			}
 			continue
 		}
 
-		// Tự động gia hạn deadline nếu Muse đang tiếp tục sinh nội dung (streaming)
 		if cur.IsGenerating || replyMd != lastNewMd {
-			if time.Until(deadline) < 25*time.Second {
-				deadline = time.Now().Add(35 * time.Second)
+			if time.Until(deadline) < 30*time.Second {
+				deadline = time.Now().Add(40 * time.Second)
 			}
 		}
 
