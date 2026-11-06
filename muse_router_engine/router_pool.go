@@ -2022,6 +2022,10 @@ func (p *MuseRouterPool) RouteAndExecuteChatForOwner(
 						return p.CompleteBrowserRelayTurn(resolvedThreadID, turnID, candidate.ID, model, replyCDP, tokCDP, latCDP, "")
 					}
 					LogWarn("CDP server-side chat error on %s: %v", candidate.Label, errCDP)
+					if forceClientRelay && !skipClientRelay && candidate.AuthType == "cookie" && candidate.HasHatchSess && strings.Contains(errCDP.Error(), "phản hồi rỗng") {
+						LogInfo("CDP could not read a new Muse.ai reply; falling back to the logged-in client browser relay for node %s", candidate.ID)
+						return p.prepareBrowserRelayResponse(candidate, resolvedThreadID, turnID, model, userPrompt)
+					}
 					p.unmarkNodeRunningKeepReady(candidate.ID)
 					lastErr = errCDP
 					if !p.autoFailover {
