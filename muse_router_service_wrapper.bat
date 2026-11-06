@@ -20,7 +20,7 @@ set DATABASE_URL=mysql://root@127.0.0.1:3306/muse_router
 
 :: --- Engine config ---
 set MUSE_ENGINE_PORT=8088
-set MUSE_ENGINE_HOST=127.0.0.1
+set MUSE_ENGINE_HOST=0.0.0.0
 
 :: Khoi dong XAMPP MySQL neu chua chay
 netstat -ano | findstr ":3306" | findstr "LISTENING" >nul 2>&1
