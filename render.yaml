@@ -14,9 +14,9 @@ services:
       - key: RENDER
         value: "true"
       - key: CHROME_BIN
-        value: "/usr/bin/chromium-browser"
+        value: "/usr/bin/chromium"
       - key: CHROMIUM_PATH
-        value: "/usr/bin/chromium-browser"
+        value: "/usr/bin/chromium"
       - key: GOMEMLIMIT
         value: "220MiB"
       - key: GOGC
@@ -25,5 +25,9 @@ services:
       # so database connection settings must survive restarts as environment vars.
       - key: DATABASE_URL
         sync: false
+      - key: MUSE_VAULT_MASTER_KEY
+        sync: false
       - key: MART_ADMIN_PASSWORD
+        sync: false
+      - key: MUSE_INTERNAL_BRIDGE_TOKEN
         sync: false

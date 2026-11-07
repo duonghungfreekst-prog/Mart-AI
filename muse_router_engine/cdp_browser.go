@@ -60,7 +60,7 @@ const cdpMuseSnapshotJS = `
     var tag = (n.tagName || "").toLowerCase();
     if (tag === "button" || tag === "svg" || tag === "style" || tag === "script") return "";
 
-    // 1. Khối mã lệnh: Giữ nguyên thụt dòng và nhận diện chính xác XML, HTML, JSON, Go, Python, v.v.
+    // 1. Khá»‘i mÃ£ lá»‡nh: Giá»¯ nguyÃªn thá»¥t dÃ²ng vÃ  nháº­n diá»‡n chÃ­nh xÃ¡c XML, HTML, JSON, Go, Python, v.v.
     if (tag === "pre") {
       var codeEl = n.querySelector("code");
       var lang = "";
@@ -86,7 +86,7 @@ const cdpMuseSnapshotJS = `
 
     if (tag === "code") return "\x60" + (n.textContent || "") + "\x60";
 
-    // 2. Video Player & Media: Thu thập đầy đủ link video, source và iframe embed
+    // 2. Video Player & Media: Thu tháº­p Ä‘áº§y Ä‘á»§ link video, source vÃ  iframe embed
     if (tag === "video") {
       var vSrc = n.getAttribute("src") || n.currentSrc || n.src || "";
       if (!vSrc) {
@@ -117,7 +117,7 @@ const cdpMuseSnapshotJS = `
       }
     }
 
-    // 3. Bảng dữ liệu (Table -> Markdown Table)
+    // 3. Báº£ng dá»¯ liá»‡u (Table -> Markdown Table)
     if (tag === "table") {
       var rows = Array.from(n.querySelectorAll("tr"));
       if (rows.length === 0) return "";
@@ -137,7 +137,7 @@ const cdpMuseSnapshotJS = `
       return "\n\n" + mdRows.join("\n") + "\n\n";
     }
 
-    // 4. Trích dẫn Blockquote
+    // 4. TrÃ­ch dáº«n Blockquote
     if (tag === "blockquote") {
       var bTxt = Array.from(n.childNodes).map(function(c){ return nodeToMd(c, listDepth); }).join("").trim();
       return "\n\n" + bTxt.split("\n").map(function(l){ return "> " + l; }).join("\n") + "\n\n";
@@ -179,9 +179,9 @@ const cdpMuseSnapshotJS = `
     }
     if (tag === "br") return "\n";
     if (tag === "hr") return "\n\n---\n\n";
-    if (tag === "img" && n.src) return "\n![" + (n.alt || "Hình ảnh") + "](" + n.src + ")\n";
+    if (tag === "img" && n.src) return "\n![" + (n.alt || "HÃ¬nh áº£nh") + "](" + n.src + ")\n";
 
-    // 5. Bảo toàn các thẻ XML / Custom Element không bị nuốt mất thẻ tag
+    // 5. Báº£o toÃ n cÃ¡c tháº» XML / Custom Element khÃ´ng bá»‹ nuá»‘t máº¥t tháº» tag
     if (!standardFormattingTags[tag] && tag.length > 0) {
       var attrs = Array.from(n.attributes || []).map(function(a){ return " " + a.name + "=\"" + a.value + "\""; }).join("");
       var innerXml = Array.from(n.childNodes).map(function(c){ return nodeToMd(c, listDepth); }).join("");
@@ -193,8 +193,8 @@ const cdpMuseSnapshotJS = `
 
   function findComposer() {
     var selectors = [
-      'textarea[aria-label*="Nhắn tin" i]',
-      'textarea[placeholder*="Nhắn tin" i]',
+      'textarea[aria-label*="Nháº¯n tin" i]',
+      'textarea[placeholder*="Nháº¯n tin" i]',
       'textarea[aria-label*="Message" i]',
       'textarea[placeholder*="Message" i]',
       'textarea[placeholder*="Prompt" i]',
@@ -209,7 +209,7 @@ const cdpMuseSnapshotJS = `
       '[data-lexical-editor="true"]',
       '[data-slate-editor="true"]',
       'textarea',
-      'input[type="text"][placeholder*="Nhắn tin" i]',
+      'input[type="text"][placeholder*="Nháº¯n tin" i]',
       'input[type="text"][placeholder*="Message" i]',
       'input[type="text"][aria-label*="Message" i]'
     ];
@@ -218,7 +218,7 @@ const cdpMuseSnapshotJS = `
       if (item.disabled) return false;
       var ph = (item.getAttribute("placeholder") || "").toLowerCase();
       var al = (item.getAttribute("aria-label") || "").toLowerCase();
-      if (ph.includes("tìm kiếm") || ph.includes("search") || al.includes("search")) return false;
+      if (ph.includes("tÃ¬m kiáº¿m") || ph.includes("search") || al.includes("search")) return false;
       var style = window.getComputedStyle(item);
       if (style.display === "none" || style.visibility === "hidden") return false;
       var rect = item.getBoundingClientRect();
@@ -228,8 +228,8 @@ const cdpMuseSnapshotJS = `
     valid.sort(function(a, b) {
       var aLabel = ((a.getAttribute("aria-label") || "") + " " + (a.getAttribute("placeholder") || "") + " " + (a.className || "")).toLowerCase();
       var bLabel = ((b.getAttribute("aria-label") || "") + " " + (b.getAttribute("placeholder") || "") + " " + (b.className || "")).toLowerCase();
-      var aScore = (/message|chat|nhắn tin|tin nhắn|composer|prompt/i.test(aLabel) ? 100000 : 0) + (a.getBoundingClientRect().bottom || 0);
-      var bScore = (/message|chat|nhắn tin|tin nhắn|composer|prompt/i.test(bLabel) ? 100000 : 0) + (b.getBoundingClientRect().bottom || 0);
+      var aScore = (/message|chat|nháº¯n tin|tin nháº¯n|composer|prompt/i.test(aLabel) ? 100000 : 0) + (a.getBoundingClientRect().bottom || 0);
+      var bScore = (/message|chat|nháº¯n tin|tin nháº¯n|composer|prompt/i.test(bLabel) ? 100000 : 0) + (b.getBoundingClientRect().bottom || 0);
       return bScore - aScore;
     });
     return valid[0];
@@ -237,12 +237,12 @@ const cdpMuseSnapshotJS = `
 
   var composer = findComposer();
   var compVal = composer ? ((composer.value !== undefined ? composer.value : composer.textContent) || "").trim() : "";
-  var isGen = !!document.querySelector('.animate-spin, button[aria-label*="Stop" i], button[aria-label*="Dừng" i], button.stop-button, [data-is-generating="true"], .typing-indicator, .pulse, .animate-pulse, [aria-busy="true"], [data-status="generating"], [data-status="processing"], [class*="generating" i], [class*="progress" i], div[role="progressbar"]');
+  var isGen = !!document.querySelector('.animate-spin, button[aria-label*="Stop" i], button[aria-label*="Dá»«ng" i], button.stop-button, [data-is-generating="true"], .typing-indicator, .pulse, .animate-pulse, [aria-busy="true"], [data-status="generating"], [data-status="processing"], [class*="generating" i], [class*="progress" i], div[role="progressbar"]');
 
-  // Hàm loại trừ triệt để toàn bộ phần tử thuộc Sidebar, Drawer, Menu, Navigation, Lịch sử cũ
+  // HÃ m loáº¡i trá»« triá»‡t Ä‘á»ƒ toÃ n bá»™ pháº§n tá»­ thuá»™c Sidebar, Drawer, Menu, Navigation, Lá»‹ch sá»­ cÅ©
   function isIgnoredContainer(el) {
     if (!el || el.nodeType !== Node.ELEMENT_NODE) return true;
-    if (el.closest('nav, aside, header, footer, [role="navigation"], [aria-label*="sidebar" i], [class*="sidebar" i], [data-testid*="sidebar" i], [class*="history" i], [id*="sidebar" i], [aria-label*="Lịch sử" i], [aria-label*="threads" i]')) {
+    if (el.closest('nav, aside, header, footer, [role="navigation"], [aria-label*="sidebar" i], [class*="sidebar" i], [data-testid*="sidebar" i], [class*="history" i], [id*="sidebar" i], [aria-label*="Lá»‹ch sá»­" i], [aria-label*="threads" i]')) {
       return true;
     }
     if (el.closest('form, textarea, input, [contenteditable="true"]')) {
@@ -251,7 +251,7 @@ const cdpMuseSnapshotJS = `
     return false;
   }
 
-  // 1. Tìm các phần tử chứa câu trả lời của trợ lý (Assistant) - CHỈ trong khung chat chính
+  // 1. TÃ¬m cÃ¡c pháº§n tá»­ chá»©a cÃ¢u tráº£ lá»i cá»§a trá»£ lÃ½ (Assistant) - CHá»ˆ trong khung chat chÃ­nh
   var assistantSelectors = [
     'div[data-message-author-role="assistant"]',
     'div[class*="message-assistant"]',
@@ -276,7 +276,7 @@ const cdpMuseSnapshotJS = `
     if (el.closest('.bg-chat-user-bubble, div.items-end, [data-message-author-role="user"]')) return false;
     return true;
   });
-  // Loại trừ các phần tử con nằm lồng bên trong một phần tử assistant khác đã có trong rawEls để giữ nguyên văn bản, thẻ video, player card
+  // Loáº¡i trá»« cÃ¡c pháº§n tá»­ con náº±m lá»“ng bÃªn trong má»™t pháº§n tá»­ assistant khÃ¡c Ä‘Ã£ cÃ³ trong rawEls Ä‘á»ƒ giá»¯ nguyÃªn vÄƒn báº£n, tháº» video, player card
   var targetEls = rawEls.filter(function(el) {
     for (var k = 0; k < rawEls.length; k++) {
       if (rawEls[k] !== el && rawEls[k].contains(el)) return false;
@@ -284,7 +284,7 @@ const cdpMuseSnapshotJS = `
     return true;
   });
 
-  // 2. Tìm phần tử tin nhắn của User tương ứng với câu hỏi hiện tại
+  // 2. TÃ¬m pháº§n tá»­ tin nháº¯n cá»§a User tÆ°Æ¡ng á»©ng vá»›i cÃ¢u há»i hiá»‡n táº¡i
   var activePromptNorm = (window.__martActivePrompt || "").replace(/\s+/g, " ").trim().toLowerCase();
   var activePromptSnippet = activePromptNorm.length > 20 ? activePromptNorm.slice(0, 20) : activePromptNorm;
   var userTurnEl = null;
@@ -302,7 +302,7 @@ const cdpMuseSnapshotJS = `
     }
   }
 
-  // 3. Trích xuất markdown cho toàn bộ assistant elements & khối nằm SAU User message
+  // 3. TrÃ­ch xuáº¥t markdown cho toÃ n bá»™ assistant elements & khá»‘i náº±m SAU User message
   var mdList = [];
   var postUserMdList = [];
   for (var i = 0; i < targetEls.length; i++) {
@@ -320,7 +320,7 @@ const cdpMuseSnapshotJS = `
     }
   }
 
-  // Bổ sung: Nếu userTurnEl tồn tại, quét tìm TẤT CẢ phần tử hiển thị nội dung nằm sau userTurnEl trong khung chat
+  // Bá»• sung: Náº¿u userTurnEl tá»“n táº¡i, quÃ©t tÃ¬m Táº¤T Cáº¢ pháº§n tá»­ hiá»ƒn thá»‹ ná»™i dung náº±m sau userTurnEl trong khung chat
   if (userTurnEl) {
     var parentScope = userTurnEl.closest('main, [role="main"], [class*="chat" i], [class*="messages" i], [class*="conversation" i]') || userTurnEl.parentElement.parentElement;
     if (parentScope) {
@@ -527,19 +527,19 @@ type cdpWarmTab struct {
 }
 
 type CDPBrowserManager struct {
-	mu          sync.Mutex
-	dataDir     string
-	pool        *MuseRouterPool
-	cmd         *exec.Cmd
-	debugPort   int
-	browserWS   *cdpClient
-	sessionsMu  sync.RWMutex
-	sessions    map[string]*RemoteLoginSession
-	chatMu      sync.Mutex
-	warmTabs    map[string]*cdpWarmTab
-	lastUsed    time.Time
-	stopReaper  chan struct{}
-	reaperOnce  sync.Once
+	mu         sync.Mutex
+	dataDir    string
+	pool       *MuseRouterPool
+	cmd        *exec.Cmd
+	debugPort  int
+	browserWS  *cdpClient
+	sessionsMu sync.RWMutex
+	sessions   map[string]*RemoteLoginSession
+	chatMu     sync.Mutex
+	warmTabs   map[string]*cdpWarmTab
+	lastUsed   time.Time
+	stopReaper chan struct{}
+	reaperOnce sync.Once
 }
 
 func NewCDPBrowserManager(dataDir string, pool *MuseRouterPool) *CDPBrowserManager {
@@ -627,7 +627,7 @@ func (m *CDPBrowserManager) ensureBrowserLocked(ctx context.Context) (*cdpClient
 
 	binPath, isHeadlessShell := findChromeBinary()
 	if binPath == "" {
-		return nil, 0, errors.New("Không tìm thấy trình duyệt Chrome/Chromium trên máy chủ")
+		return nil, 0, errors.New("KhÃ´ng tÃ¬m tháº¥y trÃ¬nh duyá»‡t Chrome/Chromium trÃªn mÃ¡y chá»§")
 	}
 
 	port, err := pickFreeLocalPort()
@@ -722,10 +722,10 @@ func (m *CDPBrowserManager) ensureBrowserLocked(ctx context.Context) (*cdpClient
 	cmd.Env = env
 
 	if err := cmd.Start(); err != nil {
-		return nil, 0, fmt.Errorf("Không thể khởi động trình duyệt ngầm: %v", err)
+		return nil, 0, fmt.Errorf("KhÃ´ng thá»ƒ khá»Ÿi Ä‘á»™ng trÃ¬nh duyá»‡t ngáº§m: %v", err)
 	}
 
-	// Chờ cổng CDP sẵn sàng
+	// Chá» cá»•ng CDP sáºµn sÃ ng
 	versionURL := fmt.Sprintf("http://127.0.0.1:%d/json/version", port)
 	httpCli := &http.Client{Timeout: 1500 * time.Millisecond}
 	var wsDebuggerURL string
@@ -752,7 +752,7 @@ func (m *CDPBrowserManager) ensureBrowserLocked(ctx context.Context) (*cdpClient
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		_ = os.RemoveAll(profileDir)
-		return nil, 0, errors.New("Trình duyệt ngầm khởi động quá thời gian chờ CDP")
+		return nil, 0, errors.New("TrÃ¬nh duyá»‡t ngáº§m khá»Ÿi Ä‘á»™ng quÃ¡ thá»i gian chá» CDP")
 	}
 
 	bClient, err := dialCDPClient(ctx, wsDebuggerURL)
@@ -785,7 +785,7 @@ func (m *CDPBrowserManager) createIsolatedPage(ctx context.Context) (string, str
 	if err := bClient.Call(ctx, "Target.createBrowserContext", map[string]interface{}{
 		"disposeOnDetach": false,
 	}, &ctxRes); err != nil {
-		// Một số bản build không hỗ trợ đa context -> dùng context mặc định
+		// Má»™t sá»‘ báº£n build khÃ´ng há»— trá»£ Ä‘a context -> dÃ¹ng context máº·c Ä‘á»‹nh
 		ctxRes.BrowserContextID = ""
 	}
 
@@ -994,7 +994,7 @@ func (m *CDPBrowserManager) monitorRemoteLoginLoop(ctx context.Context, sess *Re
 		if time.Since(lastAct) > 150*time.Second {
 			sess.mu.Lock()
 			sess.Status = "cancelled"
-			sess.ErrorMsg = "Phiên đăng nhập tự đóng do không có thao tác"
+			sess.ErrorMsg = "PhiÃªn Ä‘Äƒng nháº­p tá»± Ä‘Ã³ng do khÃ´ng cÃ³ thao tÃ¡c"
 			sess.mu.Unlock()
 			return
 		}
@@ -1002,7 +1002,7 @@ func (m *CDPBrowserManager) monitorRemoteLoginLoop(ctx context.Context, sess *Re
 		stepCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
 		cookies, sessVal := readMuseCookiesFromCDP(stepCtx, sess.Page, sess.BrowserContextID)
 		if sessVal != "" {
-			// Chờ thêm 500ms để các cookie phụ (hatch_gw, datr) kịp ghi đầy đủ
+			// Chá» thÃªm 500ms Ä‘á»ƒ cÃ¡c cookie phá»¥ (hatch_gw, datr) ká»‹p ghi Ä‘áº§y Ä‘á»§
 			time.Sleep(500 * time.Millisecond)
 			cookies, _ = readMuseCookiesFromCDP(stepCtx, sess.Page, sess.BrowserContextID)
 			cancel()
@@ -1070,16 +1070,16 @@ func (m *CDPBrowserManager) monitorRemoteLoginLoop(ctx context.Context, sess *Re
 	sess.mu.Lock()
 	if sess.Status == "waiting" {
 		sess.Status = "error"
-		sess.ErrorMsg = "Hết thời gian chờ đăng nhập (4 phút)"
+		sess.ErrorMsg = "Háº¿t thá»i gian chá» Ä‘Äƒng nháº­p (4 phÃºt)"
 	}
 	sess.mu.Unlock()
 }
 
-// InteractiveDesktopLoginCapture mở trực tiếp cửa sổ trình duyệt Chrome / Edge thật trên máy tính của người dùng
-// để đăng nhập Muse.ai (Google / Email không bị chặn bot) và tự động bắt cookie hatch_sess về hệ thống.
+// InteractiveDesktopLoginCapture má»Ÿ trá»±c tiáº¿p cá»­a sá»• trÃ¬nh duyá»‡t Chrome / Edge tháº­t trÃªn mÃ¡y tÃ­nh cá»§a ngÆ°á»i dÃ¹ng
+// Ä‘á»ƒ Ä‘Äƒng nháº­p Muse.ai (Google / Email khÃ´ng bá»‹ cháº·n bot) vÃ  tá»± Ä‘á»™ng báº¯t cookie hatch_sess vá» há»‡ thá»‘ng.
 func (m *CDPBrowserManager) InteractiveDesktopLoginCapture(parentCtx context.Context, label string, proxyURL string) (*MuseAccountNode, error) {
 	if runtime.GOOS != "windows" && os.Getenv("RENDER") == "true" {
-		return nil, errors.New("ERR_DESKTOP_BROWSER_NOT_SUPPORTED_ON_CLOUD: Server Render không có giao diện đồ họa. Vui lòng sử dụng tính năng [Mở đăng nhập Server] để đăng nhập qua màn hình ảo hoặc chạy Mart AI trên máy tính của bạn.")
+		return nil, errors.New("ERR_DESKTOP_BROWSER_NOT_SUPPORTED_ON_CLOUD: Server Render khÃ´ng cÃ³ giao diá»‡n Ä‘á»“ há»a. Vui lÃ²ng sá»­ dá»¥ng tÃ­nh nÄƒng [Má»Ÿ Ä‘Äƒng nháº­p Server] Ä‘á»ƒ Ä‘Äƒng nháº­p qua mÃ n hÃ¬nh áº£o hoáº·c cháº¡y Mart AI trÃªn mÃ¡y tÃ­nh cá»§a báº¡n.")
 	}
 
 	binPath, _ := findChromeBinary()
@@ -1098,17 +1098,17 @@ func (m *CDPBrowserManager) InteractiveDesktopLoginCapture(parentCtx context.Con
 		}
 	}
 	if binPath == "" {
-		return nil, errors.New("Không tìm thấy trình duyệt Google Chrome hoặc Microsoft Edge trên máy tính để tiếp nhận tự động.")
+		return nil, errors.New("KhÃ´ng tÃ¬m tháº¥y trÃ¬nh duyá»‡t Google Chrome hoáº·c Microsoft Edge trÃªn mÃ¡y tÃ­nh Ä‘á»ƒ tiáº¿p nháº­n tá»± Ä‘á»™ng.")
 	}
 
 	port, err := pickFreeLocalPort()
 	if err != nil {
-		return nil, fmt.Errorf("không thể cấp phát cổng gỡ lỗi cục bộ: %w", err)
+		return nil, fmt.Errorf("khÃ´ng thá»ƒ cáº¥p phÃ¡t cá»•ng gá»¡ lá»—i cá»¥c bá»™: %w", err)
 	}
 
 	profileDir, err := os.MkdirTemp("", "mart_ai_desktop_login_*")
 	if err != nil {
-		return nil, fmt.Errorf("không thể tạo hồ sơ trình duyệt tạm: %w", err)
+		return nil, fmt.Errorf("khÃ´ng thá»ƒ táº¡o há»“ sÆ¡ trÃ¬nh duyá»‡t táº¡m: %w", err)
 	}
 	defer func() {
 		go func(p string) {
@@ -1135,7 +1135,7 @@ func (m *CDPBrowserManager) InteractiveDesktopLoginCapture(parentCtx context.Con
 
 	cmd := exec.Command(binPath, args...)
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("không thể khởi chạy trình duyệt %s: %w", filepath.Base(binPath), err)
+		return nil, fmt.Errorf("khÃ´ng thá»ƒ khá»Ÿi cháº¡y trÃ¬nh duyá»‡t %s: %w", filepath.Base(binPath), err)
 	}
 	defer func() {
 		if cmd.Process != nil {
@@ -1144,9 +1144,9 @@ func (m *CDPBrowserManager) InteractiveDesktopLoginCapture(parentCtx context.Con
 		}
 	}()
 
-	LogInfo("Đã mở cửa sổ trình duyệt thật (%s) trên cổng CDP %d để tiếp nhận phiên Muse.ai tự động", filepath.Base(binPath), port)
+	LogInfo("ÄÃ£ má»Ÿ cá»­a sá»• trÃ¬nh duyá»‡t tháº­t (%s) trÃªn cá»•ng CDP %d Ä‘á»ƒ tiáº¿p nháº­n phiÃªn Muse.ai tá»± Ä‘á»™ng", filepath.Base(binPath), port)
 
-	// Chờ WebSocket Debugger URL xuất hiện
+	// Chá» WebSocket Debugger URL xuáº¥t hiá»‡n
 	wsVersionURL := fmt.Sprintf("http://127.0.0.1:%d/json/version", port)
 	var wsDebuggerURL string
 	client := &http.Client{Timeout: 900 * time.Millisecond}
@@ -1174,16 +1174,16 @@ func (m *CDPBrowserManager) InteractiveDesktopLoginCapture(parentCtx context.Con
 	}
 
 	if wsDebuggerURL == "" {
-		return nil, errors.New("Trình duyệt không phản hồi cổng gỡ lỗi CDP sau 15 giây.")
+		return nil, errors.New("TrÃ¬nh duyá»‡t khÃ´ng pháº£n há»“i cá»•ng gá»¡ lá»—i CDP sau 15 giÃ¢y.")
 	}
 
 	bClient, err := dialCDPClient(parentCtx, wsDebuggerURL)
 	if err != nil {
-		return nil, fmt.Errorf("không thể kết nối CDP trình duyệt: %w", err)
+		return nil, fmt.Errorf("khÃ´ng thá»ƒ káº¿t ná»‘i CDP trÃ¬nh duyá»‡t: %w", err)
 	}
 	defer bClient.Close()
 
-	// Vòng lặp chờ người dùng đăng nhập Muse.ai (tối đa 180 giây)
+	// VÃ²ng láº·p chá» ngÆ°á»i dÃ¹ng Ä‘Äƒng nháº­p Muse.ai (tá»‘i Ä‘a 180 giÃ¢y)
 	loginDeadline := time.Now().Add(180 * time.Second)
 	ticker := time.NewTicker(1000 * time.Millisecond)
 	defer ticker.Stop()
@@ -1196,7 +1196,7 @@ func (m *CDPBrowserManager) InteractiveDesktopLoginCapture(parentCtx context.Con
 		}
 
 		if cmd.Process == nil {
-			return nil, errors.New("Cửa sổ trình duyệt đã bị đóng trước khi hoàn tất đăng nhập.")
+			return nil, errors.New("Cá»­a sá»• trÃ¬nh duyá»‡t Ä‘Ã£ bá»‹ Ä‘Ã³ng trÆ°á»›c khi hoÃ n táº¥t Ä‘Äƒng nháº­p.")
 		}
 
 		var targetsRes struct {
@@ -1226,7 +1226,7 @@ func (m *CDPBrowserManager) InteractiveDesktopLoginCapture(parentCtx context.Con
 			pageClient.Close()
 
 			if sessVal != "" {
-				LogInfo("Phát hiện phiên hatch_sess trên trình duyệt thật! Đang hoàn tất tiếp nhận tự động...")
+				LogInfo("PhÃ¡t hiá»‡n phiÃªn hatch_sess trÃªn trÃ¬nh duyá»‡t tháº­t! Äang hoÃ n táº¥t tiáº¿p nháº­n tá»± Ä‘á»™ng...")
 				time.Sleep(600 * time.Millisecond)
 
 				var parts []string
@@ -1235,21 +1235,21 @@ func (m *CDPBrowserManager) InteractiveDesktopLoginCapture(parentCtx context.Con
 				}
 				cookieHdr := strings.Join(parts, "; ")
 
-				// Tự động dọn dẹp các node lỗi decrypt cũ khỏi hệ thống
+				// Tá»± Ä‘á»™ng dá»n dáº¹p cÃ¡c node lá»—i decrypt cÅ© khá»i há»‡ thá»‘ng
 				if m.pool != nil {
 					purgedCount := m.pool.PurgeBrokenNodes()
 					if purgedCount > 0 {
-						LogInfo("Đã tự động loại bỏ %d node lỗi decrypt cũ để làm sạch Pool", purgedCount)
+						LogInfo("ÄÃ£ tá»± Ä‘á»™ng loáº¡i bá» %d node lá»—i decrypt cÅ© Ä‘á»ƒ lÃ m sáº¡ch Pool", purgedCount)
 					}
 				}
 
 				lbl := strings.TrimSpace(label)
 				if lbl == "" {
-					lbl = "Muse.ai Tự Động"
+					lbl = "Muse.ai Tá»± Äá»™ng"
 				}
 				savedNode, _, saveErr := m.pool.IngestAccountCookie(parentCtx, lbl, cookieHdr, proxyURL)
 				if saveErr != nil {
-					return nil, fmt.Errorf("lỗi khi lưu tài khoản vào Pool: %w", saveErr)
+					return nil, fmt.Errorf("lá»—i khi lÆ°u tÃ i khoáº£n vÃ o Pool: %w", saveErr)
 				}
 
 				LogInfo("Tiep nhan phien Muse.ai tu dong thanh cong hoan toan! Node ID: %s, Label: %s", savedNode.ID, savedNode.Label)
@@ -1258,7 +1258,7 @@ func (m *CDPBrowserManager) InteractiveDesktopLoginCapture(parentCtx context.Con
 		}
 	}
 
-	return nil, errors.New("Quá thời gian chờ đăng nhập Muse.ai (3 phút). Vui lòng thử lại.")
+	return nil, errors.New("QuÃ¡ thá»i gian chá» Ä‘Äƒng nháº­p Muse.ai (3 phÃºt). Vui lÃ²ng thá»­ láº¡i.")
 }
 
 func (m *CDPBrowserManager) GetRemoteLoginSnapshot(sessionID string, afterSeq ...uint64) (map[string]interface{}, error) {
@@ -1578,7 +1578,7 @@ func (m *CDPBrowserManager) getOrCreateWarmChatTab(ctx context.Context, fp strin
 		}
 	}
 
-	// Giới hạn tối đa 1 warm tab trên Linux 512MB RAM và 2 trên Windows để bảo vệ RAM
+	// Giá»›i háº¡n tá»‘i Ä‘a 1 warm tab trÃªn Linux 512MB RAM vÃ  2 trÃªn Windows Ä‘á»ƒ báº£o vá»‡ RAM
 	maxTabs := 1
 	if runtime.GOOS == "windows" {
 		maxTabs = 2
@@ -1643,7 +1643,7 @@ func (m *CDPBrowserManager) getOrCreateWarmChatTab(ctx context.Context, fp strin
 }
 
 func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate *MuseAccountNode, threadID string, userPrompt string, onChunk ...func(delta string, fullText string)) (string, int64, int, error) {
-	rawCred, err := m.pool.rustBridge.DecryptSecret(candidate.EncryptedCredential)
+	rawCred, err := m.pool.vault.DecryptSecret(candidate.EncryptedCredential)
 	if err != nil {
 		return "", 0, 0, err
 	}
@@ -1665,7 +1665,7 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 		return "", 0, 0, err
 	}
 
-	// Kiểm tra URL hiện tại của tab. Nếu tab chưa vào muse.ai thì điều hướng về targetOrigin
+	// Kiá»ƒm tra URL hiá»‡n táº¡i cá»§a tab. Náº¿u tab chÆ°a vÃ o muse.ai thÃ¬ Ä‘iá»u hÆ°á»›ng vá» targetOrigin
 	var checkURLVal struct {
 		Result struct {
 			Value string `json:"value"`
@@ -1683,7 +1683,7 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 		time.Sleep(1200 * time.Millisecond)
 	}
 
-	// Nếu chuyển sang hội thoại mới (threadID khác), làm sạch phiên chat trên Muse.ai để không bị lẫn ngữ cảnh cũ
+	// Náº¿u chuyá»ƒn sang há»™i thoáº¡i má»›i (threadID khÃ¡c), lÃ m sáº¡ch phiÃªn chat trÃªn Muse.ai Ä‘á»ƒ khÃ´ng bá»‹ láº«n ngá»¯ cáº£nh cÅ©
 	if wt.LastThreadID != "" && threadID != "" && wt.LastThreadID != threadID {
 		LogInfo("Thread changed from %s to %s; navigating to clean Muse.ai chat", wt.LastThreadID, threadID)
 		_ = wt.Page.Call(ctx, "Page.navigate", map[string]interface{}{"url": targetOrigin + "/"}, nil)
@@ -1708,7 +1708,7 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 	if baseline == nil || !baseline.HasComposer {
 		m.closeIsolatedPage(wt.BrowserContextID, wt.TargetID, wt.Page)
 		delete(m.warmTabs, candidate.Fingerprint)
-		return "", 0, 0, errors.New("Phiên đăng nhập muse.ai đã hết hạn hoặc trang chưa sẵn sàng — hãy đăng nhập lại tài khoản")
+		return "", 0, 0, errors.New("PhiÃªn Ä‘Äƒng nháº­p muse.ai Ä‘Ã£ háº¿t háº¡n hoáº·c trang chÆ°a sáºµn sÃ ng â€” hÃ£y Ä‘Äƒng nháº­p láº¡i tÃ i khoáº£n")
 	}
 
 	baselineLastMd := ""
@@ -1718,13 +1718,13 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 		baselineCount = baseline.Count
 	}
 
-	// 1. Điền nội dung vào ô nhập theo chuẩn React 16+ State Tracker & ContentEditable
+	// 1. Äiá»n ná»™i dung vÃ o Ã´ nháº­p theo chuáº©n React 16+ State Tracker & ContentEditable
 	promptJSON, _ := json.Marshal(userPrompt)
 	typeReactJS := fmt.Sprintf(`(function(txt){
 		window.__martActivePrompt = txt;
 		var selectors = [
-			'textarea[aria-label*="Nhắn tin" i]',
-			'textarea[placeholder*="Nhắn tin" i]',
+			'textarea[aria-label*="Nháº¯n tin" i]',
+			'textarea[placeholder*="Nháº¯n tin" i]',
 			'textarea[aria-label*="Message" i]',
 			'textarea[placeholder*="Message" i]',
 			'textarea[placeholder*="Prompt" i]',
@@ -1739,7 +1739,7 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 			'[data-lexical-editor="true"]',
 			'[data-slate-editor="true"]',
 			'textarea',
-			'input[type="text"][placeholder*="Nhắn tin" i]',
+			'input[type="text"][placeholder*="Nháº¯n tin" i]',
 			'input[type="text"][placeholder*="Message" i]',
 			'input[type="text"][aria-label*="Message" i]'
 		];
@@ -1748,7 +1748,7 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 			if (item.disabled) return false;
 			var ph = (item.getAttribute("placeholder") || "").toLowerCase();
 			var al = (item.getAttribute("aria-label") || "").toLowerCase();
-			if (ph.includes("tìm kiếm") || ph.includes("search") || al.includes("search")) return false;
+			if (ph.includes("tÃ¬m kiáº¿m") || ph.includes("search") || al.includes("search")) return false;
 			var style = window.getComputedStyle(item);
 			if (style.display === "none" || style.visibility === "hidden") return false;
 			var rect = item.getBoundingClientRect();
@@ -1758,8 +1758,8 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 		valid.sort(function(a, b) {
 			var aLabel = ((a.getAttribute("aria-label") || "") + " " + (a.getAttribute("placeholder") || "") + " " + (a.className || "")).toLowerCase();
 			var bLabel = ((b.getAttribute("aria-label") || "") + " " + (b.getAttribute("placeholder") || "") + " " + (b.className || "")).toLowerCase();
-			var aScore = (/message|chat|nhắn tin|tin nhắn|composer|prompt/i.test(aLabel) ? 100000 : 0) + (a.getBoundingClientRect().bottom || 0);
-			var bScore = (/message|chat|nhắn tin|tin nhắn|composer|prompt/i.test(bLabel) ? 100000 : 0) + (b.getBoundingClientRect().bottom || 0);
+			var aScore = (/message|chat|nháº¯n tin|tin nháº¯n|composer|prompt/i.test(aLabel) ? 100000 : 0) + (a.getBoundingClientRect().bottom || 0);
+			var bScore = (/message|chat|nháº¯n tin|tin nháº¯n|composer|prompt/i.test(bLabel) ? 100000 : 0) + (b.getBoundingClientRect().bottom || 0);
 			return bScore - aScore;
 		});
 		var ta = valid[0];
@@ -1796,17 +1796,17 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 	})(%s)`, string(promptJSON))
 
 	_ = wt.Page.Call(ctx, "Runtime.evaluate", map[string]interface{}{"expression": typeReactJS}, nil)
-	// Bổ sung: Gửi native CDP insertText để đảm bảo các framework Lexical/Slate/React 18 nhận diện ký tự
+	// Bá»• sung: Gá»­i native CDP insertText Ä‘á»ƒ Ä‘áº£m báº£o cÃ¡c framework Lexical/Slate/React 18 nháº­n diá»‡n kÃ½ tá»±
 	_ = wt.Page.Call(ctx, "Input.insertText", map[string]interface{}{"text": userPrompt}, nil)
 	time.Sleep(200 * time.Millisecond)
 
-	// 2. Kích hoạt nút Gửi với cơ chế đa tầng (Button click + Form submit + CDP Enter key)
+	// 2. KÃ­ch hoáº¡t nÃºt Gá»­i vá»›i cÆ¡ cháº¿ Ä‘a táº§ng (Button click + Form submit + CDP Enter key)
 	clickSendOrEnter := func() {
 		clickSendJS := `(function(){
 			var selectors = [
 				'button[data-pel-click="chat_send_message"]',
-				'button[aria-label="Gửi"]',
-				'button[aria-label*="Gửi" i]',
+				'button[aria-label="Gá»­i"]',
+				'button[aria-label*="Gá»­i" i]',
 				'button[aria-label="Send"]',
 				'button[aria-label*="Send" i]',
 				'button[data-testid*="send" i]',
@@ -1861,7 +1861,7 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 			"returnByValue": true,
 		}, &clickRes)
 
-		// Luôn gửi kèm native CDP Enter event để đảm bảo 100% trigger submit
+		// LuÃ´n gá»­i kÃ¨m native CDP Enter event Ä‘á»ƒ Ä‘áº£m báº£o 100% trigger submit
 		_ = wt.Page.Call(ctx, "Input.dispatchKeyEvent", map[string]interface{}{
 			"type":                  "rawKeyDown",
 			"key":                   "Enter",
@@ -1900,7 +1900,7 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 			continue
 		}
 
-		// Tự động gia hạn deadline nếu Muse đang tiếp tục sinh nội dung (tạo video / render dự án / streaming)
+		// Tá»± Ä‘á»™ng gia háº¡n deadline náº¿u Muse Ä‘ang tiáº¿p tá»¥c sinh ná»™i dung (táº¡o video / render dá»± Ã¡n / streaming)
 		if cur.IsGenerating {
 			if time.Until(deadline) < 35*time.Second {
 				deadline = time.Now().Add(45 * time.Second)
@@ -1908,17 +1908,17 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 		}
 
 		replyMd := ""
-		// 1. Ưu tiên khối Assistant nằm SAU tin nhắn của User
+		// 1. Æ¯u tiÃªn khá»‘i Assistant náº±m SAU tin nháº¯n cá»§a User
 		if cur.UserTurnSent && cur.UnseenLastMd != "" && cur.UnseenLastMd != cleanPrompt {
 			replyMd = strings.TrimSpace(cur.UnseenLastMd)
 		} else if cur.LastMd != "" && cur.LastMd != baselineLastMd && cur.LastMd != cleanPrompt {
-			// 2. Nội dung LastMd thay đổi so với baseline trước khi gửi
+			// 2. Ná»™i dung LastMd thay Ä‘á»•i so vá»›i baseline trÆ°á»›c khi gá»­i
 			replyMd = strings.TrimSpace(cur.LastMd)
 		} else if cur.Count > baselineCount && cur.LastMd != "" && cur.LastMd != cleanPrompt {
-			// 3. Số lượng khối Assistant tăng lên
+			// 3. Sá»‘ lÆ°á»£ng khá»‘i Assistant tÄƒng lÃªn
 			replyMd = strings.TrimSpace(cur.LastMd)
 		} else {
-			// Nếu văn bản vẫn còn nguyên trong ô nhập sau một số nhịp (chưa gửi đi được), gửi lại
+			// Náº¿u vÄƒn báº£n váº«n cÃ²n nguyÃªn trong Ã´ nháº­p sau má»™t sá»‘ nhá»‹p (chÆ°a gá»­i Ä‘i Ä‘Æ°á»£c), gá»­i láº¡i
 			if cur.ComposerValue != "" && resendAttempts < 5 {
 				resendAttempts++
 				clickSendOrEnter()
@@ -1934,8 +1934,8 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 
 		if replyMd == lastNewMd {
 			stableTicks++
-			// Nếu Muse không còn generating thì chỉ cần đứng yên 2 nhịp (~500ms) là hoàn thành ngay lập tức!
-			// Nếu trang có cờ generating chưa kịp tắt thì đứng yên 5 nhịp (~1.25s) là hoàn thành.
+			// Náº¿u Muse khÃ´ng cÃ²n generating thÃ¬ chá»‰ cáº§n Ä‘á»©ng yÃªn 2 nhá»‹p (~500ms) lÃ  hoÃ n thÃ nh ngay láº­p tá»©c!
+			// Náº¿u trang cÃ³ cá» generating chÆ°a ká»‹p táº¯t thÃ¬ Ä‘á»©ng yÃªn 5 nhá»‹p (~1.25s) lÃ  hoÃ n thÃ nh.
 			reqTicks := 2
 			if cur.IsGenerating {
 				reqTicks = 5
@@ -1958,7 +1958,7 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 		}
 	}
 
-	// Cơ chế Fallback tối thượng: Nếu lastNewMd vẫn rỗng, quét tìm trực tiếp các phần tử mới nhất trong khung chat
+	// CÆ¡ cháº¿ Fallback tá»‘i thÆ°á»£ng: Náº¿u lastNewMd váº«n rá»—ng, quÃ©t tÃ¬m trá»±c tiáº¿p cÃ¡c pháº§n tá»­ má»›i nháº¥t trong khung chat
 	if lastNewMd == "" {
 		var fallbackEval struct {
 			Result struct {
@@ -1986,9 +1986,11 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 			lastNewMd = strings.TrimSpace(fallbackEval.Result.Value)
 		}
 	}
+	lastNewMd = dedupeMirroredReply(lastNewMd)
+	lastNewMd = removeRepeatedPrompt(lastNewMd, cleanPrompt)
 
 	if lastNewMd == "" {
-		return "", 0, 0, errors.New("Muse.ai trả về phản hồi rỗng; Mart AI chưa nhận được câu trả lời.")
+		return "", 0, 0, errors.New("Muse.ai tráº£ vá» pháº£n há»“i rá»—ng; Mart AI chÆ°a nháº­n Ä‘Æ°á»£c cÃ¢u tráº£ lá»i.")
 	}
 
 	wt.LastUsed = time.Now()
@@ -1999,6 +2001,28 @@ func (m *CDPBrowserManager) ExecuteMuseChat(parentCtx context.Context, candidate
 	latencyMs := int(time.Since(startTs).Milliseconds())
 	estTokens := int64((len(cleanPrompt)+len(lastNewMd))/4) + 1
 	return lastNewMd, estTokens, latencyMs, nil
+}
+
+// dedupeMirroredReply protects against browser snapshots that expose the same
+// assistant node through both its rendered and accessibility containers.
+func dedupeMirroredReply(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) >= 2 && len(value)%2 == 0 {
+		half := len(value) / 2
+		if value[:half] == value[half:] {
+			return value[:half]
+		}
+	}
+	return value
+}
+
+func removeRepeatedPrompt(value, prompt string) string {
+	value = strings.TrimSpace(value)
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return value
+	}
+	return strings.ReplaceAll(value, prompt+prompt, prompt)
 }
 
 func (m *CDPBrowserManager) idleReaperLoop() {
@@ -2073,7 +2097,7 @@ func (m *CDPBrowserManager) Shutdown() {
 	m.mu.Unlock()
 }
 
-// HTTP Handlers cho Cửa Sổ Đăng Nhập Trực Tiếp Trên Web (0 Tiện ích, 0 F12)
+// HTTP Handlers cho Cá»­a Sá»• ÄÄƒng Nháº­p Trá»±c Tiáº¿p TrÃªn Web (0 Tiá»‡n Ã­ch, 0 F12)
 func (a *ServerApp) handleRemoteLoginStart(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		WriteJSONError(w, http.StatusMethodNotAllowed, "ERR_METHOD_NOT_ALLOWED")
@@ -2196,12 +2220,12 @@ type CDPInspectResp struct {
 
 func (m *CDPBrowserManager) InspectWarmTab(parentCtx context.Context, req CDPInspectReq) (*CDPInspectResp, error) {
 	if m == nil || !m.HasBrowserAvailable() {
-		return nil, errors.New("Trình duyệt CDP chưa khả dụng trên máy chủ")
+		return nil, errors.New("TrÃ¬nh duyá»‡t CDP chÆ°a kháº£ dá»¥ng trÃªn mÃ¡y chá»§")
 	}
 
 	nodes, err := m.pool.getOrderedCandidateNodes("")
 	if err != nil || len(nodes) == 0 {
-		return nil, errors.New("Chưa có tài khoản Muse nào khả dụng trong Pool")
+		return nil, errors.New("ChÆ°a cÃ³ tÃ i khoáº£n Muse nÃ o kháº£ dá»¥ng trong Pool")
 	}
 	var candidate *MuseAccountNode
 	for _, n := range nodes {
@@ -2211,12 +2235,12 @@ func (m *CDPBrowserManager) InspectWarmTab(parentCtx context.Context, req CDPIns
 		}
 	}
 	if candidate == nil {
-		return nil, errors.New("Chưa có tài khoản Muse nào có cookie hatch_sess")
+		return nil, errors.New("ChÆ°a cÃ³ tÃ i khoáº£n Muse nÃ o cÃ³ cookie hatch_sess")
 	}
 
-	rawCred, err := m.pool.rustBridge.DecryptSecret(candidate.EncryptedCredential)
+	rawCred, err := m.pool.vault.DecryptSecret(candidate.EncryptedCredential)
 	if err != nil {
-		return nil, fmt.Errorf("Lỗi giải mã thông tin tài khoản: %w", err)
+		return nil, fmt.Errorf("Lá»—i giáº£i mÃ£ thÃ´ng tin tÃ i khoáº£n: %w", err)
 	}
 
 	ctx, cancel := context.WithTimeout(parentCtx, 45*time.Second)
@@ -2344,13 +2368,13 @@ func (m *CDPBrowserManager) InspectWarmTab(parentCtx context.Context, req CDPIns
 	var diagVal struct {
 		Result struct {
 			Value struct {
-				Title       string                 `json:"title"`
-				URL         string                 `json:"url"`
-				Composer    map[string]interface{} `json:"composer"`
-				Buttons     []interface{}          `json:"buttons"`
-				ProseCount  int                    `json:"proseCount"`
-				LastProse   string                 `json:"lastProse"`
-				IsGen       bool                   `json:"isGenerating"`
+				Title      string                 `json:"title"`
+				URL        string                 `json:"url"`
+				Composer   map[string]interface{} `json:"composer"`
+				Buttons    []interface{}          `json:"buttons"`
+				ProseCount int                    `json:"proseCount"`
+				LastProse  string                 `json:"lastProse"`
+				IsGen      bool                   `json:"isGenerating"`
 			} `json:"result"`
 		} `json:"result"`
 	}
@@ -2391,4 +2415,3 @@ func (a *ServerApp) handleCDPInspect(w http.ResponseWriter, r *http.Request) {
 	}
 	WriteJSONResponse(w, http.StatusOK, resp)
 }
-

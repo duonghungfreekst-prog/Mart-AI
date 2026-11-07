@@ -7,14 +7,14 @@ import (
 	"strings"
 )
 
-// adminPassword đọc mật khẩu admin từ biến môi trường MART_ADMIN_PASSWORD (không hard-code, không log).
+// adminPassword Ä‘á»c máº­t kháº©u admin tá»« biáº¿n mÃ´i trÆ°á»ng MART_ADMIN_PASSWORD (khÃ´ng hard-code, khÃ´ng log).
 func adminPassword() string {
 	return strings.TrimSpace(os.Getenv("MART_ADMIN_PASSWORD"))
 }
 
-// extractAdminCredential lấy mật khẩu từ header Authorization:
-//   - "Bearer <mật khẩu>" (extension / API client)
-//   - "Basic base64(user:mật khẩu)" (trình duyệt tự hiện hộp thoại đăng nhập)
+// extractAdminCredential láº¥y máº­t kháº©u tá»« header Authorization:
+//   - "Bearer <máº­t kháº©u>" (extension / API client)
+//   - "Basic base64(user:máº­t kháº©u)" (trÃ¬nh duyá»‡t tá»± hiá»‡n há»™p thoáº¡i Ä‘Äƒng nháº­p)
 func extractAdminCredential(r *http.Request) string {
 	h := strings.TrimSpace(r.Header.Get("Authorization"))
 	if h == "" {
@@ -37,7 +37,7 @@ func extractAdminCredential(r *http.Request) string {
 	return ""
 }
 
-// isAdminAuthorized so sánh hằng thời gian (chống timing attack) với mật khẩu admin.
+// isAdminAuthorized so sÃ¡nh háº±ng thá»i gian (chá»‘ng timing attack) vá»›i máº­t kháº©u admin.
 func isAdminAuthorized(r *http.Request) bool {
 	pw := adminPassword()
 	if pw == "" {
@@ -50,8 +50,8 @@ func isAdminAuthorized(r *http.Request) bool {
 	return ConstantTimeStringEquals(given, pw)
 }
 
-// isAdminOrSessionJWTAuthorized kiểm tra mật khẩu admin trực tiếp HOẶC JWT RS256 hợp lệ
-// (do /api/auth/session cấp sau khi trình duyệt đã vượt qua Basic Auth).
+// isAdminOrSessionJWTAuthorized kiá»ƒm tra máº­t kháº©u admin trá»±c tiáº¿p HOáº¶C JWT RS256 há»£p lá»‡
+// (do /api/auth/session cáº¥p sau khi trÃ¬nh duyá»‡t Ä‘Ã£ vÆ°á»£t qua Basic Auth).
 func isAdminOrSessionJWTAuthorized(r *http.Request, jwtMgr *RS256JWTManager) bool {
 	if isAdminAuthorized(r) {
 		return true
@@ -71,9 +71,9 @@ func isAdminOrSessionJWTAuthorized(r *http.Request, jwtMgr *RS256JWTManager) boo
 	return false
 }
 
-// AdminAuthMiddleware bảo vệ toàn bộ web khi đã đặt MART_ADMIN_PASSWORD.
-// Khi chưa đặt biến này, hành vi giữ nguyên như cũ (mở), trừ API nhận cookie /api/accounts/ingest
-// luôn bị từ chối để không ai thêm tài khoản vào Pool mà không có mật khẩu.
+// AdminAuthMiddleware báº£o vá»‡ toÃ n bá»™ web khi Ä‘Ã£ Ä‘áº·t MART_ADMIN_PASSWORD.
+// Khi chÆ°a Ä‘áº·t biáº¿n nÃ y, hÃ nh vi giá»¯ nguyÃªn nhÆ° cÅ© (má»Ÿ), trá»« API nháº­n cookie /api/accounts/ingest
+// luÃ´n bá»‹ tá»« chá»‘i Ä‘á»ƒ khÃ´ng ai thÃªm tÃ i khoáº£n vÃ o Pool mÃ  khÃ´ng cÃ³ máº­t kháº©u.
 func AdminAuthMiddleware(next http.Handler) http.Handler {
 	return AdminAuthMiddlewareWithJWT(next, nil)
 }

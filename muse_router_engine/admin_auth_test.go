@@ -47,7 +47,7 @@ func TestAdminAuthMiddleware(t *testing.T) {
 
 	t.Setenv("MART_ADMIN_PASSWORD", "")
 	if code := do(http.MethodGet, "/api/router/summary", ""); code != http.StatusOK {
-		t.Fatalf("no password configured: expected open (200), got %d", code)
+		t.Fatalf("standalone admin middleware without password should pass through, got %d", code)
 	}
 
 	t.Setenv("MART_ADMIN_PASSWORD", pw)
@@ -100,13 +100,13 @@ func TestIngestEndpointSecurity(t *testing.T) {
 		return rec
 	}
 
-	// 1) Chưa đặt mật khẩu admin -> luôn từ chối (503)
+	// 1) ChÆ°a Ä‘áº·t máº­t kháº©u admin -> luÃ´n tá»« chá»‘i (503)
 	t.Setenv("MART_ADMIN_PASSWORD", "")
 	if rec := post("", "", `{"cookie":"hatch_sess=x"}`); rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("no admin password: expected 503, got %d", rec.Code)
 	}
 
-	// 2) Đã đặt mật khẩu: thiếu / sai thông tin -> 401
+	// 2) ÄÃ£ Ä‘áº·t máº­t kháº©u: thiáº¿u / sai thÃ´ng tin -> 401
 	const pw = "unit-test-admin-pw"
 	t.Setenv("MART_ADMIN_PASSWORD", pw)
 	if rec := post("", "", `{"cookie":"hatch_sess=x"}`); rec.Code != http.StatusUnauthorized {
@@ -116,12 +116,12 @@ func TestIngestEndpointSecurity(t *testing.T) {
 		t.Fatalf("wrong credentials: expected 401, got %d", rec.Code)
 	}
 
-	// 3) Đúng mật khẩu nhưng cookie thiếu hatch_sess -> 400
+	// 3) ÄÃºng máº­t kháº©u nhÆ°ng cookie thiáº¿u hatch_sess -> 400
 	if rec := post("Bearer "+pw, "", `{"cookie":"datr=abc"}`); rec.Code != http.StatusBadRequest {
 		t.Fatalf("missing hatch_sess: expected 400, got %d", rec.Code)
 	}
 
-	// 4) CORS: đúng ID extension được phép, ID khác bị chặn
+	// 4) CORS: Ä‘Ãºng ID extension Ä‘Æ°á»£c phÃ©p, ID khÃ¡c bá»‹ cháº·n
 	rec := post("Bearer "+pw, "chrome-extension://mjlkhmjhbhkjfccffeoimoindodmglaj", `{"cookie":"datr=abc"}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("allowed extension origin should reach handler (400), got %d", rec.Code)
@@ -133,7 +133,7 @@ func TestIngestEndpointSecurity(t *testing.T) {
 		t.Fatalf("unknown extension origin: expected 403, got %d", rec.Code)
 	}
 
-	// 5) Phiên trình duyệt đã vượt qua Basic Auth nhận JWT RS256 vẫn gọi được /api/router/summary, nhưng không thay thế mật khẩu trực tiếp trên /api/accounts/ingest
+	// 5) PhiÃªn trÃ¬nh duyá»‡t Ä‘Ã£ vÆ°á»£t qua Basic Auth nháº­n JWT RS256 váº«n gá»i Ä‘Æ°á»£c /api/router/summary, nhÆ°ng khÃ´ng thay tháº¿ máº­t kháº©u trá»±c tiáº¿p trÃªn /api/accounts/ingest
 	jwtTok, err := app.jwtMgr.IssueToken("muse_router_operator", 5*time.Minute)
 	if err != nil {
 		t.Fatalf("IssueToken failed: %v", err)
@@ -149,7 +149,7 @@ func TestIngestEndpointSecurity(t *testing.T) {
 		t.Fatalf("RS256 session JWT must not authorize /api/accounts/ingest without admin password: got %d", rec.Code)
 	}
 
-	// 6) Endpoint tải gói tiện ích Chrome (.zip) chứa đủ 5 file
+	// 6) Endpoint táº£i gÃ³i tiá»‡n Ã­ch Chrome (.zip) chá»©a Ä‘á»§ 5 file
 	zipReq := httptest.NewRequest(http.MethodGet, "/api/accounts/extension.zip", nil)
 	zipReq.Header.Set("Authorization", "Bearer "+pw)
 	zipRec := httptest.NewRecorder()
@@ -168,7 +168,7 @@ func TestIngestEndpointSecurity(t *testing.T) {
 
 func TestWriteJSONErrorEscapesQuotes(t *testing.T) {
 	rec := httptest.NewRecorder()
-	WriteJSONError(rec, http.StatusBadGateway, `Không kết nối được dịch vụ AI Bridge: Post "http://127.0.0.1:18089/internal/chat": dial tcp`)
+	WriteJSONError(rec, http.StatusBadGateway, `KhÃ´ng káº¿t ná»‘i Ä‘Æ°á»£c dá»‹ch vá»¥ AI Bridge: Post "http://127.0.0.1:18089/internal/chat": dial tcp`)
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("expected 502, got %d", rec.Code)
 	}
@@ -191,18 +191,18 @@ func TestCloudBrowserRelayFlowAndNodeHealth(t *testing.T) {
 		t.Fatalf("NewServerApp failed: %v", err)
 	}
 	defer app.pool.Shutdown()
-	// Trỏ AI Bridge tới cổng đóng và tắt cdpManager để kiểm thử riêng nhánh dự phòng browser_relay
+	// Trá» AI Bridge tá»›i cá»•ng Ä‘Ã³ng vÃ  táº¯t cdpManager Ä‘á»ƒ kiá»ƒm thá»­ riÃªng nhÃ¡nh dá»± phÃ²ng browser_relay
 	app.pool.aiBridgeURL = "http://127.0.0.1:1"
 	if app.pool.cdpManager != nil {
 		app.pool.cdpManager.Shutdown()
 		app.pool.cdpManager = nil
 	}
 
-	encCred, err := app.pool.rustBridge.EncryptSecret("hatch_sess=TEST_SESS_VALUE; datr=abc")
+	encCred, err := app.pool.vault.EncryptSecret("hatch_sess=TEST_SESS_VALUE; datr=abc")
 	if err != nil {
 		t.Fatalf("EncryptSecret failed: %v", err)
 	}
-	fp := app.pool.rustBridge.ComputeFingerprint("hatch_sess=TEST_SESS_VALUE")
+	fp := app.pool.vault.ComputeFingerprint("hatch_sess=TEST_SESS_VALUE")
 
 	app.pool.mu.Lock()
 	app.pool.nodes = append(app.pool.nodes, &MuseAccountNode{
@@ -215,7 +215,7 @@ func TestCloudBrowserRelayFlowAndNodeHealth(t *testing.T) {
 		Fingerprint:         fp,
 		HasHatchSess:        true,
 		Status:              "unavailable",
-		StatusDetail:        `Không kết nối được dịch vụ AI Bridge trên Muse #1: Post "http://127.0.0.1:18089/internal/chat": connection refused`,
+		StatusDetail:        `KhÃ´ng káº¿t ná»‘i Ä‘Æ°á»£c dá»‹ch vá»¥ AI Bridge trÃªn Muse #1: Post "http://127.0.0.1:18089/internal/chat": connection refused`,
 	})
 	normalizeAccountIndices(app.pool.nodes)
 	app.pool.mu.Unlock()
@@ -227,7 +227,7 @@ func TestCloudBrowserRelayFlowAndNodeHealth(t *testing.T) {
 
 	handler := app.Routes()
 
-	// 1) Gửi chat trên Render -> trả 200 browser_relay=true thay vì 502
+	// 1) Gá»­i chat trÃªn Render -> tráº£ 200 browser_relay=true thay vÃ¬ 502
 	sendReq := httptest.NewRequest(http.MethodPost, "/api/chat/send", strings.NewReader(`{"prompt":"xin chao","client_relay_capable":true}`))
 	sendReq.Header.Set("Content-Type", "application/json")
 	sendRec := httptest.NewRecorder()
@@ -243,7 +243,7 @@ func TestCloudBrowserRelayFlowAndNodeHealth(t *testing.T) {
 		t.Fatalf("expected browser_relay=true, got %+v", relayPayload)
 	}
 
-	// 2) Khi chưa cài tiện ích (hủy lượt chờ) -> Muse #1 vẫn phải giữ trạng thái ready (không bị Ngắt kết nối)
+	// 2) Khi chÆ°a cÃ i tiá»‡n Ã­ch (há»§y lÆ°á»£t chá») -> Muse #1 váº«n pháº£i giá»¯ tráº¡ng thÃ¡i ready (khÃ´ng bá»‹ Ngáº¯t káº¿t ná»‘i)
 	cancelBody, _ := json.Marshal(map[string]interface{}{
 		"thread_id": relayPayload["thread_id"],
 		"turn_id":   relayPayload["turn_id"],
@@ -262,7 +262,7 @@ func TestCloudBrowserRelayFlowAndNodeHealth(t *testing.T) {
 		t.Fatalf("Muse #1 must remain ready after cancel, got %+v", sumAfterCancel)
 	}
 
-	// 3) Gửi lại khi đã có tiện ích v1.1 -> hoàn tất trả lời & cập nhật token/request
+	// 3) Gá»­i láº¡i khi Ä‘Ã£ cÃ³ tiá»‡n Ã­ch v1.1 -> hoÃ n táº¥t tráº£ lá»i & cáº­p nháº­t token/request
 	sendReq2 := httptest.NewRequest(http.MethodPost, "/api/chat/send", strings.NewReader(`{"prompt":"xin chao","client_relay_capable":true}`))
 	sendReq2.Header.Set("Content-Type", "application/json")
 	sendRec2 := httptest.NewRecorder()
@@ -274,7 +274,7 @@ func TestCloudBrowserRelayFlowAndNodeHealth(t *testing.T) {
 		"thread_id":   relay2["thread_id"],
 		"turn_id":     relay2["turn_id"],
 		"node_id":     relay2["node_id"],
-		"reply":       "Chào bạn! Mình là Muse.",
+		"reply":       "ChÃ o báº¡n! MÃ¬nh lÃ  Muse.",
 		"tokens_used": 28,
 		"latency_ms":  640,
 	})
@@ -287,7 +287,7 @@ func TestCloudBrowserRelayFlowAndNodeHealth(t *testing.T) {
 	}
 	var compData map[string]interface{}
 	_ = json.Unmarshal(compRec.Body.Bytes(), &compData)
-	if compData["reply"] != "Chào bạn! Mình là Muse." {
+	if compData["reply"] != "ChÃ o báº¡n! MÃ¬nh lÃ  Muse." {
 		t.Fatalf("unexpected reply: %+v", compData)
 	}
 	sumFinal := app.pool.GetSummary()
@@ -311,7 +311,7 @@ func TestCDPBrowserEngineLocalEndToEnd(t *testing.T) {
 			return
 		}
 		_, _ = w.Write([]byte(`<!doctype html><html><body>
-			<div id="messages"><div class="prose"><p>Xin chào ban đầu</p></div></div>
+			<div id="messages"><div class="prose"><p>Xin chÃ o ban Ä‘áº§u</p></div></div>
 			<textarea id="composer" aria-label="Message"></textarea>
 			<script>
 				var comp = document.getElementById('composer');
@@ -322,7 +322,7 @@ func TestCDPBrowserEngineLocalEndToEnd(t *testing.T) {
 						comp.value = '';
 						var d = document.createElement('div');
 						d.className = 'prose';
-						d.innerHTML = '<p>Phản hồi CDP cho: <strong>' + val + '</strong></p>';
+						d.innerHTML = '<p>Pháº£n há»“i CDP cho: <strong>' + val + '</strong></p>';
 						document.getElementById('messages').appendChild(d);
 					}
 				});
@@ -341,7 +341,7 @@ func TestCDPBrowserEngineLocalEndToEnd(t *testing.T) {
 	defer app.pool.Shutdown()
 	app.pool.aiBridgeURL = "http://127.0.0.1:1"
 
-	// 1) Kiểm thử Cửa sổ Đăng nhập Trực tiếp (chụp JPEG + gửi phím chữ)
+	// 1) Kiá»ƒm thá»­ Cá»­a sá»• ÄÄƒng nháº­p Trá»±c tiáº¿p (chá»¥p JPEG + gá»­i phÃ­m chá»¯)
 	sess, err := app.pool.cdpManager.StartRemoteLoginSession(context.Background(), "Muse Test", "", fakeMuse.URL+"/login")
 	if err != nil {
 		t.Fatalf("StartRemoteLoginSession failed: %v", err)
@@ -360,12 +360,12 @@ func TestCDPBrowserEngineLocalEndToEnd(t *testing.T) {
 	}
 	app.pool.cdpManager.CancelRemoteLoginSession(sess.ID)
 
-	// 2) Kiểm thử Chat thật phía Server qua CDP (không cần Python Bridge, không cần Extension)
-	encCred, err := app.pool.rustBridge.EncryptSecret("hatch_sess=CDP_TEST_SESS")
+	// 2) Kiá»ƒm thá»­ Chat tháº­t phÃ­a Server qua CDP (khÃ´ng cáº§n Python Bridge, khÃ´ng cáº§n Extension)
+	encCred, err := app.pool.vault.EncryptSecret("hatch_sess=CDP_TEST_SESS")
 	if err != nil {
 		t.Fatalf("EncryptSecret failed: %v", err)
 	}
-	fp := app.pool.rustBridge.ComputeFingerprint("hatch_sess=CDP_TEST_SESS")
+	fp := app.pool.vault.ComputeFingerprint("hatch_sess=CDP_TEST_SESS")
 	app.pool.mu.Lock()
 	app.pool.nodes = append(app.pool.nodes, &MuseAccountNode{
 		ID:                  "node_cdp_chat_1",
@@ -382,7 +382,7 @@ func TestCDPBrowserEngineLocalEndToEnd(t *testing.T) {
 	app.pool.mu.Unlock()
 
 	handler := app.Routes()
-	sendReq := httptest.NewRequest(http.MethodPost, "/api/chat/send", strings.NewReader(`{"prompt":"Chào Mart AI"}`))
+	sendReq := httptest.NewRequest(http.MethodPost, "/api/chat/send", strings.NewReader(`{"prompt":"ChÃ o Mart AI"}`))
 	sendReq.Header.Set("Content-Type", "application/json")
 	sendRec := httptest.NewRecorder()
 	handler.ServeHTTP(sendRec, sendReq)
@@ -394,7 +394,7 @@ func TestCDPBrowserEngineLocalEndToEnd(t *testing.T) {
 		t.Fatalf("unmarshal chatRes: %v", err)
 	}
 	replyStr, _ := chatRes["reply"].(string)
-	if !strings.Contains(replyStr, "Phản hồi CDP cho: **Chào Mart AI**") {
+	if !strings.Contains(replyStr, "Pháº£n há»“i CDP cho: **ChÃ o Mart AI**") {
 		t.Fatalf("unexpected CDP chat reply: %q (full=%+v)", replyStr, chatRes)
 	}
 }

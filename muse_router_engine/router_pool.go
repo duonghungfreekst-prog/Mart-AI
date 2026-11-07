@@ -127,9 +127,11 @@ type MuseRouterPool struct {
 	vaultPath         string
 	threadsPath       string
 	mysqlStore        *MySQLStore
-	rustBridge        *RustCoreBridge
+	vault             *Vault
 	cache             *TTLCache
 	jobQueue          chan func()
+	probeMu           sync.Mutex
+	probePending      map[string]time.Time
 	aiBridgeURL       string
 	aiBridgeToken     string
 	httpClient        *http.Client
@@ -162,7 +164,7 @@ func (p *MuseRouterPool) markPythonBridgeDown() {
 
 func NewMuseRouterPool(
 	dataDir string,
-	rustBridge *RustCoreBridge,
+	vault *Vault,
 	cache *TTLCache,
 	aiBridgeURL string,
 	aiBridgeToken string,
@@ -191,9 +193,10 @@ func NewMuseRouterPool(
 		vaultPath:     vaultPath,
 		threadsPath:   threadsPath,
 		mysqlStore:    sqlStore,
-		rustBridge:    rustBridge,
+		vault:         vault,
 		cache:         cache,
 		jobQueue:      make(chan func(), BoundedQueueSize),
+		probePending:  make(map[string]time.Time),
 		aiBridgeURL:   strings.TrimRight(aiBridgeURL, "/"),
 		aiBridgeToken: aiBridgeToken,
 		httpClient: &http.Client{
@@ -254,6 +257,32 @@ func (p *MuseRouterPool) SubmitAsyncJob(job func()) error {
 	}
 }
 
+// scheduleNodeProbe debounces health probes per node and routes them through
+// the bounded worker queue instead of creating an unbounded goroutine per chat.
+func (p *MuseRouterPool) scheduleNodeProbe(nodeID string) {
+	if strings.TrimSpace(nodeID) == "" {
+		return
+	}
+	p.probeMu.Lock()
+	if last, ok := p.probePending[nodeID]; ok && time.Since(last) < 10*time.Second {
+		p.probeMu.Unlock()
+		return
+	}
+	p.probePending[nodeID] = time.Now()
+	p.probeMu.Unlock()
+	if err := p.SubmitAsyncJob(func() {
+		time.Sleep(1500 * time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		defer cancel()
+		_, _ = p.WakeAndProbeNode(ctx, nodeID)
+	}); err != nil {
+		p.probeMu.Lock()
+		delete(p.probePending, nodeID)
+		p.probeMu.Unlock()
+		LogWarn("Node probe queue full for %s", SanitizeLog(nodeID))
+	}
+}
+
 func (p *MuseRouterPool) memoryMonitorLoop() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -273,8 +302,8 @@ func (p *MuseRouterPool) memoryMonitorLoop() {
 	}
 }
 
-// autoSyncAccountsLoop tự động đồng bộ trạng thái & mức sử dụng Token của các tài khoản với muse.ai
-// ngay khi khởi động và định kỳ mỗi 45 giây mà người dùng không cần bấm nút thủ công.
+// autoSyncAccountsLoop tá»± Ä‘á»™ng Ä‘á»“ng bá»™ tráº¡ng thÃ¡i & má»©c sá»­ dá»¥ng Token cá»§a cÃ¡c tÃ i khoáº£n vá»›i muse.ai
+// ngay khi khá»Ÿi Ä‘á»™ng vÃ  Ä‘á»‹nh ká»³ má»—i 45 giÃ¢y mÃ  ngÆ°á»i dÃ¹ng khÃ´ng cáº§n báº¥m nÃºt thá»§ cÃ´ng.
 func (p *MuseRouterPool) autoSyncAccountsLoop() {
 	initialTimer := time.NewTimer(2500 * time.Millisecond)
 	select {
@@ -339,15 +368,15 @@ func FormatTokenCount(tokens int64) string {
 	}
 	if tokens >= 1_000_000_000 {
 		val := float64(tokens) / 1_000_000_000.0
-		return fmt.Sprintf("≈%.3fB", val)
+		return fmt.Sprintf("â‰ˆ%.3fB", val)
 	}
 	if tokens >= 1_000_000 {
 		val := float64(tokens) / 1_000_000.0
-		return fmt.Sprintf("≈%.1fM", val)
+		return fmt.Sprintf("â‰ˆ%.1fM", val)
 	}
 	if tokens >= 1_000 {
 		val := float64(tokens) / 1_000.0
-		return fmt.Sprintf("≈%.1fK", val)
+		return fmt.Sprintf("â‰ˆ%.1fK", val)
 	}
 	return fmt.Sprintf("%d", tokens)
 }
@@ -359,11 +388,11 @@ func computeDeterministicDeviceProfile(fp string) string {
 	}
 	digest := sha256.Sum256([]byte(seed))
 	shortUAs := []string{
-		"Chrome 131 · Win11",
-		"Chrome 130 · Win11",
-		"Edge 131 · Win11",
-		"Chrome 129 · Win10",
-		"Chrome 128 · Win10",
+		"Chrome 131 Â· Win11",
+		"Chrome 130 Â· Win11",
+		"Edge 131 Â· Win11",
+		"Chrome 129 Â· Win10",
+		"Chrome 128 Â· Win10",
 	}
 	gpus := []string{
 		"RTX 3060",
@@ -376,14 +405,14 @@ func computeDeterministicDeviceProfile(fp string) string {
 		"Radeon iGPU",
 	}
 	screens := []string{
-		"1920×1080",
-		"1536×864",
-		"2560×1440",
-		"1440×900",
-		"1680×1050",
-		"1600×900",
-		"1366×768",
-		"1920×1200",
+		"1920Ã—1080",
+		"1536Ã—864",
+		"2560Ã—1440",
+		"1440Ã—900",
+		"1680Ã—1050",
+		"1600Ã—900",
+		"1366Ã—768",
+		"1920Ã—1200",
 	}
 	hws := []string{
 		"8C/16GB",
@@ -397,7 +426,7 @@ func computeDeterministicDeviceProfile(fp string) string {
 	}
 	devID := strings.ToUpper(hex.EncodeToString(digest[8:11]))
 	return fmt.Sprintf(
-		"DEV-%s · %s · %s · %s (%s)",
+		"DEV-%s Â· %s Â· %s Â· %s (%s)",
 		devID,
 		shortUAs[int(digest[0])%len(shortUAs)],
 		gpus[int(digest[1])%len(gpus)],
@@ -417,26 +446,26 @@ func normalizeAccountIndices(nodes []*MuseAccountNode) {
 		}
 		if n.Status == "unavailable" && n.HasHatchSess && strings.Contains(n.StatusDetail, "AI Bridge") {
 			n.Status = "ready"
-			n.StatusDetail = "Đang hoạt động (Đồng bộ trực tiếp)"
+			n.StatusDetail = "Äang hoáº¡t Ä‘á»™ng (Äá»“ng bá»™ trá»±c tiáº¿p)"
 		}
 		if n.Status == "ready" || n.Status == "running" {
 			if n.FreePlanLabel == "" {
-				n.FreePlanLabel = "Gói miễn phí"
+				n.FreePlanLabel = "GÃ³i miá»…n phÃ­"
 			}
 			if n.FreePlanValue == "" {
-				n.FreePlanValue = "Chưa lấy được dữ liệu từ Muse.ai"
+				n.FreePlanValue = "ChÆ°a láº¥y Ä‘Æ°á»£c dá»¯ liá»‡u tá»« Muse.ai"
 			}
 			if n.FreePlanSubtitle == "" {
-				n.FreePlanSubtitle = "Giới hạn hàng tuần được đồng bộ trực tiếp với muse.ai"
+				n.FreePlanSubtitle = "Giá»›i háº¡n hÃ ng tuáº§n Ä‘Æ°á»£c Ä‘á»“ng bá»™ trá»±c tiáº¿p vá»›i muse.ai"
 			}
 			if n.TopupLabel == "" {
-				n.TopupLabel = "Token bổ sung"
+				n.TopupLabel = "Token bá»• sung"
 			}
 			if n.TopupValue == "" {
-				n.TopupValue = "Chưa lấy được dữ liệu từ Muse.ai"
+				n.TopupValue = "ChÆ°a láº¥y Ä‘Æ°á»£c dá»¯ liá»‡u tá»« Muse.ai"
 			}
 			if n.TopupSubtitle == "" {
-				n.TopupSubtitle = "Không bao giờ hết hạn"
+				n.TopupSubtitle = "KhÃ´ng bao giá» háº¿t háº¡n"
 			}
 		}
 	}
@@ -582,22 +611,22 @@ func (p *MuseRouterPool) GetSummary() RouterSummary {
 		copyNode.EncryptedCredential = ""
 		if copyNode.Status == "ready" || copyNode.Status == "running" {
 			if copyNode.FreePlanLabel == "" {
-				copyNode.FreePlanLabel = "Gói miễn phí"
+				copyNode.FreePlanLabel = "GÃ³i miá»…n phÃ­"
 			}
 			if copyNode.FreePlanValue == "" {
-				copyNode.FreePlanValue = "Chưa lấy được dữ liệu từ Muse.ai"
+				copyNode.FreePlanValue = "ChÆ°a láº¥y Ä‘Æ°á»£c dá»¯ liá»‡u tá»« Muse.ai"
 			}
 			if copyNode.FreePlanSubtitle == "" {
-				copyNode.FreePlanSubtitle = "Giới hạn hàng tuần được đồng bộ trực tiếp với muse.ai"
+				copyNode.FreePlanSubtitle = "Giá»›i háº¡n hÃ ng tuáº§n Ä‘Æ°á»£c Ä‘á»“ng bá»™ trá»±c tiáº¿p vá»›i muse.ai"
 			}
 			if copyNode.TopupLabel == "" {
-				copyNode.TopupLabel = "Token bổ sung"
+				copyNode.TopupLabel = "Token bá»• sung"
 			}
 			if copyNode.TopupValue == "" {
-				copyNode.TopupValue = "Chưa lấy được dữ liệu từ Muse.ai"
+				copyNode.TopupValue = "ChÆ°a láº¥y Ä‘Æ°á»£c dá»¯ liá»‡u tá»« Muse.ai"
 			}
 			if copyNode.TopupSubtitle == "" {
-				copyNode.TopupSubtitle = "Không bao giờ hết hạn"
+				copyNode.TopupSubtitle = "KhÃ´ng bao giá» háº¿t háº¡n"
 			}
 		}
 		safeNodes = append(safeNodes, &copyNode)
@@ -653,7 +682,7 @@ func (p *MuseRouterPool) GetSummary() RouterSummary {
 	}
 }
 
-// GetPublicSummary trả về tóm tắt trạng thái Pool cho tài khoản người dùng thường (ẩn chi tiết Node/Cookie/Proxy nội bộ của Admin).
+// GetPublicSummary tráº£ vá» tÃ³m táº¯t tráº¡ng thÃ¡i Pool cho tÃ i khoáº£n ngÆ°á»i dÃ¹ng thÆ°á»ng (áº©n chi tiáº¿t Node/Cookie/Proxy ná»™i bá»™ cá»§a Admin).
 func (p *MuseRouterPool) GetPublicSummary() RouterSummary {
 	sum := p.GetSummary()
 	sum.DatabaseURL = ""
@@ -676,7 +705,7 @@ func detectCookieFlags(raw string) (bool, bool) {
 	return strings.Contains(lower, "hatch_sess"), strings.Contains(lower, "hatch_gw")
 }
 
-// AddAccountNode mã hóa Cookie/Token qua Rust Core DLL, lưu vào Vault và KIỂM TRA XÁC THỰC THẬT SỰ với muse.ai
+// AddAccountNode mÃ£ hÃ³a Cookie/Token qua Rust Core DLL, lÆ°u vÃ o Vault vÃ  KIá»‚M TRA XÃC THá»°C THáº¬T Sá»° vá»›i muse.ai
 func (p *MuseRouterPool) AddAccountNode(
 	ctx context.Context,
 	label string,
@@ -701,11 +730,11 @@ func (p *MuseRouterPool) AddAccountNode(
 		return nil, errors.New("ERR_EMPTY_CREDENTIAL")
 	}
 	requestedLabel := strings.TrimSpace(label)
-	encrypted, err := p.rustBridge.EncryptSecret(rawCredential)
+	encrypted, err := p.vault.EncryptSecret(rawCredential)
 	if err != nil {
 		return nil, err
 	}
-	fp := p.rustBridge.ComputeFingerprint(rawCredential)
+	fp := p.vault.ComputeFingerprint(rawCredential)
 	hasSess, hasGw := detectCookieFlags(rawCredential)
 	cleanProxy := ""
 	if len(proxyURL) > 0 {
@@ -737,7 +766,7 @@ func (p *MuseRouterPool) AddAccountNode(
 		}
 		duplicate := existing.Fingerprint == fp
 		if !duplicate && authType == "cookie" && newSession != "" {
-			oldCredential, decryptErr := p.rustBridge.DecryptSecret(existing.EncryptedCredential)
+			oldCredential, decryptErr := p.vault.DecryptSecret(existing.EncryptedCredential)
 			if decryptErr == nil {
 				oldSession := extractCookieValue(oldCredential, "hatch_sess")
 				duplicate = oldSession != "" && ConstantTimeStringEquals(oldSession, newSession)
@@ -801,7 +830,7 @@ func (p *MuseRouterPool) AddAccountNode(
 		LatencyMs:           0,
 		LastUsedAt:          time.Now().Format("15:04:05"),
 		LastUsedUnixMs:      time.Now().UnixMilli(),
-		StatusDetail:        "Đang kiểm tra xác thực với muse.ai...",
+		StatusDetail:        "Äang kiá»ƒm tra xÃ¡c thá»±c vá»›i muse.ai...",
 	}
 
 	p.nodes = append(p.nodes, node)
@@ -827,7 +856,7 @@ func (p *MuseRouterPool) AddAccountNode(
 	return &copyNode, nil
 }
 
-// BatchImportAccounts hỗ trợ cắm nhiều tài khoản Muse AI cùng lúc và xác thực thật từng tài khoản
+// BatchImportAccounts há»— trá»£ cáº¯m nhiá»u tÃ i khoáº£n Muse AI cÃ¹ng lÃºc vÃ  xÃ¡c thá»±c tháº­t tá»«ng tÃ i khoáº£n
 func (p *MuseRouterPool) BatchImportAccounts(
 	ctx context.Context,
 	lines []string,
@@ -861,7 +890,7 @@ func (p *MuseRouterPool) BatchImportAccounts(
 	return added, verifiedReady, nil
 }
 
-// GenerateOAuthLoginLink gọi Python AI Bridge (hoặc gọi trực tiếp muse.ai khi chạy trên Cloud/Render) để lấy Link Đăng Nhập OAuth chính thức của muse.ai
+// GenerateOAuthLoginLink gá»i Python AI Bridge (hoáº·c gá»i trá»±c tiáº¿p muse.ai khi cháº¡y trÃªn Cloud/Render) Ä‘á»ƒ láº¥y Link ÄÄƒng Nháº­p OAuth chÃ­nh thá»©c cá»§a muse.ai
 func (p *MuseRouterPool) GenerateOAuthLoginLink(parentCtx context.Context) (map[string]interface{}, error) {
 	ctx, cancel := context.WithTimeout(parentCtx, 18*time.Second)
 	defer cancel()
@@ -959,8 +988,8 @@ func (p *MuseRouterPool) generateOAuthLoginLinkDirect(ctx context.Context) (map[
 	}, nil
 }
 
-// PurgeBrokenNodes quét và tự động loại bỏ tất cả các node không thể giải mã thông tin xác thực
-// (ví dụ bị mã hóa bởi khóa cũ, hoặc lỗi ERR_RUST_DECRYPT_FAILED) khỏi Database và Vault.
+// PurgeBrokenNodes quÃ©t vÃ  tá»± Ä‘á»™ng loáº¡i bá» táº¥t cáº£ cÃ¡c node khÃ´ng thá»ƒ giáº£i mÃ£ thÃ´ng tin xÃ¡c thá»±c
+// (vÃ­ dá»¥ bá»‹ mÃ£ hÃ³a bá»Ÿi khÃ³a cÅ©, hoáº·c lá»—i ERR_RUST_DECRYPT_FAILED) khá»i Database vÃ  Vault.
 func (p *MuseRouterPool) PurgeBrokenNodes() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -968,13 +997,13 @@ func (p *MuseRouterPool) PurgeBrokenNodes() int {
 	purged := 0
 	var kept []*MuseAccountNode
 	for _, n := range p.nodes {
-		_, errDec := p.rustBridge.DecryptSecret(n.EncryptedCredential)
+		_, errDec := p.vault.DecryptSecret(n.EncryptedCredential)
 		if errDec != nil {
 			purged++
 			if p.mysqlStore != nil {
 				_ = p.mysqlStore.DeleteAccount(n.ID, n.Fingerprint)
 			}
-			LogInfo("Đã tự động loại bỏ node lỗi giải mã khỏi Database: ID=%s Label=%s (%v)", n.ID, n.Label, errDec)
+			LogInfo("ÄÃ£ tá»± Ä‘á»™ng loáº¡i bá» node lá»—i giáº£i mÃ£ khá»i Database: ID=%s Label=%s (%v)", n.ID, n.Label, errDec)
 		} else {
 			kept = append(kept, n)
 		}
@@ -986,28 +1015,28 @@ func (p *MuseRouterPool) PurgeBrokenNodes() int {
 	return purged
 }
 
-// InteractiveBrowserLogin mở cửa sổ trình duyệt thực để người dùng đăng nhập muse.ai và tự động bắt Cookie thật
+// InteractiveBrowserLogin má»Ÿ cá»­a sá»• trÃ¬nh duyá»‡t thá»±c Ä‘á»ƒ ngÆ°á»i dÃ¹ng Ä‘Äƒng nháº­p muse.ai vÃ  tá»± Ä‘á»™ng báº¯t Cookie tháº­t
 func (p *MuseRouterPool) InteractiveBrowserLogin(parentCtx context.Context, label string, tokensRemaining int64, sessionID string, proxyURL ...string) (*MuseAccountNode, error) {
 	cleanProxy := ""
 	if len(proxyURL) > 0 {
 		cleanProxy = strings.TrimSpace(proxyURL[0])
 	}
 
-	// 1. Ưu tiên Pure Go CDP Browser Manager mở trình duyệt thật trên máy tính người dùng
+	// 1. Æ¯u tiÃªn Pure Go CDP Browser Manager má»Ÿ trÃ¬nh duyá»‡t tháº­t trÃªn mÃ¡y tÃ­nh ngÆ°á»i dÃ¹ng
 	if p.cdpManager != nil {
 		node, err := p.cdpManager.InteractiveDesktopLoginCapture(parentCtx, label, cleanProxy)
 		if err == nil && node != nil {
 			return node, nil
 		}
-		LogWarn("InteractiveDesktopLoginCapture thông báo: %v", err)
+		LogWarn("InteractiveDesktopLoginCapture thÃ´ng bÃ¡o: %v", err)
 		if strings.Contains(err.Error(), "ERR_DESKTOP_BROWSER_NOT_SUPPORTED_ON_CLOUD") {
 			return nil, err
 		}
 	}
 
-	// 2. Fallback sang Python AI Bridge nếu có cấu hình
+	// 2. Fallback sang Python AI Bridge náº¿u cÃ³ cáº¥u hÃ¬nh
 	if !p.shouldTryPythonBridge() {
-		return nil, errors.New("Không thể mở trình duyệt tự động trên máy này. Hãy kiểm tra Google Chrome / Microsoft Edge đã được cài đặt chưa.")
+		return nil, errors.New("KhÃ´ng thá»ƒ má»Ÿ trÃ¬nh duyá»‡t tá»± Ä‘á»™ng trÃªn mÃ¡y nÃ y. HÃ£y kiá»ƒm tra Google Chrome / Microsoft Edge Ä‘Ã£ Ä‘Æ°á»£c cÃ i Ä‘áº·t chÆ°a.")
 	}
 	ctx, cancel := context.WithTimeout(parentCtx, 190*time.Second)
 	defer cancel()
@@ -1050,7 +1079,7 @@ func (p *MuseRouterPool) InteractiveBrowserLogin(parentCtx context.Context, labe
 	}
 
 	encrypted, _ := res["encrypted"].(string)
-	credential, err := p.rustBridge.DecryptSecret(encrypted)
+	credential, err := p.vault.DecryptSecret(encrypted)
 	if err != nil {
 		return nil, fmt.Errorf("ERR_BROWSER_LOGIN_DECRYPT: %w", err)
 	}
@@ -1062,7 +1091,7 @@ func (p *MuseRouterPool) InteractiveBrowserLogin(parentCtx context.Context, labe
 	return node, err
 }
 
-// LaunchNativeAccountWindow mở cửa sổ trình duyệt muse.ai chính gốc với Cookie của Node được chọn
+// LaunchNativeAccountWindow má»Ÿ cá»­a sá»• trÃ¬nh duyá»‡t muse.ai chÃ­nh gá»‘c vá»›i Cookie cá»§a Node Ä‘Æ°á»£c chá»n
 func (p *MuseRouterPool) LaunchNativeAccountWindow(parentCtx context.Context, nodeID string) (map[string]interface{}, error) {
 	p.mu.RLock()
 	var target *MuseAccountNode
@@ -1110,7 +1139,6 @@ func (p *MuseRouterPool) LaunchNativeAccountWindow(parentCtx context.Context, no
 		}
 	}
 
-	rawCookie, _ := p.rustBridge.DecryptSecret(target.EncryptedCredential)
 	upstream := strings.TrimSpace(target.UpstreamURL)
 	if upstream == "" {
 		upstream = "https://muse.ai"
@@ -1121,8 +1149,7 @@ func (p *MuseRouterPool) LaunchNativeAccountWindow(parentCtx context.Context, no
 		"node_id":       target.ID,
 		"node_label":    target.Label,
 		"upstream_url":  upstream,
-		"relay_cookie":  strings.TrimSpace(rawCookie),
-		"detail":        fmt.Sprintf("Đã mở cửa sổ trình duyệt Muse.ai gốc cho %s.", target.Label),
+		"detail":        fmt.Sprintf("ÄÃ£ má»Ÿ cá»­a sá»• trÃ¬nh duyá»‡t Muse.ai gá»‘c cho %s.", target.Label),
 	}, nil
 }
 
@@ -1207,7 +1234,7 @@ func (p *MuseRouterPool) getOrderedCandidateNodes(preferredNodeID string) ([]*Mu
 	defer p.mu.RUnlock()
 
 	if len(p.nodes) == 0 {
-		return nil, errors.New("Chưa có tài khoản Muse.ai nào trong Pool. Hãy vào mục 'Cắm Tài Khoản' để đăng nhập hoặc dán Cookie thật.")
+		return nil, errors.New("ChÆ°a cÃ³ tÃ i khoáº£n Muse.ai nÃ o trong Pool. HÃ£y vÃ o má»¥c 'Cáº¯m TÃ i Khoáº£n' Ä‘á»ƒ Ä‘Äƒng nháº­p hoáº·c dÃ¡n Cookie tháº­t.")
 	}
 
 	if preferredNodeID != "" && preferredNodeID != "auto" {
@@ -1218,14 +1245,14 @@ func (p *MuseRouterPool) getOrderedCandidateNodes(preferredNodeID string) ([]*Mu
 			}
 		}
 		if !p.autoFailover {
-			return nil, errors.New("Node được ghim không tồn tại trong Pool.")
+			return nil, errors.New("Node Ä‘Æ°á»£c ghim khÃ´ng tá»“n táº¡i trong Pool.")
 		}
 	}
 
 	candidates := make([]*MuseAccountNode, 0, len(p.nodes))
 	for _, n := range p.nodes {
 		if n.Status != "unavailable" {
-			if _, errDec := p.rustBridge.DecryptSecret(n.EncryptedCredential); errDec != nil {
+			if _, errDec := p.vault.DecryptSecret(n.EncryptedCredential); errDec != nil {
 				continue
 			}
 			c := *n
@@ -1235,7 +1262,7 @@ func (p *MuseRouterPool) getOrderedCandidateNodes(preferredNodeID string) ([]*Mu
 
 	if len(candidates) == 0 {
 		for _, n := range p.nodes {
-			if _, errDec := p.rustBridge.DecryptSecret(n.EncryptedCredential); errDec != nil {
+			if _, errDec := p.vault.DecryptSecret(n.EncryptedCredential); errDec != nil {
 				continue
 			}
 			c := *n
@@ -1259,8 +1286,8 @@ func (p *MuseRouterPool) getOrderedCandidateNodes(preferredNodeID string) ([]*Mu
 			return candidates[i].TokensRemaining > candidates[j].TokensRemaining
 		})
 	default:
-		// Anti-Ban Cooldown Rotation: Khi các tài khoản có cùng số luồng active,
-		// ưu tiên chọn tài khoản đã nghỉ lâu nhất (LastUsedUnixMs nhỏ nhất) để phân tán tần suất request trên cùng IP.
+		// Anti-Ban Cooldown Rotation: Khi cÃ¡c tÃ i khoáº£n cÃ³ cÃ¹ng sá»‘ luá»“ng active,
+		// Æ°u tiÃªn chá»n tÃ i khoáº£n Ä‘Ã£ nghá»‰ lÃ¢u nháº¥t (LastUsedUnixMs nhá» nháº¥t) Ä‘á»ƒ phÃ¢n tÃ¡n táº§n suáº¥t request trÃªn cÃ¹ng IP.
 		sort.SliceStable(candidates, func(i, j int) bool {
 			if candidates[i].ActiveRequests == candidates[j].ActiveRequests {
 				if candidates[i].LastUsedUnixMs != candidates[j].LastUsedUnixMs {
@@ -1305,7 +1332,7 @@ func (p *MuseRouterPool) releaseNode(nodeID string, tokensUsed int64, latencyMs 
 					n.TokensUsed += tokensUsed
 				}
 				n.LatencyMs = latencyMs
-				n.StatusDetail = fmt.Sprintf("Đã đồng bộ (%dms)", latencyMs)
+				n.StatusDetail = fmt.Sprintf("ÄÃ£ Ä‘á»“ng bá»™ (%dms)", latencyMs)
 				if n.ActiveRequests > 0 {
 					n.Status = "running"
 				} else {
@@ -1326,7 +1353,7 @@ func (p *MuseRouterPool) releaseNode(nodeID string, tokensUsed int64, latencyMs 
 	}
 }
 
-// WakeAndProbeNode gọi sang Python AI Bridge để xác thực thật sự với máy chủ muse.ai
+// WakeAndProbeNode gá»i sang Python AI Bridge Ä‘á»ƒ xÃ¡c thá»±c tháº­t sá»± vá»›i mÃ¡y chá»§ muse.ai
 func (p *MuseRouterPool) WakeAndProbeNode(parentCtx context.Context, nodeID string) (map[string]interface{}, error) {
 	p.mu.RLock()
 	var target *MuseAccountNode
@@ -1378,7 +1405,7 @@ func (p *MuseRouterPool) WakeAndProbeNode(parentCtx context.Context, nodeID stri
 	if err != nil {
 		directRes, errDirect := p.wakeAndProbeNodeDirect(ctx, target)
 		if errDirect != nil {
-			errMsg := fmt.Sprintf("Kiểm tra phiên trực tiếp tới muse.ai không thành công: %v", errDirect)
+			errMsg := fmt.Sprintf("Kiá»ƒm tra phiÃªn trá»±c tiáº¿p tá»›i muse.ai khÃ´ng thÃ nh cÃ´ng: %v", errDirect)
 			LogWarn("%s", errMsg)
 			p.mu.Lock()
 			for _, n := range p.nodes {
@@ -1466,7 +1493,7 @@ func (p *MuseRouterPool) WakeAndProbeNode(parentCtx context.Context, nodeID stri
 }
 
 func (p *MuseRouterPool) wakeAndProbeNodeDirect(ctx context.Context, target *MuseAccountNode) (map[string]interface{}, error) {
-	rawCred, err := p.rustBridge.DecryptSecret(target.EncryptedCredential)
+	rawCred, err := p.vault.DecryptSecret(target.EncryptedCredential)
 	if err != nil {
 		return nil, err
 	}
@@ -1477,8 +1504,8 @@ func (p *MuseRouterPool) wakeAndProbeNodeDirect(ctx context.Context, target *Mus
 
 	if resolved, ok := resolveOAuthCallbackNative(ctx, trimmed); ok {
 		trimmed = resolved
-		if enc, errEnc := p.rustBridge.EncryptSecret(resolved); errEnc == nil {
-			newFP := p.rustBridge.ComputeFingerprint(resolved)
+		if enc, errEnc := p.vault.EncryptSecret(resolved); errEnc == nil {
+			newFP := p.vault.ComputeFingerprint(resolved)
 			p.mu.Lock()
 			for _, n := range p.nodes {
 				if n.ID == target.ID {
@@ -1492,7 +1519,7 @@ func (p *MuseRouterPool) wakeAndProbeNodeDirect(ctx context.Context, target *Mus
 			p.mu.Unlock()
 			target.Fingerprint = newFP
 		} else {
-			LogWarn("Không mã hóa lại được cookie sau khi đổi callback: %v", errEnc)
+			LogWarn("KhÃ´ng mÃ£ hÃ³a láº¡i Ä‘Æ°á»£c cookie sau khi Ä‘á»•i callback: %v", errEnc)
 		}
 	} else if isOAuthCallbackURL(trimmed) {
 		return map[string]interface{}{
@@ -1500,7 +1527,7 @@ func (p *MuseRouterPool) wakeAndProbeNodeDirect(ctx context.Context, target *Mus
 			"latency_ms":     float64(0),
 			"has_hatch_sess": false,
 			"has_hatch_gw":   false,
-			"detail":         "Link Callback không đổi được sang phiên đăng nhập — hãy bấm 'Tự Lấy Link Đăng Nhập' tạo link mới rồi đăng nhập lại",
+			"detail":         "Link Callback khÃ´ng Ä‘á»•i Ä‘Æ°á»£c sang phiÃªn Ä‘Äƒng nháº­p â€” hÃ£y báº¥m 'Tá»± Láº¥y Link ÄÄƒng Nháº­p' táº¡o link má»›i rá»“i Ä‘Äƒng nháº­p láº¡i",
 		}, nil
 	}
 
@@ -1537,7 +1564,7 @@ func (p *MuseRouterPool) wakeAndProbeNodeDirect(ctx context.Context, target *Mus
 			"latency_ms":     latMs,
 			"has_hatch_sess": hasSess,
 			"has_hatch_gw":   hasGw,
-			"detail":         fmt.Sprintf("Muse.ai xác nhận phiên không hợp lệ (HTTP %d)", sessionResp.StatusCode),
+			"detail":         fmt.Sprintf("Muse.ai xÃ¡c nháº­n phiÃªn khÃ´ng há»£p lá»‡ (HTTP %d)", sessionResp.StatusCode),
 		}, nil
 	}
 	if sessionResp.StatusCode < http.StatusOK || sessionResp.StatusCode >= http.StatusMultipleChoices {
@@ -1546,7 +1573,7 @@ func (p *MuseRouterPool) wakeAndProbeNodeDirect(ctx context.Context, target *Mus
 			"latency_ms":     latMs,
 			"has_hatch_sess": hasSess,
 			"has_hatch_gw":   hasGw,
-			"detail":         fmt.Sprintf("Không xác minh được phiên Muse.ai (HTTP %d)", sessionResp.StatusCode),
+			"detail":         fmt.Sprintf("KhÃ´ng xÃ¡c minh Ä‘Æ°á»£c phiÃªn Muse.ai (HTTP %d)", sessionResp.StatusCode),
 		}, nil
 	}
 	var sessionData struct {
@@ -1558,7 +1585,7 @@ func (p *MuseRouterPool) wakeAndProbeNodeDirect(ctx context.Context, target *Mus
 			"latency_ms":     latMs,
 			"has_hatch_sess": hasSess,
 			"has_hatch_gw":   hasGw,
-			"detail":         "Muse.ai trả dữ liệu phiên không đọc được; chưa xác nhận tài khoản",
+			"detail":         "Muse.ai tráº£ dá»¯ liá»‡u phiÃªn khÃ´ng Ä‘á»c Ä‘Æ°á»£c; chÆ°a xÃ¡c nháº­n tÃ i khoáº£n",
 		}, nil
 	}
 	if strings.EqualFold(strings.TrimSpace(sessionData.VMState), "DISABLED") {
@@ -1567,7 +1594,7 @@ func (p *MuseRouterPool) wakeAndProbeNodeDirect(ctx context.Context, target *Mus
 			"latency_ms":     latMs,
 			"has_hatch_sess": hasSess,
 			"has_hatch_gw":   hasGw,
-			"detail":         "Muse.ai báo VM của tài khoản đang bị vô hiệu hóa",
+			"detail":         "Muse.ai bÃ¡o VM cá»§a tÃ i khoáº£n Ä‘ang bá»‹ vÃ´ hiá»‡u hÃ³a",
 		}, nil
 	}
 
@@ -1593,7 +1620,7 @@ func (p *MuseRouterPool) wakeAndProbeNodeDirect(ctx context.Context, target *Mus
 			"latency_ms":     latMs,
 			"has_hatch_sess": hasSess,
 			"has_hatch_gw":   hasGw,
-			"detail":         fmt.Sprintf("Cookie hatch_sess hết hạn hoặc không hợp lệ (HTTP %d)", resp.StatusCode),
+			"detail":         fmt.Sprintf("Cookie hatch_sess háº¿t háº¡n hoáº·c khÃ´ng há»£p lá»‡ (HTTP %d)", resp.StatusCode),
 		}, nil
 	}
 
@@ -1609,9 +1636,9 @@ func (p *MuseRouterPool) wakeAndProbeNodeDirect(ctx context.Context, target *Mus
 	cancelSub()
 
 	tokRem := subInfo.TokensRemaining
-	detail := fmt.Sprintf("Đã đồng bộ Muse.ai (%dms · %s)", int(latMs), subInfo.FreePlanValue)
+	detail := fmt.Sprintf("ÄÃ£ Ä‘á»“ng bá»™ Muse.ai (%dms Â· %s)", int(latMs), subInfo.FreePlanValue)
 	if !subInfo.Fetched {
-		detail = fmt.Sprintf("Đăng nhập Muse.ai thành công (%dms), nhưng chưa đọc được dữ liệu mức sử dụng; hãy thử đồng bộ lại", int(latMs))
+		detail = fmt.Sprintf("ÄÄƒng nháº­p Muse.ai thÃ nh cÃ´ng (%dms), nhÆ°ng chÆ°a Ä‘á»c Ä‘Æ°á»£c dá»¯ liá»‡u má»©c sá»­ dá»¥ng; hÃ£y thá»­ Ä‘á»“ng bá»™ láº¡i", int(latMs))
 	}
 	return map[string]interface{}{
 		"status":                      "ready",
@@ -1733,30 +1760,30 @@ func (p *MuseRouterPool) callMuseSubscriptionAction(ctx context.Context, upstrea
 		}
 		freeLbl := strings.TrimSpace(sub.UsageRowLabel)
 		if freeLbl == "" {
-			freeLbl = "Gói miễn phí"
+			freeLbl = "GÃ³i miá»…n phÃ­"
 		}
 		freeVal := strings.TrimSpace(strings.ReplaceAll(sub.UsageRowValueLabel, "\u00a0", " "))
 		if freeVal == "" {
-			freeVal = fmt.Sprintf("Đã dùng %d%%", pctUsed)
+			freeVal = fmt.Sprintf("ÄÃ£ dÃ¹ng %d%%", pctUsed)
 		}
 		freeSub := strings.TrimSpace(sub.StatusSubtitle)
 		if freeSub == "" {
-			freeSub = "Giới hạn hàng tuần"
+			freeSub = "Giá»›i háº¡n hÃ ng tuáº§n"
 		}
 		topLbl := strings.TrimSpace(sub.TopupRowLabel)
 		if topLbl == "" {
-			topLbl = "Token bổ sung"
+			topLbl = "Token bá»• sung"
 		}
 		topVal := strings.TrimSpace(strings.ReplaceAll(sub.TopupRowValueLabel, "\u00a0", " "))
 		if topVal == "" && sub.TopupBalance == 0 && sub.TopupTotal == 0 {
 			topVal = "0"
 		}
 		if topVal == "" {
-			topVal = "Chưa lấy được dữ liệu từ Muse.ai"
+			topVal = "ChÆ°a láº¥y Ä‘Æ°á»£c dá»¯ liá»‡u tá»« Muse.ai"
 		}
 		topSub := strings.TrimSpace(sub.BillingSubtitle)
 		if topSub == "" {
-			topSub = "Không bao giờ hết hạn"
+			topSub = "KhÃ´ng bao giá» háº¿t háº¡n"
 		}
 		topPct := 0
 		if sub.TopupTotal > 0 {
@@ -1888,13 +1915,13 @@ func (p *MuseRouterPool) discoverMuseSubActionID(ctx context.Context, upstream, 
 
 func (p *MuseRouterPool) fetchRealMuseSubscriptionGo(ctx context.Context, upstream, cookieHeader, deployID string) museSubscriptionParsed {
 	def := museSubscriptionParsed{
-		FreePlanLabel:    "Gói miễn phí",
-		FreePlanValue:    "Chưa lấy được dữ liệu từ Muse.ai",
-		FreePlanSubtitle: "Muse.ai chưa trả dữ liệu usage; hãy thử đồng bộ lại",
+		FreePlanLabel:    "GÃ³i miá»…n phÃ­",
+		FreePlanValue:    "ChÆ°a láº¥y Ä‘Æ°á»£c dá»¯ liá»‡u tá»« Muse.ai",
+		FreePlanSubtitle: "Muse.ai chÆ°a tráº£ dá»¯ liá»‡u usage; hÃ£y thá»­ Ä‘á»“ng bá»™ láº¡i",
 		FreePlanPercent:  0,
-		TopupLabel:       "Token bổ sung",
-		TopupValue:       "Chưa lấy được dữ liệu từ Muse.ai",
-		TopupSubtitle:    "Không bao giờ hết hạn",
+		TopupLabel:       "Token bá»• sung",
+		TopupValue:       "ChÆ°a láº¥y Ä‘Æ°á»£c dá»¯ liá»‡u tá»« Muse.ai",
+		TopupSubtitle:    "KhÃ´ng bao giá» háº¿t háº¡n",
 		TopupPercent:     0,
 		TokensRemaining:  0,
 	}
@@ -1919,7 +1946,7 @@ func (p *MuseRouterPool) fetchRealMuseSubscriptionGo(ctx context.Context, upstre
 	return def
 }
 
-// RouteAndExecuteChat điều phối tin nhắn (kèm ảnh/tệp đính kèm) qua các Node thật trong Pool
+// RouteAndExecuteChat Ä‘iá»u phá»‘i tin nháº¯n (kÃ¨m áº£nh/tá»‡p Ä‘Ã­nh kÃ¨m) qua cÃ¡c Node tháº­t trong Pool
 func (p *MuseRouterPool) RouteAndExecuteChat(
 	parentCtx context.Context,
 	threadID string,
@@ -1990,8 +2017,8 @@ func (p *MuseRouterPool) RouteAndExecuteChatForOwner(
 	for _, candidate := range candidates {
 		p.markNodeRunning(candidate.ID)
 		startTs := time.Now()
-		// Nếu máy chủ có sẵn Chromium Headless CDP, ưu tiên chạy CDP trực tiếp trên máy chủ để cách ly 100% cuộc trò chuyện sạch!
-		// Chỉ khi máy chủ không có sẵn Chromium mới chuyển tiếp qua Client Browser Relay của Extension.
+		// Náº¿u mÃ¡y chá»§ cÃ³ sáºµn Chromium Headless CDP, Æ°u tiÃªn cháº¡y CDP trá»±c tiáº¿p trÃªn mÃ¡y chá»§ Ä‘á»ƒ cÃ¡ch ly 100% cuá»™c trÃ² chuyá»‡n sáº¡ch!
+		// Chá»‰ khi mÃ¡y chá»§ khÃ´ng cÃ³ sáºµn Chromium má»›i chuyá»ƒn tiáº¿p qua Client Browser Relay cá»§a Extension.
 		if !skipClientRelay && forceClientRelay && candidate.AuthType == "cookie" && candidate.HasHatchSess && (p.cdpManager == nil || !p.cdpManager.HasBrowserAvailable()) {
 			LogInfo("Routing web chat through client browser relay for node %s", candidate.ID)
 			return p.prepareBrowserRelayResponse(candidate, resolvedThreadID, turnID, model, userPrompt)
@@ -2036,7 +2063,7 @@ func (p *MuseRouterPool) RouteAndExecuteChatForOwner(
 		}
 		if errDo != nil {
 			cancel()
-			errMsg := fmt.Sprintf("Không kết nối được dịch vụ AI Bridge trên %s: %v", candidate.Label, errDo)
+			errMsg := fmt.Sprintf("KhÃ´ng káº¿t ná»‘i Ä‘Æ°á»£c dá»‹ch vá»¥ AI Bridge trÃªn %s: %v", candidate.Label, errDo)
 			upClean := strings.TrimRight(strings.ToLower(strings.TrimSpace(candidate.UpstreamURL)), "/")
 			if candidate.AuthType == "api_key" || (!candidate.HasHatchSess && upClean != "" && !strings.HasSuffix(upClean, "muse.ai")) {
 				directCtx, directCancel := context.WithTimeout(parentCtx, 45*time.Second)
@@ -2082,7 +2109,7 @@ func (p *MuseRouterPool) RouteAndExecuteChatForOwner(
 				if p.cdpManager == nil && forceClientRelay && !skipClientRelay && candidate.AuthType == "cookie" && candidate.HasHatchSess {
 					return p.prepareBrowserRelayResponse(candidate, resolvedThreadID, turnID, model, userPrompt)
 				}
-				errMsg = "Máy chủ chưa thể kết nối Headless Chromium tới Muse.ai"
+				errMsg = "MÃ¡y chá»§ chÆ°a thá»ƒ káº¿t ná»‘i Headless Chromium tá»›i Muse.ai"
 				if lastErr != nil {
 					errMsg = lastErr.Error()
 				}
@@ -2105,9 +2132,9 @@ func (p *MuseRouterPool) RouteAndExecuteChatForOwner(
 		if resp.StatusCode != http.StatusOK {
 			errMsg, _ := parsed["error"].(string)
 			if errMsg == "" {
-				errMsg = fmt.Sprintf("Node %s trả về HTTP %d", candidate.Label, resp.StatusCode)
+				errMsg = fmt.Sprintf("Node %s tráº£ vá» HTTP %d", candidate.Label, resp.StatusCode)
 			}
-			LogWarn("Node %s failed (%s) — failover=%v", candidate.Label, errMsg, p.autoFailover)
+			LogWarn("Node %s failed (%s) â€” failover=%v", candidate.Label, errMsg, p.autoFailover)
 			p.releaseNode(candidate.ID, 0, int(time.Since(startTs).Milliseconds()), false, errMsg)
 			lastErr = errors.New(errMsg)
 			if !p.autoFailover {
@@ -2138,13 +2165,8 @@ func (p *MuseRouterPool) RouteAndExecuteChatForOwner(
 		}
 		p.releaseNode(candidate.ID, tokensUsed, latencyMs, true, "")
 
-		// Tự động đồng bộ ngầm mức sử dụng Token thật từ muse.ai sau mỗi câu trả lời
-		go func(nID string) {
-			time.Sleep(1500 * time.Millisecond)
-			probeCtx, cancelProbe := context.WithTimeout(context.Background(), 12*time.Second)
-			defer cancelProbe()
-			_, _ = p.WakeAndProbeNode(probeCtx, nID)
-		}(candidate.ID)
+		// Tá»± Ä‘á»™ng Ä‘á»“ng bá»™ ngáº§m má»©c sá»­ dá»¥ng Token tháº­t tá»« muse.ai sau má»—i cÃ¢u tráº£ lá»i
+		p.scheduleNodeProbe(candidate.ID)
 
 		updatedThread := p.completeQuestionTurn(
 			resolvedThreadID,
@@ -2187,12 +2209,12 @@ func (p *MuseRouterPool) RouteAndExecuteChatForOwner(
 
 	p.cancelQuestionTurn(resolvedThreadID, turnID)
 	if lastErr == nil {
-		lastErr = errors.New("Không có Node Muse AI nào khả dụng để xử lý yêu cầu.")
+		lastErr = errors.New("KhÃ´ng cÃ³ Node Muse AI nÃ o kháº£ dá»¥ng Ä‘á»ƒ xá»­ lÃ½ yÃªu cáº§u.")
 	}
 	return nil, lastErr
 }
 
-// fetchBridgeBusyMaps lấy danh sách tài khoản đang làm dở câu hỏi (kể cả đang làm việc nền trên Muse gốc).
+// fetchBridgeBusyMaps láº¥y danh sÃ¡ch tÃ i khoáº£n Ä‘ang lÃ m dá»Ÿ cÃ¢u há»i (ká»ƒ cáº£ Ä‘ang lÃ m viá»‡c ná»n trÃªn Muse gá»‘c).
 func (p *MuseRouterPool) fetchBridgeBusyMaps(parentCtx context.Context) (map[string]bool, map[string]bool) {
 	busyFPs := make(map[string]bool)
 	busyLabels := make(map[string]bool)
@@ -2239,9 +2261,9 @@ func (p *MuseRouterPool) fetchBridgeBusyMaps(parentCtx context.Context) (map[str
 }
 
 // prioritizeAndFilterBusyNodes:
-//   - Nếu tài khoản đang trả lời dở câu hỏi trước (ActiveRequests > 0) hoặc còn đang làm việc nền trên Muse gốc (busyFPs/busyLabels),
-//     tự động đẩy tài khoản đó xuống sau để câu hỏi mới nhảy sang tài khoản khác đang rảnh.
-//   - Nếu tài khoản vừa trả lời đoạn chat này đang hoàn toàn rảnh thì mới giữ ở tài khoản đó.
+//   - Náº¿u tÃ i khoáº£n Ä‘ang tráº£ lá»i dá»Ÿ cÃ¢u há»i trÆ°á»›c (ActiveRequests > 0) hoáº·c cÃ²n Ä‘ang lÃ m viá»‡c ná»n trÃªn Muse gá»‘c (busyFPs/busyLabels),
+//     tá»± Ä‘á»™ng Ä‘áº©y tÃ i khoáº£n Ä‘Ã³ xuá»‘ng sau Ä‘á»ƒ cÃ¢u há»i má»›i nháº£y sang tÃ i khoáº£n khÃ¡c Ä‘ang ráº£nh.
+//   - Náº¿u tÃ i khoáº£n vá»«a tráº£ lá»i Ä‘oáº¡n chat nÃ y Ä‘ang hoÃ n toÃ n ráº£nh thÃ¬ má»›i giá»¯ á»Ÿ tÃ i khoáº£n Ä‘Ã³.
 func (p *MuseRouterPool) prioritizeAndFilterBusyNodes(
 	threadID string,
 	candidates []*MuseAccountNode,
@@ -2255,7 +2277,7 @@ func (p *MuseRouterPool) prioritizeAndFilterBusyNodes(
 		return c.ActiveRequests > 0 || busyFPs[c.Fingerprint] || busyLabels[c.Label]
 	}
 
-	// Đưa toàn bộ tài khoản đang hoàn toàn rảnh lên trước tài khoản đang làm dở
+	// ÄÆ°a toÃ n bá»™ tÃ i khoáº£n Ä‘ang hoÃ n toÃ n ráº£nh lÃªn trÆ°á»›c tÃ i khoáº£n Ä‘ang lÃ m dá»Ÿ
 	idleList := make([]*MuseAccountNode, 0, len(candidates))
 	busyList := make([]*MuseAccountNode, 0, len(candidates))
 	for _, c := range candidates {
@@ -2284,7 +2306,7 @@ func (p *MuseRouterPool) prioritizeAndFilterBusyNodes(
 		p.mu.RUnlock()
 	}
 
-	// Chỉ ưu tiên tài khoản cũ của đoạn chat nếu nó nằm trong danh sách RẢNH (idleList)
+	// Chá»‰ Æ°u tiÃªn tÃ i khoáº£n cÅ© cá»§a Ä‘oáº¡n chat náº¿u nÃ³ náº±m trong danh sÃ¡ch Ráº¢NH (idleList)
 	if lastLabel != "" && len(idleList) > 1 {
 		for i, c := range idleList {
 			if c.Label == lastLabel && c.Status != "unavailable" {
@@ -2317,8 +2339,8 @@ func cloneChatThread(t *ChatThread) *ChatThread {
 	return &c
 }
 
-// reserveQuestionTurn ghi nhận ngay câu hỏi của người dùng và giữ chỗ 1 dòng trả lời để trống
-// nằm NGAY SAU câu hỏi đó (theo đúng thứ tự đặt câu hỏi), rồi trả về (threadID, turnID, messagesPayload).
+// reserveQuestionTurn ghi nháº­n ngay cÃ¢u há»i cá»§a ngÆ°á»i dÃ¹ng vÃ  giá»¯ chá»— 1 dÃ²ng tráº£ lá»i Ä‘á»ƒ trá»‘ng
+// náº±m NGAY SAU cÃ¢u há»i Ä‘Ã³ (theo Ä‘Ãºng thá»© tá»± Ä‘áº·t cÃ¢u há»i), rá»“i tráº£ vá» (threadID, turnID, messagesPayload).
 func (p *MuseRouterPool) reserveQuestionTurn(
 	threadID string,
 	model string,
@@ -2344,7 +2366,7 @@ func cleanStaleMessagesInThread(t *ChatThread, nowNano int64) bool {
 				}
 				continue
 			}
-			// Kiểm tra thời gian tạo turn (turn_<unixNano>)
+			// Kiá»ƒm tra thá»i gian táº¡o turn (turn_<unixNano>)
 			if strings.HasPrefix(m.TurnID, "turn_") {
 				if tsNano, err := strconv.ParseInt(strings.TrimPrefix(m.TurnID, "turn_"), 10, 64); err == nil {
 					if nowNano-tsNano > int64(95*time.Second) {
@@ -2408,13 +2430,13 @@ func (p *MuseRouterPool) reserveQuestionTurnForOwner(
 
 	title := strings.TrimSpace(userPrompt)
 	if title == "" && len(attachments) > 0 {
-		title = "Đính kèm: " + attachments[0].Name
+		title = "ÄÃ­nh kÃ¨m: " + attachments[0].Name
 	}
 	if len([]rune(title)) > 42 {
 		title = string([]rune(title)[:42]) + "..."
 	}
 	if title == "" {
-		title = "Đoạn chat mới"
+		title = "Äoáº¡n chat má»›i"
 	}
 
 	if target == nil {
@@ -2437,7 +2459,7 @@ func (p *MuseRouterPool) reserveQuestionTurnForOwner(
 		target.Title = title
 	}
 
-	// Xây dựng ngữ cảnh từ các tin nhắn đã hoàn tất trước câu hỏi này
+	// XÃ¢y dá»±ng ngá»¯ cáº£nh tá»« cÃ¡c tin nháº¯n Ä‘Ã£ hoÃ n táº¥t trÆ°á»›c cÃ¢u há»i nÃ y
 	out := make([]map[string]string, 0, 12)
 	completed := make([]ChatMessage, 0, len(target.Messages))
 	for _, m := range target.Messages {
@@ -2466,7 +2488,7 @@ func (p *MuseRouterPool) reserveQuestionTurnForOwner(
 	}
 	target.UpdatedAt = now.Format(time.RFC3339)
 
-	// Đẩy câu hỏi và DÒNG TRẢ LỜI ĐỂ TRỐNG ngay liền sau câu hỏi đó
+	// Äáº©y cÃ¢u há»i vÃ  DÃ’NG TRáº¢ Lá»œI Äá»‚ TRá»NG ngay liá»n sau cÃ¢u há»i Ä‘Ã³
 	target.Messages = append(target.Messages,
 		ChatMessage{
 			Role:        "user",
@@ -2489,7 +2511,7 @@ func (p *MuseRouterPool) reserveQuestionTurnForOwner(
 	return target.ID, turnID, out
 }
 
-// completeQuestionTurn điền câu trả lời vào ĐÚNG dòng trống ngay sau câu hỏi có cùng turnID.
+// completeQuestionTurn Ä‘iá»n cÃ¢u tráº£ lá»i vÃ o ÄÃšNG dÃ²ng trá»‘ng ngay sau cÃ¢u há»i cÃ³ cÃ¹ng turnID.
 func (p *MuseRouterPool) completeQuestionTurn(
 	threadID string,
 	turnID string,
@@ -2522,7 +2544,7 @@ func (p *MuseRouterPool) completeQuestionTurn(
 			}
 		}
 		if !placed {
-			// Dự phòng: tìm ngay sau câu hỏi user có cùng turnID để chèn đúng ngay sau câu hỏi đó
+			// Dá»± phÃ²ng: tÃ¬m ngay sau cÃ¢u há»i user cÃ³ cÃ¹ng turnID Ä‘á»ƒ chÃ¨n Ä‘Ãºng ngay sau cÃ¢u há»i Ä‘Ã³
 			for i := range t.Messages {
 				if t.Messages[i].Role == "user" && t.Messages[i].TurnID == turnID {
 					replyMsg := ChatMessage{
@@ -2666,7 +2688,7 @@ func (p *MuseRouterPool) CreateNewThreadForOwner(ownerID string, title string, m
 	defer p.mu.Unlock()
 
 	if strings.TrimSpace(title) == "" {
-		title = "Đoạn chat mới"
+		title = "Äoáº¡n chat má»›i"
 	}
 	if strings.TrimSpace(model) == "" {
 		model = "Muse"
@@ -2841,7 +2863,7 @@ func (p *MuseRouterPool) GetLiveActivityStatusForOwner(ctx context.Context, owne
 	if !p.shouldTryPythonBridge() {
 		return map[string]interface{}{
 			"active":       false,
-			"status_text":  "Đã kết nối",
+			"status_text":  "ÄÃ£ káº¿t ná»‘i",
 			"avatar_frame": "",
 			"partial_md":   "",
 		}
@@ -2878,7 +2900,7 @@ func (p *MuseRouterPool) GetLiveActivityStatusForOwner(ctx context.Context, owne
 					if sessID, _ := out["session_id"].(string); sessID != "" && !p.HasThreadAccess(ownerID, sessID) {
 						return map[string]interface{}{
 							"active":       false,
-							"status_text":  "Đã kết nối",
+							"status_text":  "ÄÃ£ káº¿t ná»‘i",
 							"avatar_frame": "",
 							"partial_md":   "",
 						}
@@ -2890,7 +2912,7 @@ func (p *MuseRouterPool) GetLiveActivityStatusForOwner(ctx context.Context, owne
 	}
 	return map[string]interface{}{
 		"active":       false,
-		"status_text":  "Đã kết nối",
+		"status_text":  "ÄÃ£ káº¿t ná»‘i",
 		"avatar_frame": "",
 		"partial_md":   "",
 	}

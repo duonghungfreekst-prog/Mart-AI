@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"archive/zip"
@@ -126,3 +126,4 @@ func main() {
 	_ = os.Chmod(targetExe, 0755)
 	fmt.Printf("[SETUP_CHROME] Extracted ready: %s\n", targetExe)
 }
+

@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-title Mart AI Studio - Trung Tam Dieu Hanh 1-Click Duy Nhat
+title Mart AI Studio - Go Engine
 cd /d "%~dp0"
 
 REM Kiem tra tham so truyen vao
@@ -91,7 +91,7 @@ if errorlevel 1 (
         start "" "C:\xampp\mysql\bin\mysqld.exe" --defaults-file="C:\xampp\mysql\bin\my.ini" --standalone >nul 2>&1
         ping 127.0.0.1 -n 3 >nul
     )
-    start "" /b "%~dp0muse_router.exe"
+    start "" /b "%~dp0muse_router_engine\muse_router.exe"
     ping 127.0.0.1 -n 4 >nul
 )
 
@@ -214,7 +214,7 @@ echo [*] Dang tu dong mo trinh duyet vao Mart AI Studio...
 start "" "http://127.0.0.1:8088"
 
 title Mart AI Studio - Server Engine (Port 8088) [DANG CHAY 24/7]
-"%~dp0muse_router.exe"
+"%~dp0muse_router_engine\muse_router.exe"
 
 echo.
 echo ================================================================================

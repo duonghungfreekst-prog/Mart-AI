@@ -1,12 +1,12 @@
 package main
 
 import (
-	"net"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -15,9 +15,8 @@ import (
 	"time"
 )
 
-// MySQLStore quản lý kết nối trực tiếp tới cơ sở dữ liệu chuẩn MySQL 8.0+ / TiDB Serverless Cloud TLS 1.2+
-// Vận hành 100% trên MySQL driver thuần Go.
-
+// MySQLStore quáº£n lÃ½ káº¿t ná»‘i trá»±c tiáº¿p tá»›i cÆ¡ sá»Ÿ dá»¯ liá»‡u chuáº©n MySQL 8.0+ / TiDB Serverless Cloud TLS 1.2+
+// Váº­n hÃ nh 100% trÃªn MySQL driver thuáº§n Go.
 
 type MySQLStore struct {
 	mu              sync.RWMutex
@@ -44,27 +43,27 @@ func (s *MySQLStore) invalidateStatusCache() {
 	s.statusMu.Unlock()
 }
 
-// MySQLTableStat thống kê số bản ghi thực tế của từng bảng trong MySQL / TiDB.
+// MySQLTableStat thá»‘ng kÃª sá»‘ báº£n ghi thá»±c táº¿ cá»§a tá»«ng báº£ng trong MySQL / TiDB.
 type MySQLTableStat struct {
 	TableName string `json:"table_name"`
 	RowCount  int64  `json:"row_count"`
 }
 
-// MySQLStatusResponse phản hồi trạng thái chi tiết của hệ thống cơ sở dữ liệu MySQL / TiDB.
+// MySQLStatusResponse pháº£n há»“i tráº¡ng thÃ¡i chi tiáº¿t cá»§a há»‡ thá»‘ng cÆ¡ sá»Ÿ dá»¯ liá»‡u MySQL / TiDB.
 type MySQLStatusResponse struct {
-	Connected     bool              `json:"connected"`
-	Driver        string            `json:"driver"`
-	EngineVersion string            `json:"engine_version"`
-	DatabaseURL   string            `json:"database_url"`
-	DatabaseFile  string            `json:"database_file"`
-	JournalMode   string            `json:"journal_mode"`
-	IsRemote      bool              `json:"is_remote"`
-	FileSizeBytes int64             `json:"file_size_bytes"`
+	Connected     bool             `json:"connected"`
+	Driver        string           `json:"driver"`
+	EngineVersion string           `json:"engine_version"`
+	DatabaseURL   string           `json:"database_url"`
+	DatabaseFile  string           `json:"database_file"`
+	JournalMode   string           `json:"journal_mode"`
+	IsRemote      bool             `json:"is_remote"`
+	FileSizeBytes int64            `json:"file_size_bytes"`
 	Tables        []MySQLTableStat `json:"tables"`
-	CheckedAt     string            `json:"checked_at"`
+	CheckedAt     string           `json:"checked_at"`
 }
 
-// MySQLQueryResult kết quả truy vấn trực tiếp trên MySQL / TiDB.
+// MySQLQueryResult káº¿t quáº£ truy váº¥n trá»±c tiáº¿p trÃªn MySQL / TiDB.
 type MySQLQueryResult struct {
 	Columns         []string        `json:"columns"`
 	Rows            [][]interface{} `json:"rows"`
@@ -74,7 +73,7 @@ type MySQLQueryResult struct {
 	DatabaseDriver  string          `json:"database_driver"`
 }
 
-// Cấu trúc Hrana v2 HTTP Pipeline chuẩn (/v2/pipeline)
+// Cáº¥u trÃºc Hrana v2 HTTP Pipeline chuáº©n (/v2/pipeline)
 type HranaPipelineRequest struct {
 	Baton    string               `json:"baton,omitempty"`
 	Requests []HranaStreamRequest `json:"requests"`
@@ -141,18 +140,18 @@ type HranaPipelineResponse struct {
 }
 
 var (
-	sharedMySQLPools     sync.Map // map[string]*sql.DB
-	testDBEnsureOnce     sync.Once
-	testDBAvailable      bool
-	cleanedTestDirs      sync.Map // map[string]bool
-	schemaVerifiedURLs   sync.Map // map[string]bool
+	sharedMySQLPools   sync.Map // map[string]*sql.DB
+	testDBEnsureOnce   sync.Once
+	testDBAvailable    bool
+	cleanedTestDirs    sync.Map // map[string]bool
+	schemaVerifiedURLs sync.Map // map[string]bool
 )
 
 func cloudSQLMasterKey() string {
 	if k := strings.TrimSpace(os.Getenv("MUSE_VAULT_MASTER_KEY")); k != "" {
 		return k
 	}
-	return "MUSE_ROUTER_SQL40_CLOUD_VAULT_KEY_2026_AES256CTR"
+	return ""
 }
 
 func maskDatabaseURL(rawURL string) string {
@@ -193,7 +192,7 @@ func isProductionDataDir(dataDir string) bool {
 	return true
 }
 
-// SaveEncryptedCloudSQLConfig mã hóa chuỗi kết nối SQL bằng chuẩn AES-256-CTR + HMAC-SHA256 trước khi ghi xuống đĩa (PHAN 3).
+// SaveEncryptedCloudSQLConfig mÃ£ hÃ³a chuá»—i káº¿t ná»‘i SQL báº±ng chuáº©n AES-256-CTR + HMAC-SHA256 trÆ°á»›c khi ghi xuá»‘ng Ä‘Ä©a (PHAN 3).
 func SaveEncryptedCloudSQLConfig(dataDir string, rawURL string) error {
 	trimmed := strings.TrimSpace(rawURL)
 	if trimmed == "" {
@@ -217,7 +216,7 @@ func SaveEncryptedCloudSQLConfig(dataDir string, rawURL string) error {
 	return nil
 }
 
-// LoadEncryptedCloudSQLConfig giải mã cấu hình SQL Cloud từ tệp AES-256-CTR + HMAC-SHA256.
+// LoadEncryptedCloudSQLConfig giáº£i mÃ£ cáº¥u hÃ¬nh SQL Cloud tá»« tá»‡p AES-256-CTR + HMAC-SHA256.
 func LoadEncryptedCloudSQLConfig(dataDir string) string {
 	candidates := []string{
 		filepath.Join(dataDir, "sql40_cloud.enc"),
@@ -285,7 +284,7 @@ func ensureIsolatedTestMySQLURL(baseURL string) string {
 	return baseURL
 }
 
-// NewMySQLStore khởi tạo kết nối MySQL / TiDB Serverless Cloud.
+// NewMySQLStore khá»Ÿi táº¡o káº¿t ná»‘i MySQL / TiDB Serverless Cloud.
 func NewMySQLStore(dataDir string, customURL string, authToken string) (*MySQLStore, error) {
 	_ = os.MkdirAll(dataDir, 0750)
 
@@ -315,7 +314,7 @@ func NewMySQLStore(dataDir string, customURL string, authToken string) (*MySQLSt
 		}
 	}
 	if targetURL == "" {
-		// Tự động kiểm tra XAMPP / Local MySQL trên cổng 3306
+		// Tá»± Ä‘á»™ng kiá»ƒm tra XAMPP / Local MySQL trÃªn cá»•ng 3306
 		conn, err := net.DialTimeout("tcp", "127.0.0.1:3306", 500*time.Millisecond)
 		if err == nil {
 			_ = conn.Close()
@@ -458,7 +457,7 @@ func (s *MySQLStore) Reconfigure(newURL string, newAuthToken string) error {
 	return nil
 }
 
-// CloseAllMySQLPools đóng tất cả connection pool đang mở trong bộ nhớ để giải phóng triệt để phiên TiDB / MySQL
+// CloseAllMySQLPools Ä‘Ã³ng táº¥t cáº£ connection pool Ä‘ang má»Ÿ trong bá»™ nhá»› Ä‘á»ƒ giáº£i phÃ³ng triá»‡t Ä‘á»ƒ phiÃªn TiDB / MySQL
 func CloseAllMySQLPools() {
 	sharedMySQLPools.Range(func(key, value interface{}) bool {
 		if db, ok := value.(*sql.DB); ok && db != nil {
@@ -469,7 +468,7 @@ func CloseAllMySQLPools() {
 	})
 }
 
-// PingCheck kiểm tra tính sẵn sàng của cơ sở dữ liệu TiDB / MySQL trong thời gian tối đa timeoutCtx.
+// PingCheck kiá»ƒm tra tÃ­nh sáºµn sÃ ng cá»§a cÆ¡ sá»Ÿ dá»¯ liá»‡u TiDB / MySQL trong thá»i gian tá»‘i Ä‘a timeoutCtx.
 func (s *MySQLStore) PingCheck(ctx context.Context) (connected bool, latencyMs int64, dbInfo string, err error) {
 	if s == nil {
 		return false, 0, "", errors.New("ERR_SQL_STORE_NIL")
@@ -681,8 +680,8 @@ func (s *MySQLStore) initSchema() error {
 	return nil
 }
 
-// MigrateLegacyJSONIfNeeded tự động chuyển dữ liệu từ accounts_vault.json & sessions_store.json / threads.json
-// sang cơ sở dữ liệu chuẩn MySQL nếu bảng trong MySQL đang trống.
+// MigrateLegacyJSONIfNeeded tá»± Ä‘á»™ng chuyá»ƒn dá»¯ liá»‡u tá»« accounts_vault.json & sessions_store.json / threads.json
+// sang cÆ¡ sá»Ÿ dá»¯ liá»‡u chuáº©n MySQL náº¿u báº£ng trong MySQL Ä‘ang trá»‘ng.
 func (s *MySQLStore) MigrateLegacyJSONIfNeeded(vaultJSONPath string, threadsJSONPaths ...string) {
 	s.mu.RLock()
 	db := s.db
@@ -731,7 +730,7 @@ func (s *MySQLStore) MigrateLegacyJSONIfNeeded(vaultJSONPath string, threadsJSON
 	}
 }
 
-// LoadAccounts đọc toàn bộ danh sách tài khoản Muse.ai từ bảng muse_accounts trong MySQL.
+// LoadAccounts Ä‘á»c toÃ n bá»™ danh sÃ¡ch tÃ i khoáº£n Muse.ai tá»« báº£ng muse_accounts trong MySQL.
 func (s *MySQLStore) LoadAccounts() ([]*MuseAccountNode, error) {
 	s.mu.RLock()
 	db := s.db
@@ -837,7 +836,7 @@ func (s *MySQLStore) SyncAllAccounts(nodes []*MuseAccountNode) error {
 	return nil
 }
 
-// UpsertAccount thêm mới hoặc cập nhật tài khoản Muse.ai vào bảng muse_accounts trong MySQL.
+// UpsertAccount thÃªm má»›i hoáº·c cáº­p nháº­t tÃ i khoáº£n Muse.ai vÃ o báº£ng muse_accounts trong MySQL.
 func (s *MySQLStore) UpsertAccount(n *MuseAccountNode) error {
 	if n == nil || n.ID == "" {
 		return errors.New("invalid account node")
@@ -940,7 +939,7 @@ func (s *MySQLStore) UpsertAccount(n *MuseAccountNode) error {
 	return err
 }
 
-// DeleteAccount xóa tài khoản khỏi bảng muse_accounts trong MySQL theo cả ID và Fingerprint.
+// DeleteAccount xÃ³a tÃ i khoáº£n khá»i báº£ng muse_accounts trong MySQL theo cáº£ ID vÃ  Fingerprint.
 func (s *MySQLStore) DeleteAccount(nodeID string, fingerprint ...string) error {
 	s.mu.RLock()
 	db := s.db
@@ -970,7 +969,7 @@ func (s *MySQLStore) DeleteAccount(nodeID string, fingerprint ...string) error {
 	return err
 }
 
-// LoadThreadsWithMessages tải toàn bộ lịch sử hội thoại và tin nhắn từ MySQL.
+// LoadThreadsWithMessages táº£i toÃ n bá»™ lá»‹ch sá»­ há»™i thoáº¡i vÃ  tin nháº¯n tá»« MySQL.
 func (s *MySQLStore) LoadThreadsWithMessages() ([]*ChatThread, error) {
 	s.mu.RLock()
 	db := s.db
@@ -1012,7 +1011,7 @@ func (s *MySQLStore) LoadThreadsWithMessages() ([]*ChatThread, error) {
 		return []*ChatThread{}, nil
 	}
 
-	// Tự động dọn sạch các bản ghi assistant rỗng bị kẹt từ các lần lỗi trước trong DB
+	// Tá»± Ä‘á»™ng dá»n sáº¡ch cÃ¡c báº£n ghi assistant rá»—ng bá»‹ káº¹t tá»« cÃ¡c láº§n lá»—i trÆ°á»›c trong DB
 	_, _ = db.ExecContext(ctx, `
 		DELETE FROM chat_messages
 		WHERE role = 'assistant'
@@ -1062,7 +1061,7 @@ func (s *MySQLStore) LoadThreadsWithMessages() ([]*ChatThread, error) {
 	return threads, nil
 }
 
-// SaveThreadWithMessages lưu đồng bộ một luồng hội thoại và các tin nhắn vào MySQL trong một Transaction.
+// SaveThreadWithMessages lÆ°u Ä‘á»“ng bá»™ má»™t luá»“ng há»™i thoáº¡i vÃ  cÃ¡c tin nháº¯n vÃ o MySQL trong má»™t Transaction.
 func (s *MySQLStore) SaveThreadWithMessages(t *ChatThread) error {
 	if t == nil || t.ID == "" {
 		return nil
@@ -1156,7 +1155,7 @@ func (s *MySQLStore) SaveThreadWithMessages(t *ChatThread) error {
 	return nil
 }
 
-// DeleteThread xóa luồng hội thoại và toàn bộ tin nhắn liên quan khỏi MySQL.
+// DeleteThread xÃ³a luá»“ng há»™i thoáº¡i vÃ  toÃ n bá»™ tin nháº¯n liÃªn quan khá»i MySQL.
 func (s *MySQLStore) DeleteThread(threadID string) error {
 	s.mu.RLock()
 	db := s.db
@@ -1176,7 +1175,7 @@ func (s *MySQLStore) DeleteThread(threadID string) error {
 	return err
 }
 
-// SaveOAuthSession lưu phiên OAuth Link vào bảng oauth_sessions trong MySQL.
+// SaveOAuthSession lÆ°u phiÃªn OAuth Link vÃ o báº£ng oauth_sessions trong MySQL.
 func (s *MySQLStore) SaveOAuthSession(sessionID, loginURL, state, appID, redirectURI string) error {
 	if sessionID == "" || loginURL == "" {
 		return nil
@@ -1204,7 +1203,7 @@ func (s *MySQLStore) SaveOAuthSession(sessionID, loginURL, state, appID, redirec
 	return err
 }
 
-// RecordRoutingTelemetry ghi nhật ký định tuyến thực tế vào bảng routing_telemetry trong MySQL.
+// RecordRoutingTelemetry ghi nháº­t kÃ½ Ä‘á»‹nh tuyáº¿n thá»±c táº¿ vÃ o báº£ng routing_telemetry trong MySQL.
 func (s *MySQLStore) RecordRoutingTelemetry(threadID, nodeID, nodeLabel, model string, latencyMs, tokensUsed int64, status string) {
 	s.mu.RLock()
 	db := s.db
@@ -1222,7 +1221,7 @@ func (s *MySQLStore) RecordRoutingTelemetry(threadID, nodeID, nodeLabel, model s
 	`, threadID, nodeID, nodeLabel, model, latencyMs, tokensUsed, status)
 }
 
-// GetStatus trả về thông tin chi tiết của Engine SQL40 / MySQL đang chạy (tối ưu gộp 1 round-trip + L1 Cache 3s).
+// GetStatus tráº£ vá» thÃ´ng tin chi tiáº¿t cá»§a Engine SQL40 / MySQL Ä‘ang cháº¡y (tá»‘i Æ°u gá»™p 1 round-trip + L1 Cache 3s).
 func (s *MySQLStore) GetStatus() MySQLStatusResponse {
 	s.mu.RLock()
 	db := s.db
@@ -1269,7 +1268,7 @@ func (s *MySQLStore) GetStatus() MySQLStatusResponse {
 	var dbVer string
 	var cUsers, cAccounts, cThreads, cMessages, cDocs, cMemories, cTasks, cOAuth, cTelemetry int64
 
-	// Gộp toàn bộ phiên bản Engine và số lượng bản ghi của 9 bảng vào 1 câu truy vấn duy nhất (1 round-trip mạng)
+	// Gá»™p toÃ n bá»™ phiÃªn báº£n Engine vÃ  sá»‘ lÆ°á»£ng báº£n ghi cá»§a 9 báº£ng vÃ o 1 cÃ¢u truy váº¥n duy nháº¥t (1 round-trip máº¡ng)
 	batchStatusSQL := `
 		SELECT VERSION(),
 		       (SELECT COUNT(1) FROM mart_users),
@@ -1342,7 +1341,7 @@ func (s *MySQLStore) GetStatus() MySQLStatusResponse {
 func validateSafeWebSQL(rawSQL string) error {
 	trimmed := strings.TrimSpace(rawSQL)
 	if trimmed == "" {
-		return errors.New("câu lệnh SQL không được để trống")
+		return errors.New("cÃ¢u lá»‡nh SQL khÃ´ng Ä‘Æ°á»£c Ä‘á»ƒ trá»‘ng")
 	}
 	upper := strings.ToUpper(trimmed)
 	forbidden := []string{
@@ -1354,13 +1353,13 @@ func validateSafeWebSQL(rawSQL string) error {
 	}
 	for _, f := range forbidden {
 		if strings.Contains(upper, f) {
-			return fmt.Errorf("từ khóa SQL %q bị chặn để bảo vệ an toàn dữ liệu hệ thống", f)
+			return fmt.Errorf("tá»« khÃ³a SQL %q bá»‹ cháº·n Ä‘á»ƒ báº£o vá»‡ an toÃ n dá»¯ liá»‡u há»‡ thá»‘ng", f)
 		}
 	}
 	return nil
 }
 
-// ExecuteSQL thực thi câu lệnh SQL có tham số trực tiếp trên kết nối MySQL.
+// ExecuteSQL thá»±c thi cÃ¢u lá»‡nh SQL cÃ³ tham sá»‘ trá»±c tiáº¿p trÃªn káº¿t ná»‘i MySQL.
 func (s *MySQLStore) ExecuteSQL(rawSQL string, args []interface{}) (*MySQLQueryResult, error) {
 	if err := validateSafeWebSQL(rawSQL); err != nil {
 		return nil, err
@@ -1370,7 +1369,7 @@ func (s *MySQLStore) ExecuteSQL(rawSQL string, args []interface{}) (*MySQLQueryR
 	db := s.db
 	s.mu.RUnlock()
 	if db == nil {
-		return nil, errors.New("cơ sở dữ liệu MySQL chưa được khởi tạo")
+		return nil, errors.New("cÆ¡ sá»Ÿ dá»¯ liá»‡u MySQL chÆ°a Ä‘Æ°á»£c khá»Ÿi táº¡o")
 	}
 
 	start := time.Now()
@@ -1445,8 +1444,8 @@ func (s *MySQLStore) ExecuteSQL(rawSQL string, args []interface{}) (*MySQLQueryR
 	return res, nil
 }
 
-// ExecuteHranaPipeline xử lý giao thức chuẩn Hrana v2 HTTP Pipeline (/v2/pipeline)
-// giúp trình duyệt Web có thể dùng trực tiếp chuẩn giao thức Pipeline Client.
+// ExecuteHranaPipeline xá»­ lÃ½ giao thá»©c chuáº©n Hrana v2 HTTP Pipeline (/v2/pipeline)
+// giÃºp trÃ¬nh duyá»‡t Web cÃ³ thá»ƒ dÃ¹ng trá»±c tiáº¿p chuáº©n giao thá»©c Pipeline Client.
 func (s *MySQLStore) ExecuteHranaPipeline(req HranaPipelineRequest) HranaPipelineResponse {
 	results := make([]HranaStreamResult, 0, len(req.Requests))
 
@@ -1545,14 +1544,14 @@ func (s *MySQLStore) ExecuteHranaPipeline(req HranaPipelineRequest) HranaPipelin
 	}
 }
 
-// SyncFromStore đồng bộ toàn bộ dữ liệu từ một kho SQL nguồn (ví dụ: SQLite local) lên kho SQL đích (ví dụ: Aiven MySQL Cloud).
+// SyncFromStore Ä‘á»“ng bá»™ toÃ n bá»™ dá»¯ liá»‡u tá»« má»™t kho SQL nguá»“n (vÃ­ dá»¥: SQLite local) lÃªn kho SQL Ä‘Ã­ch (vÃ­ dá»¥: Aiven MySQL Cloud).
 func (s *MySQLStore) SyncFromStore(src *MySQLStore) (map[string]int, error) {
 	if s == nil || src == nil {
 		return nil, errors.New("null sql store")
 	}
 	stats := make(map[string]int)
 
-	// 1. Đồng bộ muse_accounts
+	// 1. Äá»“ng bá»™ muse_accounts
 	nodes, err := src.LoadAccounts()
 	if err != nil {
 		return stats, fmt.Errorf("load src accounts: %w", err)
@@ -1564,7 +1563,7 @@ func (s *MySQLStore) SyncFromStore(src *MySQLStore) (map[string]int, error) {
 		stats["muse_accounts"]++
 	}
 
-	// 2. Đồng bộ chat_threads & chat_messages
+	// 2. Äá»“ng bá»™ chat_threads & chat_messages
 	threads, err := src.LoadThreadsWithMessages()
 	if err != nil {
 		return stats, fmt.Errorf("load src threads: %w", err)
@@ -1577,7 +1576,7 @@ func (s *MySQLStore) SyncFromStore(src *MySQLStore) (map[string]int, error) {
 		stats["chat_messages"] += len(t.Messages)
 	}
 
-	// 3. Đồng bộ mart_users
+	// 3. Äá»“ng bá»™ mart_users
 	if res, err := src.ExecuteSQL("SELECT id, username, display_name, password_hash, role, is_disabled, created_at, last_login_at FROM mart_users", nil); err == nil {
 		for _, r := range queryRowsToMaps(res) {
 			isDis, _ := strconv.Atoi(r["is_disabled"])
@@ -1598,7 +1597,7 @@ func (s *MySQLStore) SyncFromStore(src *MySQLStore) (map[string]int, error) {
 		}
 	}
 
-	// 4. Đồng bộ muse_documents
+	// 4. Äá»“ng bá»™ muse_documents
 	if res, err := src.ExecuteSQL("SELECT id, owner_id, title, content, source_thread_id, updated_at FROM muse_documents", nil); err == nil {
 		for _, r := range queryRowsToMaps(res) {
 			_, errExec := s.ExecuteSQL(
@@ -1618,7 +1617,7 @@ func (s *MySQLStore) SyncFromStore(src *MySQLStore) (map[string]int, error) {
 		}
 	}
 
-	// 5. Đồng bộ muse_memories
+	// 5. Äá»“ng bá»™ muse_memories
 	if res, err := src.ExecuteSQL("SELECT id, owner_id, title, content, is_active, created_at FROM muse_memories", nil); err == nil {
 		for _, r := range queryRowsToMaps(res) {
 			isAct, _ := strconv.Atoi(r["is_active"])
@@ -1638,7 +1637,7 @@ func (s *MySQLStore) SyncFromStore(src *MySQLStore) (map[string]int, error) {
 		}
 	}
 
-	// 6. Đồng bộ muse_tasks
+	// 6. Äá»“ng bá»™ muse_tasks
 	if res, err := src.ExecuteSQL("SELECT id, owner_id, title, prompt, status, assigned_node_id, result_summary, updated_at FROM muse_tasks", nil); err == nil {
 		for _, r := range queryRowsToMaps(res) {
 			_, errExec := s.ExecuteSQL(
@@ -1662,4 +1661,3 @@ func (s *MySQLStore) SyncFromStore(src *MySQLStore) (map[string]int, error) {
 
 	return stats, nil
 }
-

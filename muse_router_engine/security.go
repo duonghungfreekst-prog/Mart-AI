@@ -28,7 +28,7 @@ import (
 
 const LogPrefix = "[ENGINE]"
 
-// SanitizeLog loại bỏ hoàn toàn \r, \n, \x00 chống CRLF Log Injection (PHAN 3)
+// SanitizeLog loáº¡i bá» hoÃ n toÃ n \r, \n, \x00 chá»‘ng CRLF Log Injection (PHAN 3)
 func SanitizeLog(input string) string {
 	replacer := strings.NewReplacer("\r", " ", "\n", " ", "\x00", "")
 	return replacer.Replace(input)
@@ -49,7 +49,7 @@ func LogError(format string, args ...interface{}) {
 	fmt.Fprintf(os.Stderr, "%s %s [ERROR] %s\n", LogPrefix, time.Now().Format("15:04:05"), SanitizeLog(msg))
 }
 
-// ValidateAndSanitizeInput kiểm tra SQLi, XSS, null bytes, path traversal tại Go Engine (PHAN 3)
+// ValidateAndSanitizeInput kiá»ƒm tra SQLi, XSS, null bytes, path traversal táº¡i Go Engine (PHAN 3)
 func ValidateAndSanitizeInput(raw string, maxLen int) (string, error) {
 	if len(raw) > maxLen {
 		return "", errors.New("ERR_INPUT_TOO_LARGE")
@@ -77,7 +77,7 @@ func ValidateAndSanitizeInput(raw string, maxLen int) (string, error) {
 	return strings.TrimSpace(raw), nil
 }
 
-// ConstantTimeStringEquals sử dụng subtle.ConstantTimeCompare chống Timing Attack (PHAN 3)
+// ConstantTimeStringEquals sá»­ dá»¥ng subtle.ConstantTimeCompare chá»‘ng Timing Attack (PHAN 3)
 func ConstantTimeStringEquals(a, b string) bool {
 	if len(a) != len(b) {
 		return false
@@ -86,7 +86,7 @@ func ConstantTimeStringEquals(a, b string) bool {
 }
 
 // ============================================================================
-// L1 RAM CACHE VỚI TTL (PHAN 7 BAT BUOC)
+// L1 RAM CACHE Vá»šI TTL (PHAN 7 BAT BUOC)
 // ============================================================================
 
 type cacheItem struct {
@@ -126,7 +126,7 @@ func (c *TTLCache) Get(key string) (interface{}, bool) {
 }
 
 // ============================================================================
-// JWT BẤT ĐỐI XỨNG RS256 (PHAN 3 BAT BUOC - TUYET DOI CAM HS256)
+// JWT Báº¤T Äá»I Xá»¨NG RS256 (PHAN 3 BAT BUOC - TUYET DOI CAM HS256)
 // ============================================================================
 
 type RS256JWTManager struct {
@@ -189,13 +189,13 @@ func NewRS256JWTManagerWithKeyFile(cache *TTLCache, keyPath string, masterKey st
 		publicKey:  &priv.PublicKey,
 		cache:      cache,
 	}
-	// Cache JWT Public Key trong L1 Cache với TTL >= 60s (PHAN 7)
+	// Cache JWT Public Key trong L1 Cache vá»›i TTL >= 60s (PHAN 7)
 	cache.Set("jwt_rs256_public_key", &priv.PublicKey, 1*time.Hour)
 	return mgr, nil
 }
 
-// SyncWithSQLStore đồng bộ khóa ký JWT RS256 (đã mã hóa AES-256-CTR+HMAC-SHA256) lên cơ sở dữ liệu SQL40 / Aiven MySQL
-// để các phiên đăng nhập trên Render Cloud không bị mất hiệu lực khi container khởi động lại.
+// SyncWithSQLStore Ä‘á»“ng bá»™ khÃ³a kÃ½ JWT RS256 (Ä‘Ã£ mÃ£ hÃ³a AES-256-CTR+HMAC-SHA256) lÃªn cÆ¡ sá»Ÿ dá»¯ liá»‡u SQL40 / Aiven MySQL
+// Ä‘á»ƒ cÃ¡c phiÃªn Ä‘Äƒng nháº­p trÃªn Render Cloud khÃ´ng bá»‹ máº¥t hiá»‡u lá»±c khi container khá»Ÿi Ä‘á»™ng láº¡i.
 func (m *RS256JWTManager) SyncWithSQLStore(store *MySQLStore, masterKey string) {
 	if m == nil || store == nil || masterKey == "" {
 		return
@@ -294,7 +294,7 @@ func (m *RS256JWTManager) VerifyToken(token string) (*jwtClaims, error) {
 	if err := json.Unmarshal(hdrBytes, &hdr); err != nil {
 		return nil, errors.New("ERR_INVALID_JWT_HEADER_JSON")
 	}
-	// Bắt buộc kiểm tra đúng thuật toán RS256, chống downgrade attack sang HS256/none
+	// Báº¯t buá»™c kiá»ƒm tra Ä‘Ãºng thuáº­t toÃ¡n RS256, chá»‘ng downgrade attack sang HS256/none
 	if hdr.Alg != "RS256" {
 		return nil, errors.New("ERR_UNSUPPORTED_JWT_ALG")
 	}
@@ -332,7 +332,7 @@ func (m *RS256JWTManager) VerifyToken(token string) (*jwtClaims, error) {
 }
 
 // ============================================================================
-// MÃ HÓA CHUẨN FIPS 197 AES-256-CTR + HMAC-SHA256 TƯƠNG THÍCH 100% VỚI RUST CORE
+// MÃƒ HÃ“A CHUáº¨N FIPS 197 AES-256-CTR + HMAC-SHA256 TÆ¯Æ NG THÃCH 100% Vá»šI RUST CORE
 // ============================================================================
 
 func aes256CtrCryptNative(data []byte, key [32]byte, nonce [12]byte) ([]byte, error) {
@@ -342,7 +342,7 @@ func aes256CtrCryptNative(data []byte, key [32]byte, nonce [12]byte) ([]byte, er
 	}
 	var iv [16]byte
 	copy(iv[:12], nonce[:])
-	binary.BigEndian.PutUint32(iv[12:16], 1) // Counter bắt đầu từ 1 giống hệt muse_router_core/src/lib.rs
+	binary.BigEndian.PutUint32(iv[12:16], 1) // Counter báº¯t Ä‘áº§u tá»« 1 giá»‘ng há»‡t muse_router_core/src/lib.rs
 	out := make([]byte, len(data))
 	stream := cipher.NewCTR(block, iv[:])
 	stream.XORKeyStream(out, data)
@@ -523,7 +523,7 @@ var allowedOrigins = map[string]bool{
 	"http://localhost:8088":        true,
 	"https://mart-ai.onrender.com": true,
 	"http://mart-ai.onrender.com":  true,
-	// Extension Chrome "Mart AI" (ID cố định nhờ trường "key" trong manifest.json)
+	// Extension Chrome "Mart AI" (ID cá»‘ Ä‘á»‹nh nhá» trÆ°á»ng "key" trong manifest.json)
 	"chrome-extension://mjlkhmjhbhkjfccffeoimoindodmglaj": true,
 }
 
@@ -546,18 +546,18 @@ func isAllowedCORSOrigin(origin string, host string) bool {
 
 func SecurityHeadersMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Ẩn header Server và X-Powered-By
+		// áº¨n header Server vÃ  X-Powered-By
 		w.Header().Del("Server")
 		w.Header().Del("X-Powered-By")
 
-		// Các Security Headers bắt buộc theo PHAN 3
+		// CÃ¡c Security Headers báº¯t buá»™c theo PHAN 3
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Strict-Transport-Security", "max-age=31536000")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https: blob:; connect-src 'self' ws: wss: https:;")
 		w.Header().Set("X-XSS-Protection", "1; mode=block")
 
-		// CORS Exact String Match (TUYỆT ĐỐI CẤM wildcard *)
+		// CORS Exact String Match (TUYá»†T Äá»I Cáº¤M wildcard *)
 		origin := r.Header.Get("Origin")
 		if origin != "" {
 			if isAllowedCORSOrigin(origin, r.Host) {

@@ -26,16 +26,14 @@ RUN apk --no-cache add \
 WORKDIR /app
 
 COPY --from=builder /build/app ./app
-COPY --from=builder /build/muse_router_engine/web ./muse_router_engine/web
-
 RUN mkdir -p /app/data
 
 EXPOSE 10000
 
 ENV RENDER=true \
     PORT=10000 \
-    CHROME_BIN=/usr/bin/chromium-browser \
-    CHROMIUM_PATH=/usr/bin/chromium-browser \
+    CHROME_BIN=/usr/bin/chromium \
+    CHROMIUM_PATH=/usr/bin/chromium \
     GOMEMLIMIT=220MiB \
     GOGC=40
 

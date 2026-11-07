@@ -17,8 +17,8 @@ import (
 )
 
 func TestInputValidationAndSecurityHeaders(t *testing.T) {
-	clean, err := ValidateAndSanitizeInput("Xin chào Muse AI #1", 1024)
-	if err != nil || clean != "Xin chào Muse AI #1" {
+	clean, err := ValidateAndSanitizeInput("Xin chÃƒÂ o Muse AI #1", 1024)
+	if err != nil || clean != "Xin chÃƒÂ o Muse AI #1" {
 		t.Fatalf("Expected valid input, got err=%v", err)
 	}
 
@@ -59,6 +59,8 @@ func TestJWTRS256SignAndVerify(t *testing.T) {
 	}
 }
 
+const TestBootstrapPassword = "Admin@123456"
+
 func TestZeroFakeNodesAndRealVaultEncryption(t *testing.T) {
 	tempDir := filepath.Join(".", "test_vault_data")
 	t.Cleanup(func() {
@@ -73,7 +75,7 @@ func TestZeroFakeNodesAndRealVaultEncryption(t *testing.T) {
 
 	handler := app.Routes()
 
-	// 1. Khi khởi tạo sạch, bắt buộc TotalNodes == 0 (KHÔNG có node giả lập)
+	// 1. Khi khÃ¡Â»Å¸i tÃ¡ÂºÂ¡o sÃ¡ÂºÂ¡ch, bÃ¡ÂºÂ¯t buÃ¡Â»â„¢c TotalNodes == 0 (KHÃƒâ€NG cÃƒÂ³ node giÃ¡ÂºÂ£ lÃ¡ÂºÂ­p)
 	reqSum := httptest.NewRequest(http.MethodGet, "/api/router/summary", nil)
 	reqSum.Header.Set("Origin", "http://127.0.0.1:8088")
 	recSum := httptest.NewRecorder()
@@ -90,7 +92,7 @@ func TestZeroFakeNodesAndRealVaultEncryption(t *testing.T) {
 		t.Fatalf("Expected 0 initial nodes (zero fake data), got %d", summary.TotalNodes)
 	}
 
-	// 2. Khi gửi chat mà chưa cắm tài khoản nào, bắt buộc trả về lỗi thật chứ không trả về câu trả lời giả
+	// 2. Khi gÃ¡Â»Â­i chat mÃƒÂ  chÃ†Â°a cÃ¡ÂºÂ¯m tÃƒÂ i khoÃ¡ÂºÂ£n nÃƒÂ o, bÃ¡ÂºÂ¯t buÃ¡Â»â„¢c trÃ¡ÂºÂ£ vÃ¡Â»Â lÃ¡Â»â€”i thÃ¡ÂºÂ­t chÃ¡Â»Â© khÃƒÂ´ng trÃ¡ÂºÂ£ vÃ¡Â»Â cÃƒÂ¢u trÃ¡ÂºÂ£ lÃ¡Â»Âi giÃ¡ÂºÂ£
 	chatBody, _ := json.Marshal(map[string]interface{}{
 		"thread_id":         "thread_welcome",
 		"preferred_node_id": "auto",
@@ -106,7 +108,7 @@ func TestZeroFakeNodesAndRealVaultEncryption(t *testing.T) {
 		t.Fatalf("Expected chat without accounts to fail with error, but got 200 OK")
 	}
 
-	// 3. Kiểm tra trực tiếp cơ sở dữ liệu chuẩn MySQL (/api/mysql/status & /v2/pipeline Hrana v2)
+	// 3. KiÃ¡Â»Æ’m tra trÃ¡Â»Â±c tiÃ¡ÂºÂ¿p cÃ†Â¡ sÃ¡Â»Å¸ dÃ¡Â»Â¯ liÃ¡Â»â€¡u chuÃ¡ÂºÂ©n MySQL (/api/mysql/status & /v2/pipeline Hrana v2)
 	reqLibStatus := httptest.NewRequest(http.MethodGet, "/api/mysql/status", nil)
 	recLibStatus := httptest.NewRecorder()
 	handler.ServeHTTP(recLibStatus, reqLibStatus)
@@ -121,8 +123,8 @@ func TestZeroFakeNodesAndRealVaultEncryption(t *testing.T) {
 		t.Fatalf("Expected connected database, got connected=%v mode=%s", libStatus.Connected, libStatus.JournalMode)
 	}
 
-	// Tạo một đoạn chat và truy vấn trực tiếp qua chuẩn giao thức Hrana v2 Pipeline (/v2/pipeline)
-	created := app.pool.CreateNewThread("Kiểm thử MySQL Trực Tiếp", "Muse", "chat")
+	// TÃ¡ÂºÂ¡o mÃ¡Â»â„¢t Ã„â€˜oÃ¡ÂºÂ¡n chat vÃƒÂ  truy vÃ¡ÂºÂ¥n trÃ¡Â»Â±c tiÃ¡ÂºÂ¿p qua chuÃ¡ÂºÂ©n giao thÃ¡Â»Â©c Hrana v2 Pipeline (/v2/pipeline)
+	created := app.pool.CreateNewThread("KiÃ¡Â»Æ’m thÃ¡Â»Â­ MySQL TrÃ¡Â»Â±c TiÃ¡ÂºÂ¿p", "Muse", "chat")
 	if created == nil || created.ID == "" {
 		t.Fatalf("Failed to create thread in MySQL")
 	}
@@ -156,7 +158,7 @@ func TestZeroFakeNodesAndRealVaultEncryption(t *testing.T) {
 		t.Fatalf("Unexpected Hrana pipeline response: %+v", pipeResp)
 	}
 
-	// 4. Đảm bảo cơ sở dữ liệu thật MySQL được khởi tạo và đồng bộ tài khoản đã cắm
+	// 4. Ã„ÂÃ¡ÂºÂ£m bÃ¡ÂºÂ£o cÃ†Â¡ sÃ¡Â»Å¸ dÃ¡Â»Â¯ liÃ¡Â»â€¡u thÃ¡ÂºÂ­t MySQL Ã„â€˜Ã†Â°Ã¡Â»Â£c khÃ¡Â»Å¸i tÃ¡ÂºÂ¡o vÃƒÂ  Ã„â€˜Ã¡Â»â€œng bÃ¡Â»â„¢ tÃƒÂ i khoÃ¡ÂºÂ£n Ã„â€˜ÃƒÂ£ cÃ¡ÂºÂ¯m
 	prodDataDir := filepath.Join("..", "data")
 	prodStore, err := NewMySQLStore(prodDataDir, "", "")
 	if err != nil {
@@ -180,10 +182,10 @@ func TestNewEndpoints(t *testing.T) {
 	defer app.pool.Shutdown()
 	handler := app.Routes()
 
-	// Test /api/tasks/run không có tài khoản → phải trả lỗi thật (không 200 OK)
+	// Test /api/tasks/run khÃƒÂ´ng cÃƒÂ³ tÃƒÂ i khoÃ¡ÂºÂ£n Ã¢â€ â€™ phÃ¡ÂºÂ£i trÃ¡ÂºÂ£ lÃ¡Â»â€”i thÃ¡ÂºÂ­t (khÃƒÂ´ng 200 OK)
 	taskBody, _ := json.Marshal(map[string]interface{}{
 		"task_id": "test-task-001",
-		"prompt":  "Tóm tắt tài liệu này",
+		"prompt":  "TÃƒÂ³m tÃ¡ÂºÂ¯t tÃƒÂ i liÃ¡Â»â€¡u nÃƒÂ y",
 	})
 	reqTask := httptest.NewRequest(http.MethodPost, "/api/tasks/run", bytes.NewReader(taskBody))
 	reqTask.Header.Set("Content-Type", "application/json")
@@ -193,7 +195,7 @@ func TestNewEndpoints(t *testing.T) {
 		t.Fatalf("Expected /api/tasks/run without accounts to fail, got 200 OK")
 	}
 
-	// Test /api/tasks/run với prompt rỗng → phải trả ERR_EMPTY_PROMPT
+	// Test /api/tasks/run vÃ¡Â»â€ºi prompt rÃ¡Â»â€”ng Ã¢â€ â€™ phÃ¡ÂºÂ£i trÃ¡ÂºÂ£ ERR_EMPTY_PROMPT
 	emptyBody, _ := json.Marshal(map[string]interface{}{"task_id": "x", "prompt": ""})
 	reqEmpty := httptest.NewRequest(http.MethodPost, "/api/tasks/run", bytes.NewReader(emptyBody))
 	reqEmpty.Header.Set("Content-Type", "application/json")
@@ -203,7 +205,7 @@ func TestNewEndpoints(t *testing.T) {
 		t.Fatalf("Expected 400 for empty prompt, got %d", recEmpty.Code)
 	}
 
-	// Test /api/threads/messages thiếu thread_id → 400
+	// Test /api/threads/messages thiÃ¡ÂºÂ¿u thread_id Ã¢â€ â€™ 400
 	reqMsg := httptest.NewRequest(http.MethodGet, "/api/threads/messages", nil)
 	recMsg := httptest.NewRecorder()
 	handler.ServeHTTP(recMsg, reqMsg)
@@ -211,8 +213,8 @@ func TestNewEndpoints(t *testing.T) {
 		t.Fatalf("Expected 400 for missing thread_id, got %d: %s", recMsg.Code, recMsg.Body.String())
 	}
 
-	// Test /api/threads/messages với thread_id hợp lệ → 200 + JSON có field messages
-	thread := app.pool.CreateNewThread("Thread Phân Trang Test", "Muse", "chat")
+	// Test /api/threads/messages vÃ¡Â»â€ºi thread_id hÃ¡Â»Â£p lÃ¡Â»â€¡ Ã¢â€ â€™ 200 + JSON cÃƒÂ³ field messages
+	thread := app.pool.CreateNewThread("Thread PhÃƒÂ¢n Trang Test", "Muse", "chat")
 	if thread == nil || thread.ID == "" {
 		t.Fatalf("Failed to create thread")
 	}
@@ -241,7 +243,7 @@ func TestMySQLNewTables(t *testing.T) {
 	defer app.pool.Shutdown()
 	handler := app.Routes()
 
-	// Kiểm tra 3 bảng mới qua Hrana v2 pipeline
+	// KiÃ¡Â»Æ’m tra 3 bÃ¡ÂºÂ£ng mÃ¡Â»â€ºi qua Hrana v2 pipeline
 	for _, table := range []string{"muse_documents", "muse_memories", "muse_tasks"} {
 		pReq := HranaPipelineRequest{
 			Requests: []HranaStreamRequest{
@@ -277,7 +279,7 @@ func TestSecurityEdgeCases(t *testing.T) {
 	defer app.pool.Shutdown()
 	handler := app.Routes()
 
-	// 1. Tất cả POST endpoint phải reject GET
+	// 1. TÃ¡ÂºÂ¥t cÃ¡ÂºÂ£ POST endpoint phÃ¡ÂºÂ£i reject GET
 	postOnlyEndpoints := []string{
 		"/api/chat/send",
 		"/api/tasks/run",
@@ -294,7 +296,7 @@ func TestSecurityEdgeCases(t *testing.T) {
 		}
 	}
 
-	// 2. Security headers phải có trong mọi response
+	// 2. Security headers phÃ¡ÂºÂ£i cÃƒÂ³ trong mÃ¡Â»Âi response
 	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -309,7 +311,7 @@ func TestSecurityEdgeCases(t *testing.T) {
 		}
 	}
 
-	// 3. CRLF injection trong SQL query phải bị sanitize bởi ValidateAndSanitizeInput
+	// 3. CRLF injection trong SQL query phÃ¡ÂºÂ£i bÃ¡Â»â€¹ sanitize bÃ¡Â»Å¸i ValidateAndSanitizeInput
 	crlfInput := "select 1\r\nDROP TABLE muse_accounts;--"
 	_, err2 := ValidateAndSanitizeInput(crlfInput, 2048)
 	if err2 == nil {
@@ -317,7 +319,7 @@ func TestSecurityEdgeCases(t *testing.T) {
 	}
 }
 
-// TestTasksBatchEndpoint — verify /api/tasks/batch reject đúng các edge cases
+// TestTasksBatchEndpoint Ã¢â‚¬â€ verify /api/tasks/batch reject Ã„â€˜ÃƒÂºng cÃƒÂ¡c edge cases
 func TestTasksBatchEndpoint(t *testing.T) {
 	tempDir := filepath.Join(".", "test_tasks_batch")
 	t.Cleanup(func() { _ = os.RemoveAll(tempDir) })
@@ -328,7 +330,7 @@ func TestTasksBatchEndpoint(t *testing.T) {
 	defer app.pool.Shutdown()
 	handler := app.Routes()
 
-	// 1. GET thay vì POST → 405
+	// 1. GET thay vÃƒÂ¬ POST Ã¢â€ â€™ 405
 	req1 := httptest.NewRequest(http.MethodGet, "/api/tasks/batch", nil)
 	rec1 := httptest.NewRecorder()
 	handler.ServeHTTP(rec1, req1)
@@ -336,7 +338,7 @@ func TestTasksBatchEndpoint(t *testing.T) {
 		t.Errorf("GET /api/tasks/batch: want 405, got %d", rec1.Code)
 	}
 
-	// 2. Body rỗng tasks → 400
+	// 2. Body rÃ¡Â»â€”ng tasks Ã¢â€ â€™ 400
 	req2 := httptest.NewRequest(http.MethodPost, "/api/tasks/batch", bytes.NewBufferString(`{}`))
 	req2.Header.Set("Content-Type", "application/json")
 	rec2 := httptest.NewRecorder()
@@ -345,7 +347,7 @@ func TestTasksBatchEndpoint(t *testing.T) {
 		t.Errorf("Empty tasks: want 400, got %d", rec2.Code)
 	}
 
-	// 3. Quá 10 tasks → 400 ERR_TOO_MANY_TASKS_MAX_10
+	// 3. QuÃƒÂ¡ 10 tasks Ã¢â€ â€™ 400 ERR_TOO_MANY_TASKS_MAX_10
 	bigTasks := `{"tasks":[` +
 		`{"task_id":"t1","prompt":"a"},{"task_id":"t2","prompt":"b"},` +
 		`{"task_id":"t3","prompt":"c"},{"task_id":"t4","prompt":"d"},` +
@@ -365,7 +367,7 @@ func TestTasksBatchEndpoint(t *testing.T) {
 		t.Errorf("Missing ERR_TOO_MANY_TASKS_MAX_10: %s", rec3.Body.String())
 	}
 
-	t.Log("TestTasksBatchEndpoint: tất cả edge cases PASS")
+	t.Log("TestTasksBatchEndpoint: tÃ¡ÂºÂ¥t cÃ¡ÂºÂ£ edge cases PASS")
 }
 
 func TestGzipAndStaticCaching(t *testing.T) {
@@ -432,9 +434,9 @@ func TestRealSubscriptionSyncAndZeroPctNewAccount(t *testing.T) {
 		if r.Method == http.MethodPost && r.Header.Get("Next-Action") != "" {
 			w.Header().Set("Content-Type", "text/x-component")
 			if strings.Contains(cookie, "brand_new_sess") {
-				_, _ = w.Write([]byte("0:{\"a\":\"$@1\"}\n1:{\"subscription\":{\"usageRowLabel\":\"Gói miễn phí\",\"usageRowValueLabel\":\"Đã dùng 0%\",\"statusSubtitle\":\"Giới hạn hàng tuần sẽ đặt lại vào 10 tháng 11\",\"usage\":{\"percentUsed\":0},\"topupRowLabel\":\"Token bổ sung\",\"topupRowValueLabel\":\"Đã dùng 0% (còn 1 tỷ token)\",\"billingSubtitle\":\"Không bao giờ hết hạn\"}}\n"))
+				_, _ = w.Write([]byte("0:{\"a\":\"$@1\"}\n1:{\"subscription\":{\"usageRowLabel\":\"GÃƒÂ³i miÃ¡Â»â€¦n phÃƒÂ­\",\"usageRowValueLabel\":\"Ã„ÂÃƒÂ£ dÃƒÂ¹ng 0%\",\"statusSubtitle\":\"GiÃ¡Â»â€ºi hÃ¡ÂºÂ¡n hÃƒÂ ng tuÃ¡ÂºÂ§n sÃ¡ÂºÂ½ Ã„â€˜Ã¡ÂºÂ·t lÃ¡ÂºÂ¡i vÃƒÂ o 10 thÃƒÂ¡ng 11\",\"usage\":{\"percentUsed\":0},\"topupRowLabel\":\"Token bÃ¡Â»â€¢ sung\",\"topupRowValueLabel\":\"Ã„ÂÃƒÂ£ dÃƒÂ¹ng 0% (cÃƒÂ²n 1 tÃ¡Â»Â· token)\",\"billingSubtitle\":\"KhÃƒÂ´ng bao giÃ¡Â»Â hÃ¡ÂºÂ¿t hÃ¡ÂºÂ¡n\"}}\n"))
 			} else {
-				_, _ = w.Write([]byte("1:{\"subscription\":{\"usageRowLabel\":\"Gói miễn phí\",\"usageRowValueLabel\":\"Đã dùng 18%\",\"statusSubtitle\":\"Giới hạn hàng tuần sẽ đặt lại vào 10 tháng 11\",\"usage\":{\"percentUsed\":18}}}\n"))
+				_, _ = w.Write([]byte("1:{\"subscription\":{\"usageRowLabel\":\"GÃƒÂ³i miÃ¡Â»â€¦n phÃƒÂ­\",\"usageRowValueLabel\":\"Ã„ÂÃƒÂ£ dÃƒÂ¹ng 18%\",\"statusSubtitle\":\"GiÃ¡Â»â€ºi hÃ¡ÂºÂ¡n hÃƒÂ ng tuÃ¡ÂºÂ§n sÃ¡ÂºÂ½ Ã„â€˜Ã¡ÂºÂ·t lÃ¡ÂºÂ¡i vÃƒÂ o 10 thÃƒÂ¡ng 11\",\"usage\":{\"percentUsed\":18}}}\n"))
 			}
 			return
 		}
@@ -453,16 +455,16 @@ func TestRealSubscriptionSyncAndZeroPctNewAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddAccountNode new: %v", err)
 	}
-	if nodeNew.FreePlanPercent != 0 || nodeNew.FreePlanValue != "Đã dùng 0%" {
-		t.Fatalf("Expected brand new account to have 0%% ('Đã dùng 0%%'), got %d%% (%q)", nodeNew.FreePlanPercent, nodeNew.FreePlanValue)
+	if nodeNew.FreePlanPercent != 0 || nodeNew.FreePlanValue != "Ã„ÂÃƒÂ£ dÃƒÂ¹ng 0%" {
+		t.Fatalf("Expected brand new account to have 0%% ('Ã„ÂÃƒÂ£ dÃƒÂ¹ng 0%%'), got %d%% (%q)", nodeNew.FreePlanPercent, nodeNew.FreePlanValue)
 	}
 
 	nodeUsed, err := app.pool.AddAccountNode(context.Background(), "Muse #1", "Muse.ai", "cookie", mockMuse.URL, "hatch_sess=used_sess_9876543210", 0, "")
 	if err != nil {
 		t.Fatalf("AddAccountNode used: %v", err)
 	}
-	if nodeUsed.FreePlanPercent != 18 || nodeUsed.FreePlanValue != "Đã dùng 18%" {
-		t.Fatalf("Expected used account to have 18%% ('Đã dùng 18%%'), got %d%% (%q)", nodeUsed.FreePlanPercent, nodeUsed.FreePlanValue)
+	if nodeUsed.FreePlanPercent != 18 || nodeUsed.FreePlanValue != "Ã„ÂÃƒÂ£ dÃƒÂ¹ng 18%" {
+		t.Fatalf("Expected used account to have 18%% ('Ã„ÂÃƒÂ£ dÃƒÂ¹ng 18%%'), got %d%% (%q)", nodeUsed.FreePlanPercent, nodeUsed.FreePlanValue)
 	}
 }
 
@@ -493,7 +495,7 @@ func TestMultiUserAccountIsolationAndSQL40Standard(t *testing.T) {
 		return rec
 	}
 
-	// 1. Đăng nhập Admin để kiểm tra SQL40 Status
+	// 1. Ã„ÂÃ„Æ’ng nhÃ¡ÂºÂ­p Admin Ã„â€˜Ã¡Â»Æ’ kiÃ¡Â»Æ’m tra SQL40 Status
 	recAdminLogin := doReq(http.MethodPost, "/api/users/admin-login", "", map[string]string{
 		"password": "AdminMaster2026!",
 	})
@@ -518,38 +520,38 @@ func TestMultiUserAccountIsolationAndSQL40Standard(t *testing.T) {
 		t.Fatalf("Expected SQL40 Standard engine, got connected=%v version=%q", sqlStatus.Connected, sqlStatus.EngineVersion)
 	}
 
-	// 2. Đăng ký 2 tài khoản người dùng độc lập: user_a và user_b
+	// 2. Ã„ÂÃ„Æ’ng kÃƒÂ½ 2 tÃƒÂ i khoÃ¡ÂºÂ£n ngÃ†Â°Ã¡Â»Âi dÃƒÂ¹ng Ã„â€˜Ã¡Â»â„¢c lÃ¡ÂºÂ­p: user_a vÃƒÂ  user_b
 	recRegA := doReq(http.MethodPost, "/api/users/register", "", map[string]string{
 		"username":     "user_a",
-		"display_name": "Form Riêng A",
+		"display_name": "Form RiÃƒÂªng A",
 		"password":     "PassUserA123",
 	})
 	if recRegA.Code != http.StatusOK {
 		t.Fatalf("Register user_a failed: %d %s", recRegA.Code, recRegA.Body.String())
 	}
 	var regA struct {
-		Token string      `json:"token"`
+		Token string       `json:"token"`
 		User  RequestActor `json:"user"`
 	}
 	_ = json.Unmarshal(recRegA.Body.Bytes(), &regA)
 
 	recRegB := doReq(http.MethodPost, "/api/users/register", "", map[string]string{
 		"username":     "user_b",
-		"display_name": "Form Riêng B",
+		"display_name": "Form RiÃƒÂªng B",
 		"password":     "PassUserB123",
 	})
 	if recRegB.Code != http.StatusOK {
 		t.Fatalf("Register user_b failed: %d %s", recRegB.Code, recRegB.Body.String())
 	}
 	var regB struct {
-		Token string      `json:"token"`
+		Token string       `json:"token"`
 		User  RequestActor `json:"user"`
 	}
 	_ = json.Unmarshal(recRegB.Body.Bytes(), &regB)
 
-	// 3. user_a tạo đoạn chat, tài liệu, bộ nhớ và nhiệm vụ riêng
+	// 3. user_a tÃ¡ÂºÂ¡o Ã„â€˜oÃ¡ÂºÂ¡n chat, tÃƒÂ i liÃ¡Â»â€¡u, bÃ¡Â»â„¢ nhÃ¡Â»â€º vÃƒÂ  nhiÃ¡Â»â€¡m vÃ¡Â»Â¥ riÃƒÂªng
 	recThreadA := doReq(http.MethodPost, "/api/threads", regA.Token, map[string]string{
-		"title": "Dự án mật của User A",
+		"title": "DÃ¡Â»Â± ÃƒÂ¡n mÃ¡ÂºÂ­t cÃ¡Â»Â§a User A",
 		"model": "Muse",
 	})
 	if recThreadA.Code != http.StatusOK {
@@ -560,8 +562,8 @@ func TestMultiUserAccountIsolationAndSQL40Standard(t *testing.T) {
 
 	recDocA := doReq(http.MethodPost, "/api/workspace/docs", regA.Token, map[string]string{
 		"action":  "save",
-		"title":   "Báo cáo tài chính A",
-		"content": "Nội dung chỉ dành cho User A",
+		"title":   "BÃƒÂ¡o cÃƒÂ¡o tÃƒÂ i chÃƒÂ­nh A",
+		"content": "NÃ¡Â»â„¢i dung chÃ¡Â»â€° dÃƒÂ nh cho User A",
 	})
 	if recDocA.Code != http.StatusOK {
 		t.Fatalf("Create doc A failed: %d %s", recDocA.Code, recDocA.Body.String())
@@ -569,8 +571,8 @@ func TestMultiUserAccountIsolationAndSQL40Standard(t *testing.T) {
 
 	recMemA := doReq(http.MethodPost, "/api/workspace/memories", regA.Token, map[string]string{
 		"action":  "save",
-		"title":   "Bộ nhớ riêng A",
-		"content": "Luôn xưng hô với User A",
+		"title":   "BÃ¡Â»â„¢ nhÃ¡Â»â€º riÃƒÂªng A",
+		"content": "LuÃƒÂ´n xÃ†Â°ng hÃƒÂ´ vÃ¡Â»â€ºi User A",
 	})
 	if recMemA.Code != http.StatusOK {
 		t.Fatalf("Create memory A failed: %d", recMemA.Code)
@@ -578,16 +580,16 @@ func TestMultiUserAccountIsolationAndSQL40Standard(t *testing.T) {
 
 	recTaskA := doReq(http.MethodPost, "/api/workspace/tasks", regA.Token, map[string]string{
 		"action": "save",
-		"title":  "Nhiệm vụ riêng A",
-		"prompt": "Phân tích dữ liệu A",
+		"title":  "NhiÃ¡Â»â€¡m vÃ¡Â»Â¥ riÃƒÂªng A",
+		"prompt": "PhÃƒÂ¢n tÃƒÂ­ch dÃ¡Â»Â¯ liÃ¡Â»â€¡u A",
 	})
 	if recTaskA.Code != http.StatusOK {
 		t.Fatalf("Create task A failed: %d", recTaskA.Code)
 	}
 
-	// 4. user_b tạo đoạn chat và tài liệu riêng
+	// 4. user_b tÃ¡ÂºÂ¡o Ã„â€˜oÃ¡ÂºÂ¡n chat vÃƒÂ  tÃƒÂ i liÃ¡Â»â€¡u riÃƒÂªng
 	recThreadB := doReq(http.MethodPost, "/api/threads", regB.Token, map[string]string{
-		"title": "Kế hoạch riêng của User B",
+		"title": "KÃ¡ÂºÂ¿ hoÃ¡ÂºÂ¡ch riÃƒÂªng cÃ¡Â»Â§a User B",
 		"model": "Muse",
 	})
 	if recThreadB.Code != http.StatusOK {
@@ -596,20 +598,20 @@ func TestMultiUserAccountIsolationAndSQL40Standard(t *testing.T) {
 
 	recDocB := doReq(http.MethodPost, "/api/workspace/docs", regB.Token, map[string]string{
 		"action":  "save",
-		"title":   "Tài liệu của User B",
-		"content": "Nội dung độc lập của B",
+		"title":   "TÃƒÂ i liÃ¡Â»â€¡u cÃ¡Â»Â§a User B",
+		"content": "NÃ¡Â»â„¢i dung Ã„â€˜Ã¡Â»â„¢c lÃ¡ÂºÂ­p cÃ¡Â»Â§a B",
 	})
 	if recDocB.Code != http.StatusOK {
 		t.Fatalf("Create doc B failed: %d", recDocB.Code)
 	}
 
-	// 5. Kiểm tra cô lập tuyệt đối: user_b KHÔNG nhìn thấy bất kỳ dữ liệu nào của user_a
+	// 5. KiÃ¡Â»Æ’m tra cÃƒÂ´ lÃ¡ÂºÂ­p tuyÃ¡Â»â€¡t Ã„â€˜Ã¡Â»â€˜i: user_b KHÃƒâ€NG nhÃƒÂ¬n thÃ¡ÂºÂ¥y bÃ¡ÂºÂ¥t kÃ¡Â»Â³ dÃ¡Â»Â¯ liÃ¡Â»â€¡u nÃƒÂ o cÃ¡Â»Â§a user_a
 	recListThreadsB := doReq(http.MethodGet, "/api/threads", regB.Token, nil)
 	var listThreadsB struct {
 		Threads []ChatThread `json:"threads"`
 	}
 	_ = json.Unmarshal(recListThreadsB.Body.Bytes(), &listThreadsB)
-	if len(listThreadsB.Threads) != 1 || listThreadsB.Threads[0].Title != "Kế hoạch riêng của User B" {
+	if len(listThreadsB.Threads) != 1 || listThreadsB.Threads[0].Title != "KÃ¡ÂºÂ¿ hoÃ¡ÂºÂ¡ch riÃƒÂªng cÃ¡Â»Â§a User B" {
 		t.Fatalf("Isolation breach on threads for user_b: %+v", listThreadsB.Threads)
 	}
 
@@ -618,7 +620,7 @@ func TestMultiUserAccountIsolationAndSQL40Standard(t *testing.T) {
 		Docs []map[string]string `json:"docs"`
 	}
 	_ = json.Unmarshal(recListDocsB.Body.Bytes(), &listDocsB)
-	if len(listDocsB.Docs) != 1 || listDocsB.Docs[0]["title"] != "Tài liệu của User B" {
+	if len(listDocsB.Docs) != 1 || listDocsB.Docs[0]["title"] != "TÃƒÂ i liÃ¡Â»â€¡u cÃ¡Â»Â§a User B" {
 		t.Fatalf("Isolation breach on docs for user_b: %+v", listDocsB.Docs)
 	}
 
@@ -641,19 +643,19 @@ func TestMultiUserAccountIsolationAndSQL40Standard(t *testing.T) {
 		t.Fatalf("Search isolation breach: user_b found user_a data: %+v", searchB)
 	}
 
-	// 6. user_b cố tình đọc hoặc xóa đoạn chat của user_a -> bị chặn 403/404
+	// 6. user_b cÃ¡Â»â€˜ tÃƒÂ¬nh Ã„â€˜Ã¡Â»Âc hoÃ¡ÂºÂ·c xÃƒÂ³a Ã„â€˜oÃ¡ÂºÂ¡n chat cÃ¡Â»Â§a user_a -> bÃ¡Â»â€¹ chÃ¡ÂºÂ·n 403/404
 	recStealMsg := doReq(http.MethodGet, "/api/threads/messages?thread_id="+threadA.ID, regB.Token, nil)
 	if recStealMsg.Code != http.StatusForbidden {
 		t.Fatalf("Expected 403 Forbidden when user_b reads user_a thread messages, got %d", recStealMsg.Code)
 	}
 
-	// 7. user_a cố tình gọi API Admin -> bị chặn 403 Forbidden
+	// 7. user_a cÃ¡Â»â€˜ tÃƒÂ¬nh gÃ¡Â»Âi API Admin -> bÃ¡Â»â€¹ chÃ¡ÂºÂ·n 403 Forbidden
 	recForbidAdmin := doReq(http.MethodGet, "/api/admin/users", regA.Token, nil)
 	if recForbidAdmin.Code != http.StatusForbidden {
 		t.Fatalf("Expected 403 Forbidden when user_a calls /api/admin/users, got %d", recForbidAdmin.Code)
 	}
 
-	// 8. Admin xem danh sách tài khoản và xóa user_a -> dữ liệu user_b vẫn còn nguyên vẹn
+	// 8. Admin xem danh sÃƒÂ¡ch tÃƒÂ i khoÃ¡ÂºÂ£n vÃƒÂ  xÃƒÂ³a user_a -> dÃ¡Â»Â¯ liÃ¡Â»â€¡u user_b vÃ¡ÂºÂ«n cÃƒÂ²n nguyÃƒÂªn vÃ¡ÂºÂ¹n
 	recAdminUsers := doReq(http.MethodGet, "/api/admin/users", adminLoginResp.Token, nil)
 	if recAdminUsers.Code != http.StatusOK {
 		t.Fatalf("Admin list users failed: %d", recAdminUsers.Code)
@@ -665,7 +667,7 @@ func TestMultiUserAccountIsolationAndSQL40Standard(t *testing.T) {
 		t.Fatalf("Admin delete user_a failed: %d %s", recDelA.Code, recDelA.Body.String())
 	}
 
-	// Xác nhận user_b vẫn còn nguyên đoạn chat và tài liệu
+	// XÃƒÂ¡c nhÃ¡ÂºÂ­n user_b vÃ¡ÂºÂ«n cÃƒÂ²n nguyÃƒÂªn Ã„â€˜oÃ¡ÂºÂ¡n chat vÃƒÂ  tÃƒÂ i liÃ¡Â»â€¡u
 	recCheckB := doReq(http.MethodGet, "/api/threads", regB.Token, nil)
 	_ = json.Unmarshal(recCheckB.Body.Bytes(), &listThreadsB)
 	if len(listThreadsB.Threads) != 1 {
@@ -700,7 +702,7 @@ func TestAivenMySQLPushAndLiveSync(t *testing.T) {
 		t.Fatalf("SaveEncryptedCloudSQLConfig failed: %v", err)
 	}
 
-	// Mở kho MySQL / TiDB Cloud trực tiếp qua TLS 1.2+ hoặc Local MySQL
+	// MÃ¡Â»Å¸ kho MySQL / TiDB Cloud trÃ¡Â»Â±c tiÃ¡ÂºÂ¿p qua TLS 1.2+ hoÃ¡ÂºÂ·c Local MySQL
 	remoteStore, err := NewMySQLStore(prodDataDir, mysqlURL, "")
 	if err != nil {
 		t.Fatalf("Connect to MySQL failed: %v", err)
@@ -711,20 +713,20 @@ func TestAivenMySQLPushAndLiveSync(t *testing.T) {
 		t.Fatalf("Expected remoteStore.isMySQL == true")
 	}
 
-	// Đảm bảo tài khoản Quản trị viên (admin) có mặt trong Aiven MySQL Cloud
+	// Ã„ÂÃ¡ÂºÂ£m bÃ¡ÂºÂ£o tÃƒÂ i khoÃ¡ÂºÂ£n QuÃ¡ÂºÂ£n trÃ¡Â»â€¹ viÃƒÂªn (admin) cÃƒÂ³ mÃ¡ÂºÂ·t trong Aiven MySQL Cloud
 	ensureAdminInStore := func(st *MySQLStore) {
 		qRes, err := st.ExecuteSQL("SELECT id FROM mart_users WHERE id = 'admin' OR username = 'admin' LIMIT 1", nil)
 		if err == nil && len(qRes.Rows) > 0 {
 			return
 		}
-		pwHash, err := HashPasswordPBKDF2(DefaultAdminPassword)
+		pwHash, err := HashPasswordPBKDF2(TestBootstrapPassword)
 		if err != nil {
 			t.Fatalf("HashPasswordPBKDF2 admin failed: %v", err)
 		}
 		nowStr := time.Now().Format("2006-01-02 15:04:05")
 		if _, err := st.ExecuteSQL(
 			`INSERT INTO mart_users(id, username, display_name, password_hash, role, is_disabled, created_at, last_login_at)
-			 VALUES('admin', 'admin', 'Quản trị viên (Admin)', ?, 'admin', 0, ?, ?)`,
+			 VALUES('admin', 'admin', 'QuÃ¡ÂºÂ£n trÃ¡Â»â€¹ viÃƒÂªn (Admin)', ?, 'admin', 0, ?, ?)`,
 			[]interface{}{pwHash, nowStr, nowStr},
 		); err != nil {
 			t.Fatalf("Insert default admin into store failed: %v", err)
@@ -754,13 +756,14 @@ func TestAivenMySQLPushAndLiveSync(t *testing.T) {
 			t.Logf("muse_accounts Row: %v", r)
 		}
 	}
-	// Giữ database test sạch sẽ
+	// GiÃ¡Â»Â¯ database test sÃ¡ÂºÂ¡ch sÃ¡ÂºÂ½
 	if remoteStore.db != nil {
 		remoteStore.resetTestTables()
 	}
 }
 
 func TestAdminAccountLoginSettingsAndChatFlow(t *testing.T) {
+	t.Setenv("MART_ADMIN_PASSWORD", TestBootstrapPassword)
 	tmpDir := t.TempDir()
 	app, err := NewServerApp(tmpDir)
 	if err != nil {
@@ -770,8 +773,8 @@ func TestAdminAccountLoginSettingsAndChatFlow(t *testing.T) {
 
 	handler := app.Routes()
 
-	// 1. Đăng nhập tài khoản Admin mặc định qua /api/users/login
-	loginBody := `{"username":"admin","password":"` + DefaultAdminPassword + `"}`
+	// 1. Ã„ÂÃ„Æ’ng nhÃ¡ÂºÂ­p tÃƒÂ i khoÃ¡ÂºÂ£n Admin mÃ¡ÂºÂ·c Ã„â€˜Ã¡Â»â€¹nh qua /api/users/login
+	loginBody := `{"username":"admin","password":"` + TestBootstrapPassword + `"}`
 	reqLogin := httptest.NewRequest(http.MethodPost, "/api/users/login", strings.NewReader(loginBody))
 	reqLogin.Header.Set("Content-Type", "application/json")
 	reqLogin.Header.Set("X-Mart-Client", "web")
@@ -796,7 +799,7 @@ func TestAdminAccountLoginSettingsAndChatFlow(t *testing.T) {
 		t.Fatalf("Unexpected admin login payload: %+v", loginResp)
 	}
 
-	// 2. Kiểm tra quyền truy cập Cài đặt Web (/api/admin/users & /api/router/config)
+	// 2. KiÃ¡Â»Æ’m tra quyÃ¡Â»Ân truy cÃ¡ÂºÂ­p CÃƒÂ i Ã„â€˜Ã¡ÂºÂ·t Web (/api/admin/users & /api/router/config)
 	reqUsers := httptest.NewRequest(http.MethodGet, "/api/admin/users", nil)
 	reqUsers.Header.Set("Authorization", "Bearer "+loginResp.Token)
 	reqUsers.Header.Set("X-Mart-Client", "web")
@@ -816,8 +819,8 @@ func TestAdminAccountLoginSettingsAndChatFlow(t *testing.T) {
 		t.Fatalf("POST /api/router/config failed: status=%d body=%s", recCfg.Code, recCfg.Body.String())
 	}
 
-	// 3. Kiểm tra Giao diện Chat & Workspace của Admin (/api/threads & /api/workspace/docs)
-	reqThread := httptest.NewRequest(http.MethodPost, "/api/threads", strings.NewReader(`{"title":"Đoạn chat Admin","model":""}`))
+	// 3. KiÃ¡Â»Æ’m tra Giao diÃ¡Â»â€¡n Chat & Workspace cÃ¡Â»Â§a Admin (/api/threads & /api/workspace/docs)
+	reqThread := httptest.NewRequest(http.MethodPost, "/api/threads", strings.NewReader(`{"title":"Ã„ÂoÃ¡ÂºÂ¡n chat Admin","model":""}`))
 	reqThread.Header.Set("Content-Type", "application/json")
 	reqThread.Header.Set("Authorization", "Bearer "+loginResp.Token)
 	reqThread.Header.Set("X-Mart-Client", "web")
@@ -829,6 +832,7 @@ func TestAdminAccountLoginSettingsAndChatFlow(t *testing.T) {
 }
 
 func TestResponseSpeedBenchmark(t *testing.T) {
+	t.Setenv("MART_ADMIN_PASSWORD", TestBootstrapPassword)
 	tmpDir := t.TempDir()
 	app, err := NewServerApp(tmpDir)
 	if err != nil {
@@ -842,9 +846,9 @@ func TestResponseSpeedBenchmark(t *testing.T) {
 
 	handler := app.Routes()
 
-	// Lấy JWT Admin
+	// LÃ¡ÂºÂ¥y JWT Admin
 	loginStart := time.Now()
-	loginBody := `{"username":"admin","password":"` + DefaultAdminPassword + `"}`
+	loginBody := `{"username":"admin","password":"` + TestBootstrapPassword + `"}`
 	reqLogin := httptest.NewRequest(http.MethodPost, "/api/users/login", strings.NewReader(loginBody))
 	reqLogin.Header.Set("Content-Type", "application/json")
 	reqLogin.Header.Set("X-Mart-Client", "web")
@@ -910,7 +914,7 @@ func TestResponseSpeedBenchmark(t *testing.T) {
 		t.Logf("%-42s | %10s | %6d", tc.name, dur.Round(time.Microsecond), rec.Code)
 	}
 
-	// Kiểm tra tốc độ thực tế trên Aiven MySQL Cloud TLS nếu có cấu hình mã hóa sql40_cloud.enc
+	// KiÃ¡Â»Æ’m tra tÃ¡Â»â€˜c Ã„â€˜Ã¡Â»â„¢ thÃ¡Â»Â±c tÃ¡ÂºÂ¿ trÃƒÂªn Aiven MySQL Cloud TLS nÃ¡ÂºÂ¿u cÃƒÂ³ cÃ¡ÂºÂ¥u hÃƒÂ¬nh mÃƒÂ£ hÃƒÂ³a sql40_cloud.enc
 	cloudURL := LoadEncryptedCloudSQLConfig(`f:\tools muse ai\data`)
 	if strings.HasPrefix(strings.ToLower(cloudURL), "mysql://") {
 		connStart := time.Now()
@@ -1024,7 +1028,7 @@ func TestAccountSyncAndDeletionIntegrity(t *testing.T) {
 		Status:              "ready",
 	}
 
-	// 1. Thêm 2 nodes vào MySQL
+	// 1. ThÃƒÂªm 2 nodes vÃƒÂ o MySQL
 	if err := store.UpsertAccount(nodeA); err != nil {
 		t.Fatalf("UpsertAccount A failed: %v", err)
 	}
@@ -1032,22 +1036,22 @@ func TestAccountSyncAndDeletionIntegrity(t *testing.T) {
 		t.Fatalf("UpsertAccount B failed: %v", err)
 	}
 
-	// 2. Đồng bộ 2 nodes qua SyncAllAccounts
+	// 2. Ã„ÂÃ¡Â»â€œng bÃ¡Â»â„¢ 2 nodes qua SyncAllAccounts
 	if err := store.SyncAllAccounts([]*MuseAccountNode{nodeA, nodeB}); err != nil {
 		t.Fatalf("SyncAllAccounts with 2 nodes failed: %v", err)
 	}
 
-	// 3. Xóa nodeB
+	// 3. XÃƒÂ³a nodeB
 	if err := store.DeleteAccount(nodeB.ID, nodeB.Fingerprint); err != nil {
 		t.Fatalf("DeleteAccount nodeB failed: %v", err)
 	}
 
-	// 4. Đồng bộ lại chỉ với nodeA (mô phỏng việc người dùng nhấn 'Đồng bộ SQL')
+	// 4. Ã„ÂÃ¡Â»â€œng bÃ¡Â»â„¢ lÃ¡ÂºÂ¡i chÃ¡Â»â€° vÃ¡Â»â€ºi nodeA (mÃƒÂ´ phÃ¡Â»Âng viÃ¡Â»â€¡c ngÃ†Â°Ã¡Â»Âi dÃƒÂ¹ng nhÃ¡ÂºÂ¥n 'Ã„ÂÃ¡Â»â€œng bÃ¡Â»â„¢ SQL')
 	if err := store.SyncAllAccounts([]*MuseAccountNode{nodeA}); err != nil {
 		t.Fatalf("SyncAllAccounts with 1 node failed: %v", err)
 	}
 
-	// 5. Nạp lại tài khoản từ MySQL — BẮT BUỘC chỉ được có đúng 1 tài khoản (nodeA), nodeB KHÔNG ĐƯỢC PHÉP HỒI SINH
+	// 5. NÃ¡ÂºÂ¡p lÃ¡ÂºÂ¡i tÃƒÂ i khoÃ¡ÂºÂ£n tÃ¡Â»Â« MySQL Ã¢â‚¬â€ BÃ¡ÂºÂ®T BUÃ¡Â»ËœC chÃ¡Â»â€° Ã„â€˜Ã†Â°Ã¡Â»Â£c cÃƒÂ³ Ã„â€˜ÃƒÂºng 1 tÃƒÂ i khoÃ¡ÂºÂ£n (nodeA), nodeB KHÃƒâ€NG Ã„ÂÃ†Â¯Ã¡Â»Â¢C PHÃƒâ€°P HÃ¡Â»â€™I SINH
 	loaded, err := store.LoadAccounts()
 	if err != nil {
 		t.Fatalf("LoadAccounts failed: %v", err)
@@ -1063,7 +1067,7 @@ func TestAccountSyncAndDeletionIntegrity(t *testing.T) {
 		t.Fatalf("CRITICAL ERROR: nodeB da bi xoa nhung lai bi hoi sinh sau khi dong bo SQL!")
 	}
 
-	// Dọn dẹp node test
+	// DÃ¡Â»Ân dÃ¡ÂºÂ¹p node test
 	_ = store.DeleteAccount(nodeA.ID, nodeA.Fingerprint)
 	_ = store.DeleteAccount(nodeB.ID, nodeB.Fingerprint)
 	t.Logf("PASS: Account Sync & Deletion Reconciliation test passed perfectly!")
@@ -1079,8 +1083,8 @@ func TestSSEChatSendNeverCorruptedByGzipAndCleansPendingTurn(t *testing.T) {
 	}
 	defer app.pool.Shutdown()
 
-	// Cắm 1 tài khoản hợp lệ vào pool để test luồng SSE + Browser Relay + Cleanup Pending Turn
-	encCookie, err := app.pool.rustBridge.EncryptSecret("hatch_sess=test_valid_session_cookie_123456")
+	// CÃ¡ÂºÂ¯m 1 tÃƒÂ i khoÃ¡ÂºÂ£n hÃ¡Â»Â£p lÃ¡Â»â€¡ vÃƒÂ o pool Ã„â€˜Ã¡Â»Æ’ test luÃ¡Â»â€œng SSE + Browser Relay + Cleanup Pending Turn
+	encCookie, err := app.pool.vault.EncryptSecret("hatch_sess=test_valid_session_cookie_123456")
 	if err != nil {
 		t.Fatalf("EncryptSecret: %v", err)
 	}
@@ -1101,7 +1105,7 @@ func TestSSEChatSendNeverCorruptedByGzipAndCleansPendingTurn(t *testing.T) {
 	app.pool.mu.Unlock()
 
 	handler := app.Routes()
-	token, err := app.jwtMgr.IssueUserToken("admin", "admin", "Quản trị viên", "admin", 15*time.Minute)
+	token, err := app.jwtMgr.IssueUserToken("admin", "admin", "QuÃ¡ÂºÂ£n trÃ¡Â»â€¹ viÃƒÂªn", "admin", 15*time.Minute)
 	if err != nil {
 		t.Fatalf("IssueUserToken: %v", err)
 	}
@@ -1146,7 +1150,7 @@ func TestSSEChatSendNeverCorruptedByGzipAndCleansPendingTurn(t *testing.T) {
 		t.Fatalf("Expected non-empty turn_id in SSE done event")
 	}
 
-	// Hủy lượt relay qua /api/chat/relay-complete -> turn pending phải được dọn sạch khỏi thread
+	// HÃ¡Â»Â§y lÃ†Â°Ã¡Â»Â£t relay qua /api/chat/relay-complete -> turn pending phÃ¡ÂºÂ£i Ã„â€˜Ã†Â°Ã¡Â»Â£c dÃ¡Â»Ân sÃ¡ÂºÂ¡ch khÃ¡Â»Âi thread
 	cancelPayload, _ := json.Marshal(map[string]string{
 		"thread_id": "thread_sse_1",
 		"turn_id":   turnID,
@@ -1177,9 +1181,6 @@ func TestSSEChatSendNeverCorruptedByGzipAndCleansPendingTurn(t *testing.T) {
 	app.pool.mu.RUnlock()
 }
 
-
-
-
 func TestPurgeBrokenNodesAndAutoCaptureEndpoints(t *testing.T) {
 	tmpDir := t.TempDir()
 	app, err := NewServerApp(tmpDir)
@@ -1189,7 +1190,7 @@ func TestPurgeBrokenNodesAndAutoCaptureEndpoints(t *testing.T) {
 	defer app.pool.GetMySQLStore().Close()
 	handler := app.Routes()
 
-	// Thêm 1 node giả bị hỏng mã hóa (encrypted credential không hợp lệ)
+	// ThÃƒÂªm 1 node giÃ¡ÂºÂ£ bÃ¡Â»â€¹ hÃ¡Â»Âng mÃƒÂ£ hÃƒÂ³a (encrypted credential khÃƒÂ´ng hÃ¡Â»Â£p lÃ¡Â»â€¡)
 	app.pool.mu.Lock()
 	brokenNode := &MuseAccountNode{
 		ID:                  "broken-test-node-1",
@@ -1200,7 +1201,7 @@ func TestPurgeBrokenNodesAndAutoCaptureEndpoints(t *testing.T) {
 	app.pool.nodes = append(app.pool.nodes, brokenNode)
 	app.pool.mu.Unlock()
 
-	// Gọi API /api/accounts/purge-broken
+	// GÃ¡Â»Âi API /api/accounts/purge-broken
 	reqPurge := httptest.NewRequest(http.MethodPost, "/api/accounts/purge-broken", nil)
 	recPurge := httptest.NewRecorder()
 	handler.ServeHTTP(recPurge, reqPurge)
@@ -1218,7 +1219,7 @@ func TestPurgeBrokenNodesAndAutoCaptureEndpoints(t *testing.T) {
 		t.Fatalf("Expected at least 1 purged node, got %v", purgedVal)
 	}
 
-	// Xác nhận broken node đã bị xóa sạch khỏi pool
+	// XÃƒÂ¡c nhÃ¡ÂºÂ­n broken node Ã„â€˜ÃƒÂ£ bÃ¡Â»â€¹ xÃƒÂ³a sÃ¡ÂºÂ¡ch khÃ¡Â»Âi pool
 	app.pool.mu.RLock()
 	for _, n := range app.pool.nodes {
 		if n.ID == "broken-test-node-1" {

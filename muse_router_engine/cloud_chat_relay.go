@@ -35,7 +35,7 @@ func (p *MuseRouterPool) executeOpenAICompatibleDirect(
 	model string,
 	messagesPayload []map[string]string,
 ) (string, int64, error) {
-	rawCred, err := p.rustBridge.DecryptSecret(candidate.EncryptedCredential)
+	rawCred, err := p.vault.DecryptSecret(candidate.EncryptedCredential)
 	if err != nil {
 		return "", 0, err
 	}
@@ -77,7 +77,7 @@ func (p *MuseRouterPool) executeOpenAICompatibleDirect(
 
 	respBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
 	if resp.StatusCode != http.StatusOK {
-		return "", 0, fmt.Errorf("Upstream trả về HTTP %d", resp.StatusCode)
+		return "", 0, fmt.Errorf("Upstream tráº£ vá» HTTP %d", resp.StatusCode)
 	}
 
 	var parsed struct {
@@ -94,7 +94,7 @@ func (p *MuseRouterPool) executeOpenAICompatibleDirect(
 		return "", 0, err
 	}
 	if len(parsed.Choices) == 0 || strings.TrimSpace(parsed.Choices[0].Message.Content) == "" {
-		return "", 0, errors.New("Upstream trả về phản hồi rỗng")
+		return "", 0, errors.New("Upstream tráº£ vá» pháº£n há»“i rá»—ng")
 	}
 	return parsed.Choices[0].Message.Content, parsed.Usage.TotalTokens, nil
 }
@@ -106,18 +106,13 @@ func (p *MuseRouterPool) prepareBrowserRelayResponse(
 	model string,
 	userPrompt string,
 ) (map[string]interface{}, error) {
-	rawCred, err := p.rustBridge.DecryptSecret(candidate.EncryptedCredential)
-	if err != nil {
+	if _, err := p.vault.DecryptSecret(candidate.EncryptedCredential); err != nil {
 		p.unmarkNodeRunningKeepReady(candidate.ID)
 		p.cancelQuestionTurn(resolvedThreadID, turnID)
 		return nil, err
 	}
-	cookieHeader := strings.TrimSpace(rawCred)
-	if !strings.Contains(cookieHeader, "=") && cookieHeader != "" {
-		cookieHeader = "hatch_sess=" + cookieHeader
-	}
 
-	// Phòng hờ trình duyệt người dùng đóng tab giữa chừng: tự giải phóng slot và dọn turn pending sau 195 giây (hỗ trợ tác vụ tạo video/web lâu).
+	// PhÃ²ng há» trÃ¬nh duyá»‡t ngÆ°á»i dÃ¹ng Ä‘Ã³ng tab giá»¯a chá»«ng: tá»± giáº£i phÃ³ng slot vÃ  dá»n turn pending sau 195 giÃ¢y (há»— trá»£ tÃ¡c vá»¥ táº¡o video/web lÃ¢u).
 	go func(nodeID, tID, trnID string) {
 		time.Sleep(195 * time.Second)
 		p.mu.Lock()
@@ -144,7 +139,6 @@ func (p *MuseRouterPool) prepareBrowserRelayResponse(
 		"routed_node":   candidate.Label,
 		"model":         model,
 		"prompt":        userPrompt,
-		"relay_cookie":  cookieHeader,
 	}, nil
 }
 
@@ -162,7 +156,7 @@ func (p *MuseRouterPool) CompleteBrowserRelayTurn(
 		p.unmarkNodeRunningKeepReady(nodeID)
 		p.cancelQuestionTurn(threadID, turnID)
 		if errDetail == "" {
-			errDetail = "Chưa nhận được phản hồi từ phiên trình duyệt Muse.ai"
+			errDetail = "ChÆ°a nháº­n Ä‘Æ°á»£c pháº£n há»“i tá»« phiÃªn trÃ¬nh duyá»‡t Muse.ai"
 		}
 		return map[string]interface{}{
 			"cancelled": true,

@@ -1,18 +1,12 @@
-# Antigravity Rules - MuseRouter (muse_router)
-# Kien truc: Antigravity Polyglot v2.4
-# App Prefix: muse_router | Assembly: MuseRouter
+# MuseRouter Go-Native Rules
 
-1. Luong giao tiep 1 chieu: C# UI (muse_router_ui) -> Go Engine (muse_router_engine) -> Python AI (muse_router_ai) -> Rust Core (muse_router_core).
-2. Tat ca file luu tai f:\tools muse ai (TUYET DOI KHONG luu tren o C).
-3. Encoding: 100% UTF-8. Khong empty catch block, khong demo/mock mode.
-4. Bao mat:
-   - JWT RS256 bat doi xung.
-   - Secret/Cookie (hatch_sess, hatch_gw, token) phai duoc Rust Core ma hoa AES-256-GCM truoc khi luu xuong dia.
-   - Constant-time comparison cho moi token/hash.
-   - CORS exact match origin, day du Security Headers.
-   - Chong CRLF Log Injection.
-5. Hieu nang:
-   - Go: WorkerPool (64 workers), bounded channel (1000), context.WithTimeout, sync.Map TTL cache, Mem Alloc monitor > 500MB.
-   - Rust: Export free_rust_string va free_rust_bytes.
-   - Python: Generator/yield streaming, lru_cache, del bien lon.
-   - C#: MemoryCache SizeLimit 1000, StreamReader <= 4096 bytes, using IDisposable.
+1. Kiến trúc runtime chỉ gồm Go Engine (`muse_router_engine`). Web UI được embed bằng `go:embed`.
+2. Không thêm lại Python Bridge, Rust Core DLL hoặc C# launcher vào đường chạy/build chính.
+3. Dữ liệu ứng dụng nằm trong `f:\tools muse ai\data`; không ghi secret vào source, log hoặc repository.
+4. Build phát hành: `CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o muse_router.exe .`
+5. Secrets bắt buộc ở environment: `DATABASE_URL`, `MUSE_VAULT_MASTER_KEY`, `MART_ADMIN_PASSWORD`, `MUSE_INTERNAL_BRIDGE_TOKEN`.
+6. Không dùng khóa vault cố định trong môi trường hosted. Không log cookie, token, password hoặc URL database chưa che.
+7. Bảo mật: JWT RS256, AES-256-CTR + HMAC-SHA256, constant-time comparison, parameterized SQL, CORS exact match, security headers và CRLF-safe logging.
+8. Hiệu năng: bounded queues, context timeout, TTL cache, giới hạn payload, connection pool hữu hạn và giới hạn số Chromium worker theo RAM.
+9. Mọi thay đổi phải chạy `gofmt`, `go test ./...`, `go vet ./...` trước khi build.
+10. Không xóa thư mục `data` hoặc file dữ liệu tài khoản nếu chưa có backup rõ ràng.

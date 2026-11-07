@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"database/sql"
 	"database/sql/driver"
 	"encoding/binary"
@@ -14,6 +15,7 @@ import (
 	"math"
 	"net"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -167,7 +169,7 @@ func (c *mysqlConn) readPacket() ([]byte, byte, error) {
 		return nil, seq, err
 	}
 
-	// Xử lý gói tin lớn hơn 16MB
+	// Xá»­ lÃ½ gÃ³i tin lá»›n hÆ¡n 16MB
 	for length == 0xffffff {
 		if _, err := io.ReadFull(c.conn, header[:]); err != nil {
 			return nil, seq, err
@@ -231,7 +233,7 @@ func (c *mysqlConn) handshake() error {
 	var capUpper uint32
 	var authPluginLen int
 	if pos+1+2+2+1+10 <= len(pkt) {
-		pos++ // character_set
+		pos++    // character_set
 		pos += 2 // status_flags
 		capUpper = uint32(binary.LittleEndian.Uint16(pkt[pos : pos+2]))
 		pos += 2
@@ -284,7 +286,7 @@ func (c *mysqlConn) handshake() error {
 
 	nextSeq := seq + 1
 
-	// Bắt tay TLS 1.2+ nếu sử dụng SSL/TLS (Aiven MySQL yêu cầu ssl-mode=REQUIRED)
+	// Báº¯t tay TLS 1.2+ náº¿u sá»­ dá»¥ng SSL/TLS (Aiven MySQL yÃªu cáº§u ssl-mode=REQUIRED)
 	if c.cfg.UseTLS && (serverCaps&mysqlCapSSL) != 0 {
 		clientFlags |= mysqlCapSSL
 		sslPkt := make([]byte, 32)
@@ -296,11 +298,18 @@ func (c *mysqlConn) handshake() error {
 		}
 		nextSeq++
 
-		tlsConn := tls.Client(c.conn, &tls.Config{
-			ServerName:         c.cfg.Host,
-			InsecureSkipVerify: true, // Aiven sử dụng Project CA tự ký cho ssl-mode=REQUIRED
-			MinVersion:         tls.VersionTLS12,
-		})
+		tlsConfig := &tls.Config{ServerName: c.cfg.Host, MinVersion: tls.VersionTLS12}
+		if caPEM := strings.TrimSpace(os.Getenv("MYSQL_CA_CERT")); caPEM != "" {
+			pool, errPool := x509.SystemCertPool()
+			if errPool != nil || pool == nil {
+				pool = x509.NewCertPool()
+			}
+			if !pool.AppendCertsFromPEM([]byte(caPEM)) {
+				return errors.New("MYSQL_CA_CERT does not contain a valid PEM certificate")
+			}
+			tlsConfig.RootCAs = pool
+		}
+		tlsConn := tls.Client(c.conn, tlsConfig)
 		if err := tlsConn.Handshake(); err != nil {
 			return fmt.Errorf("mysql tls handshake failed: %w", err)
 		}
@@ -309,7 +318,7 @@ func (c *mysqlConn) handshake() error {
 
 	authResp := computeMySQLAuthResponse(pluginName, c.cfg.Password, scramble)
 
-	// Tạo gói HandshakeResponse41
+	// Táº¡o gÃ³i HandshakeResponse41
 	resp := make([]byte, 32, 128)
 	binary.LittleEndian.PutUint32(resp[0:4], clientFlags)
 	binary.LittleEndian.PutUint32(resp[4:8], 16*1024*1024)
@@ -367,11 +376,11 @@ func (c *mysqlConn) handshake() error {
 		case 0x01:
 			// AuthMoreData (caching_sha2_password)
 			if len(authPkt) >= 2 && authPkt[1] == 0x03 {
-				// Fast auth success, tiếp tục đọc OK_Packet ở vòng lặp kế tiếp
+				// Fast auth success, tiáº¿p tá»¥c Ä‘á»c OK_Packet á»Ÿ vÃ²ng láº·p káº¿ tiáº¿p
 				continue
 			}
 			if len(authPkt) >= 2 && authPkt[1] == 0x04 {
-				// Full authentication over TLS: gửi password kết thúc bằng NUL byte
+				// Full authentication over TLS: gá»­i password káº¿t thÃºc báº±ng NUL byte
 				cleartext := append([]byte(c.cfg.Password), 0)
 				if err := c.writePacket(cleartext, rSeq+1); err != nil {
 					return err
@@ -574,7 +583,7 @@ var (
 	reSqliteVer   = regexp.MustCompile(`(?i)\bsqlite_version\s*\(\s*\)`)
 )
 
-// rewriteSQLForMySQL tự động chuyển đổi cú pháp SQLite/SQL40 sang MySQL 8.0 chuẩn.
+// rewriteSQLForMySQL tá»± Ä‘á»™ng chuyá»ƒn Ä‘á»•i cÃº phÃ¡p SQLite/SQL40 sang MySQL 8.0 chuáº©n.
 func rewriteSQLForMySQL(rawSQL string) string {
 	s := strings.TrimSpace(rawSQL)
 	if strings.EqualFold(s, "PRAGMA journal_mode") || strings.EqualFold(s, "PRAGMA journal_mode;") {
@@ -593,14 +602,14 @@ func (c *mysqlConn) Prepare(query string) (driver.Stmt, error) {
 	return &mysqlStmt{conn: c, query: query}, nil
 }
 
-// IsValid implements driver.Validator (Go 1.15+) để pool tự kiểm tra trước khi cấp phát connection
+// IsValid implements driver.Validator (Go 1.15+) Ä‘á»ƒ pool tá»± kiá»ƒm tra trÆ°á»›c khi cáº¥p phÃ¡t connection
 func (c *mysqlConn) IsValid() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return !c.closed && c.conn != nil
 }
 
-// Ping implements driver.Pinger để kiểm tra kết nối sống thực tế tới TiDB Serverless
+// Ping implements driver.Pinger Ä‘á»ƒ kiá»ƒm tra káº¿t ná»‘i sá»‘ng thá»±c táº¿ tá»›i TiDB Serverless
 func (c *mysqlConn) Ping(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -694,7 +703,7 @@ func (c *mysqlConn) execInternal(query string, args []driver.Value) (driver.Resu
 	case 0xff:
 		return nil, parseMySQLErrPacket(pkt)
 	default:
-		// Trường hợp câu lệnh trả về resultset trong Exec: xả hết các gói tin
+		// TrÆ°á»ng há»£p cÃ¢u lá»‡nh tráº£ vá» resultset trong Exec: xáº£ háº¿t cÃ¡c gÃ³i tin
 		_, err := c.drainResultSet(pkt)
 		if err != nil {
 			return nil, err
@@ -759,14 +768,14 @@ func (c *mysqlConn) drainResultSet(firstPkt []byte) (*mysqlRows, error) {
 		_, pos, _ = readLenEncString(cpkt, pos) // org_name
 		cols[i] = name
 		if pos+1+2+4+1 <= len(cpkt) {
-			pos++ // 0x0c
+			pos++    // 0x0c
 			pos += 2 // charset
 			pos += 4 // col length
 			colTypes[i] = cpkt[pos]
 		}
 	}
 
-	// Đọc gói EOF kết thúc phần định nghĩa cột
+	// Äá»c gÃ³i EOF káº¿t thÃºc pháº§n Ä‘á»‹nh nghÄ©a cá»™t
 	eofPkt, _, err := c.readPacket()
 	if err != nil {
 		return nil, err

@@ -14,7 +14,7 @@ import (
 //go:embed all:mart_ai_extension
 var embeddedExtensionFS embed.FS
 
-// extractCookieValue lấy giá trị của cookie `name` từ chuỗi dạng "a=1; b=2".
+// extractCookieValue láº¥y giÃ¡ trá»‹ cá»§a cookie `name` tá»« chuá»—i dáº¡ng "a=1; b=2".
 func extractCookieValue(cookieHeader, name string) string {
 	trimmed := strings.TrimSpace(cookieHeader)
 	for _, part := range strings.Split(cookieHeader, ";") {
@@ -32,9 +32,9 @@ func extractCookieValue(cookieHeader, name string) string {
 	return ""
 }
 
-// IngestAccountCookie nhận chuỗi cookie muse.ai gửi từ extension trình duyệt.
-// Nếu hatch_sess đã có trong Pool thì cập nhật cookie cho tài khoản đó (không tạo trùng),
-// ngược lại thêm tài khoản mới. Trả về (node, created, error).
+// IngestAccountCookie nháº­n chuá»—i cookie muse.ai gá»­i tá»« extension trÃ¬nh duyá»‡t.
+// Náº¿u hatch_sess Ä‘Ã£ cÃ³ trong Pool thÃ¬ cáº­p nháº­t cookie cho tÃ i khoáº£n Ä‘Ã³ (khÃ´ng táº¡o trÃ¹ng),
+// ngÆ°á»£c láº¡i thÃªm tÃ i khoáº£n má»›i. Tráº£ vá» (node, created, error).
 func (p *MuseRouterPool) IngestAccountCookie(ctx context.Context, label, cookie string, proxyURLs ...string) (*MuseAccountNode, bool, error) {
 	cookie = strings.TrimSpace(cookie)
 	newSess := extractCookieValue(cookie, "hatch_sess")
@@ -56,9 +56,9 @@ func (p *MuseRouterPool) IngestAccountCookie(ctx context.Context, label, cookie 
 
 	existingID := ""
 	for _, pr := range pairs {
-		raw, err := p.rustBridge.DecryptSecret(pr.enc)
+		raw, err := p.vault.DecryptSecret(pr.enc)
 		if err != nil {
-			LogWarn("Ingest: không giải mã được credential của node %s: %v", pr.id, err)
+			LogWarn("Ingest: khÃ´ng giáº£i mÃ£ Ä‘Æ°á»£c credential cá»§a node %s: %v", pr.id, err)
 			continue
 		}
 		if cur := extractCookieValue(raw, "hatch_sess"); cur != "" && ConstantTimeStringEquals(cur, newSess) {
@@ -75,11 +75,11 @@ func (p *MuseRouterPool) IngestAccountCookie(ctx context.Context, label, cookie 
 		return node, true, nil
 	}
 
-	enc, err := p.rustBridge.EncryptSecret(cookie)
+	enc, err := p.vault.EncryptSecret(cookie)
 	if err != nil {
 		return nil, false, err
 	}
-	fp := p.rustBridge.ComputeFingerprint(cookie)
+	fp := p.vault.ComputeFingerprint(cookie)
 	hasSess, hasGw := detectCookieFlags(cookie)
 	p.mu.Lock()
 	for _, n := range p.nodes {
@@ -154,8 +154,8 @@ func (a *ServerApp) handleIngestAccount(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-// handleDownloadExtensionZip đóng gói thư mục mart_ai_extension thành file .zip trực tiếp từ bộ nhớ
-// để người dùng tải 1 chạm ngay trên trang /admin của Render.
+// handleDownloadExtensionZip Ä‘Ã³ng gÃ³i thÆ° má»¥c mart_ai_extension thÃ nh file .zip trá»±c tiáº¿p tá»« bá»™ nhá»›
+// Ä‘á»ƒ ngÆ°á»i dÃ¹ng táº£i 1 cháº¡m ngay trÃªn trang /admin cá»§a Render.
 func (a *ServerApp) handleDownloadExtensionZip(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		WriteJSONError(w, http.StatusMethodNotAllowed, "ERR_METHOD_NOT_ALLOWED")

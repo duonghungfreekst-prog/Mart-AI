@@ -1,4 +1,6 @@
-# 🛒 Mart AI (MuseRouter) — Hệ Thống Điều Phối Đa Tài Khoản & Gộp Token
+# 🛒 Mart AI (MuseRouter) — Go Engine
+
+> Bản phát hành hiện tại chạy bằng một executable Go duy nhất. Python Bridge, Rust Core và C# launcher không còn là runtime bắt buộc.
 
 > Kết nối nhiều tài khoản `muse.ai` thành **Token Pool thống nhất** — giao diện Chat **Mart AI** chuẩn gốc, chạy song song đa luồng theo từng tài khoản, tự động nhảy câu hỏi sang tài khoản rảnh và tự động đồng bộ toàn diện.
 
@@ -40,8 +42,8 @@ muse.ai (Token Pool thật)
 
 ### Yêu cầu
 - Windows 10/11 x64
-- Go 1.22+ (để build), Rust 1.78+ (đã build sẵn DLL)
-- Python 3.11+ + Playwright (`pip install playwright && playwright install chromium`)
+- Chrome hoặc Edge cài sẵn để dùng CDP/browser automation
+- Go 1.23+ chỉ cần khi build từ source
 
 ### Chạy nhanh (dev)
 ```cmd
@@ -49,6 +51,17 @@ cd "f:\tools muse ai"
 run_muse_router.bat
 ```
 Mở Chrome → **http://127.0.0.1:8088**
+
+### Tách dữ liệu tài khoản khỏi bộ cài
+Không đặt `data\` cạnh bộ cài khi phát hành cho nhân viên. Chỉ server/worker được truy cập dữ liệu tài khoản.
+
+```cmd
+set MUSE_DATA_DIR=D:\MuseRouterData
+set MUSE_VAULT_MASTER_KEY=<secret-khong-doi-sau-khi-luu-account>
+muse_router_engine\muse_router.exe
+```
+
+Tài khoản nhân viên dùng API đăng ký/đăng nhập riêng (`/api/users/register`, `/api/users/login`). Credential Muse được lưu mã hóa phía server và không trả về frontend.
 
 ### Cài Windows Service (production — tự boot)
 ```cmd
@@ -60,11 +73,7 @@ install_service.bat
 ### Build từ source
 ```cmd
 cd muse_router_engine
-go build -o muse_router.exe .
-
-cd ..\muse_router_core
-cargo build --release
-copy target\release\muse_router_core.dll ..\muse_router_core\
+go build -ldflags="-s -w" -o muse_router.exe .
 ```
 
 ---

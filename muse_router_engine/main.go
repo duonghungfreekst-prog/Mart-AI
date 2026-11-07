@@ -15,7 +15,6 @@ import (
 	"mime"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -47,27 +46,32 @@ func init() {
 var embeddedWebFS embed.FS
 
 type ServerApp struct {
-	pool       *MuseRouterPool
-	jwtMgr     *RS256JWTManager
-	cache      *TTLCache
-	rustBridge *RustCoreBridge
+	pool   *MuseRouterPool
+	jwtMgr *RS256JWTManager
+	cache  *TTLCache
+	vault  *Vault
 }
 
 func defaultVaultMasterKey() string {
 	if k := strings.TrimSpace(os.Getenv("MUSE_VAULT_MASTER_KEY")); k != "" {
 		return k
 	}
-	// Fallback an toan co dinh de Render va Local luon giai ma dong nhat cac tai khoan da ma hoa trong MySQL / TiDB
-	return "MUSE_ROUTER_SQL40_CLOUD_VAULT_KEY_2026_AES256CTR"
+	return ""
 }
 
 func ensureRuntimeBridgeSecrets() (string, string, error) {
 	masterKey := defaultVaultMasterKey()
+	if masterKey == "" && (os.Getenv("RENDER") != "" || os.Getenv("PORT") != "") {
+		return "", "", fmt.Errorf("MUSE_VAULT_MASTER_KEY is required in hosted mode")
+	}
+	if masterKey == "" {
+		masterKey = "local-development-key-change-me"
+	}
 	_ = os.Setenv("MUSE_VAULT_MASTER_KEY", masterKey)
 
 	aiBridgeToken := strings.TrimSpace(os.Getenv("MUSE_INTERNAL_BRIDGE_TOKEN"))
 	if aiBridgeToken == "" {
-		LogWarn("MUSE_INTERNAL_BRIDGE_TOKEN chua duoc dat — dang sinh token ngau nhien cho session nay.")
+		LogWarn("MUSE_INTERNAL_BRIDGE_TOKEN chua duoc dat â€” dang sinh token ngau nhien cho session nay.")
 		tokenBytes := make([]byte, 24)
 		if _, err := rand.Read(tokenBytes); err != nil {
 			return "", "", fmt.Errorf("khong the sinh bridge token: %w", err)
@@ -83,10 +87,9 @@ func NewServerApp(dataDir string) (*ServerApp, error) {
 	if err != nil {
 		return nil, err
 	}
-	aiBridgeURL := os.Getenv("MUSE_AI_BRIDGE_URL")
-	if aiBridgeURL == "" {
-		aiBridgeURL = "http://127.0.0.1:18089"
-	}
+	// Go-native mode: CDP, routing and vault are handled inside the Go engine.
+	// The legacy Python bridge remains optional for backward compatibility only.
+	aiBridgeURL := strings.TrimSpace(os.Getenv("MUSE_AI_BRIDGE_URL"))
 
 	cache := NewTTLCache()
 	jwtMgr, err := NewRS256JWTManagerWithKeyFile(cache, filepath.Join(dataDir, "jwt_rs256.key.enc"), masterKey)
@@ -94,22 +97,22 @@ func NewServerApp(dataDir string) (*ServerApp, error) {
 		return nil, err
 	}
 
-	rustBridge, err := NewRustCoreBridge(masterKey)
+	vault, err := NewVault(masterKey)
 	if err != nil {
 		return nil, err
 	}
 
-	pool, err := NewMuseRouterPool(dataDir, rustBridge, cache, aiBridgeURL, aiBridgeToken)
+	pool, err := NewMuseRouterPool(dataDir, vault, cache, aiBridgeURL, aiBridgeToken)
 	if err != nil {
 		return nil, err
 	}
 	jwtMgr.SyncWithSQLStore(pool.GetMySQLStore(), masterKey)
 
 	app := &ServerApp{
-		pool:       pool,
-		jwtMgr:     jwtMgr,
-		cache:      cache,
-		rustBridge: rustBridge,
+		pool:   pool,
+		jwtMgr: jwtMgr,
+		cache:  cache,
+		vault:  vault,
 	}
 	app.EnsureDefaultAdminAccount()
 
@@ -213,7 +216,7 @@ func (a *ServerApp) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 func (a *ServerApp) Routes() http.Handler {
 	mux := http.NewServeMux()
 
-	// 1. Health & Ping Probes (hỗ trợ Render Zero-Downtime deploy & Liveness)
+	// 1. Health & Ping Probes (há»— trá»£ Render Zero-Downtime deploy & Liveness)
 	mux.HandleFunc("/health", a.handleHealthCheck)
 	mux.HandleFunc("/api/health", a.handleHealthCheck)
 	mux.HandleFunc("/ping", a.handlePing)
@@ -222,7 +225,7 @@ func (a *ServerApp) Routes() http.Handler {
 		actor := a.resolveActor(r)
 		sub := nonEmptyStr(actor.UserID, "muse_router_operator")
 		uname := nonEmptyStr(actor.Username, "admin")
-		dname := nonEmptyStr(actor.DisplayName, "Quản trị viên")
+		dname := nonEmptyStr(actor.DisplayName, "Quáº£n trá»‹ viÃªn")
 		role := nonEmptyStr(actor.Role, "admin")
 		token, err := a.jwtMgr.IssueUserToken(sub, uname, dname, role, 12*time.Hour)
 		if err != nil {
@@ -236,7 +239,7 @@ func (a *ServerApp) Routes() http.Handler {
 		})
 	})
 
-	// 1.5. Quản lý Tài khoản Người dùng & Workspace Cô lập theo từng tài khoản
+	// 1.5. Quáº£n lÃ½ TÃ i khoáº£n NgÆ°á»i dÃ¹ng & Workspace CÃ´ láº­p theo tá»«ng tÃ i khoáº£n
 	mux.HandleFunc("/api/users/register", a.handleUserRegister)
 	mux.HandleFunc("/api/users/login", a.handleUserLogin)
 	mux.HandleFunc("/api/users/admin-login", a.handleAdminUnlockLogin)
@@ -280,7 +283,7 @@ func (a *ServerApp) Routes() http.Handler {
 		WriteJSONResponse(w, http.StatusOK, a.pool.GetSummary())
 	})
 
-	// 3. Quản lý Pool Tài Khoản Muse AI THẬT (Không dữ liệu giả)
+	// 3. Quáº£n lÃ½ Pool TÃ i Khoáº£n Muse AI THáº¬T (KhÃ´ng dá»¯ liá»‡u giáº£)
 	mux.HandleFunc("/api/accounts/add", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			WriteJSONError(w, http.StatusMethodNotAllowed, "ERR_METHOD_NOT_ALLOWED")
@@ -317,7 +320,7 @@ func (a *ServerApp) Routes() http.Handler {
 		WriteJSONResponse(w, http.StatusOK, node)
 	})
 
-	// Nhận cookie muse.ai từ extension trình duyệt (bắt buộc mật khẩu admin)
+	// Nháº­n cookie muse.ai tá»« extension trÃ¬nh duyá»‡t (báº¯t buá»™c máº­t kháº©u admin)
 	mux.HandleFunc("/api/accounts/ingest", a.handleIngestAccount)
 	mux.HandleFunc("/api/accounts/extension.zip", a.handleDownloadExtensionZip)
 
@@ -358,7 +361,7 @@ func (a *ServerApp) Routes() http.Handler {
 		})
 	})
 
-	// Tự động lấy Link Đăng Nhập OAuth chính thức của muse.ai (https://auth.meta.com/oidc?...)
+	// Tá»± Ä‘á»™ng láº¥y Link ÄÄƒng Nháº­p OAuth chÃ­nh thá»©c cá»§a muse.ai (https://auth.meta.com/oidc?...)
 	mux.HandleFunc("/api/accounts/oauth-link", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost && r.Method != http.MethodGet {
 			WriteJSONError(w, http.StatusMethodNotAllowed, "ERR_METHOD_NOT_ALLOWED")
@@ -373,7 +376,7 @@ func (a *ServerApp) Routes() http.Handler {
 		WriteJSONResponse(w, http.StatusOK, res)
 	})
 
-	// Đăng nhập trực tiếp trên trình duyệt thật để tự động bắt Cookie hatch_sess
+	// ÄÄƒng nháº­p trá»±c tiáº¿p trÃªn trÃ¬nh duyá»‡t tháº­t Ä‘á»ƒ tá»± Ä‘á»™ng báº¯t Cookie hatch_sess
 	mux.HandleFunc("/api/accounts/browser-login", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			WriteJSONError(w, http.StatusMethodNotAllowed, "ERR_METHOD_NOT_ALLOWED")
@@ -395,7 +398,7 @@ func (a *ServerApp) Routes() http.Handler {
 		WriteJSONResponse(w, http.StatusOK, node)
 	})
 
-	// Mở cửa sổ trình duyệt Muse.ai chính gốc đã nạp sẵn Cookie của Node
+	// Má»Ÿ cá»­a sá»• trÃ¬nh duyá»‡t Muse.ai chÃ­nh gá»‘c Ä‘Ã£ náº¡p sáºµn Cookie cá»§a Node
 	mux.HandleFunc("/api/accounts/open-native", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			WriteJSONError(w, http.StatusMethodNotAllowed, "ERR_METHOD_NOT_ALLOWED")
@@ -458,14 +461,14 @@ func (a *ServerApp) Routes() http.Handler {
 		WriteJSONResponse(w, http.StatusOK, a.pool.GetSummary())
 	})
 
-	// Xóa sạch tất cả các node lỗi giải mã do khóa cũ hoặc hỏng dữ liệu
+	// XÃ³a sáº¡ch táº¥t cáº£ cÃ¡c node lá»—i giáº£i mÃ£ do khÃ³a cÅ© hoáº·c há»ng dá»¯ liá»‡u
 	mux.HandleFunc("/api/accounts/purge-broken", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			WriteJSONError(w, http.StatusMethodNotAllowed, "ERR_METHOD_NOT_ALLOWED")
 			return
 		}
 		purged := a.pool.PurgeBrokenNodes()
-		LogInfo("API /api/accounts/purge-broken: đã dọn dẹp %d node lỗi", purged)
+		LogInfo("API /api/accounts/purge-broken: Ä‘Ã£ dá»n dáº¹p %d node lá»—i", purged)
 		WriteJSONResponse(w, http.StatusOK, map[string]interface{}{
 			"purged":  purged,
 			"summary": a.pool.GetSummary(),
@@ -519,7 +522,7 @@ func (a *ServerApp) Routes() http.Handler {
 	mux.HandleFunc("/api/accounts/remote-login/input", a.handleRemoteLoginInput)
 	mux.HandleFunc("/api/accounts/remote-login/cancel", a.handleRemoteLoginCancel)
 	mux.HandleFunc("/api/admin/cdp-inspect", a.handleCDPInspect)
-	// 4. Quản lý Phiên Hội Thoại (Threads) & Muse AI Chat thật (cô lập theo từng tài khoản trong MySQL)
+	// 4. Quáº£n lÃ½ PhiÃªn Há»™i Thoáº¡i (Threads) & Muse AI Chat tháº­t (cÃ´ láº­p theo tá»«ng tÃ i khoáº£n trong MySQL)
 	mux.HandleFunc("/api/threads", func(w http.ResponseWriter, r *http.Request) {
 		actor := a.resolveActor(r)
 		ownerScope := actor.OwnerScope()
@@ -602,7 +605,7 @@ func (a *ServerApp) Routes() http.Handler {
 		WriteJSONResponse(w, http.StatusOK, map[string]interface{}{"deleted": true})
 	})
 
-	// /api/threads/messages — phân trang tin nhắn (limit/offset)
+	// /api/threads/messages â€” phÃ¢n trang tin nháº¯n (limit/offset)
 	mux.HandleFunc("/api/threads/messages", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodPost {
 			WriteJSONError(w, http.StatusMethodNotAllowed, "ERR_METHOD_NOT_ALLOWED")
@@ -646,7 +649,7 @@ func (a *ServerApp) Routes() http.Handler {
 			WriteJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		// Đếm tổng tin nhắn của thread
+		// Äáº¿m tá»•ng tin nháº¯n cá»§a thread
 		cRes, _ := store.ExecuteSQL(
 			"SELECT COUNT(1) as total FROM chat_messages WHERE thread_id=?",
 			[]interface{}{threadID},
@@ -693,7 +696,7 @@ func (a *ServerApp) Routes() http.Handler {
 			chatCtx = context.WithValue(chatCtx, clientBrowserRelayContextKey{}, true)
 		}
 
-		// Hỗ trợ Server-Sent Events (SSE) Streaming thời gian thực
+		// Há»— trá»£ Server-Sent Events (SSE) Streaming thá»i gian thá»±c
 		wantsStream := strings.Contains(r.Header.Get("Accept"), "text/event-stream") || req.Stream
 		flusher, canFlush := w.(http.Flusher)
 
@@ -801,7 +804,7 @@ func (a *ServerApp) Routes() http.Handler {
 		WriteJSONResponse(w, http.StatusOK, a.pool.GetLiveActivityStatusForOwner(r.Context(), actor.OwnerScope()))
 	})
 
-	// 4.5. Cơ sở dữ liệu chuẩn SQL40 trực tiếp cho hệ thống Web (Status / SQL Query / Config / Pipeline)
+	// 4.5. CÆ¡ sá»Ÿ dá»¯ liá»‡u chuáº©n SQL40 trá»±c tiáº¿p cho há»‡ thá»‘ng Web (Status / SQL Query / Config / Pipeline)
 	handleSQLStatus := func(w http.ResponseWriter, r *http.Request) {
 		store := a.pool.GetMySQLStore()
 		if store == nil {
@@ -892,14 +895,14 @@ func (a *ServerApp) Routes() http.Handler {
 		}
 		a.pool.mu.RUnlock()
 
-		// 1. Đồng bộ tài khoản Muse AI: Nếu Live Pool đang có tài khoản, đồng bộ trực tiếp Live Pool vào MySQL
-		// (SyncAllAccounts sẽ tự động xóa sạch tài khoản rác / tài khoản đã bị xóa khỏi pool)
+		// 1. Äá»“ng bá»™ tÃ i khoáº£n Muse AI: Náº¿u Live Pool Ä‘ang cÃ³ tÃ i khoáº£n, Ä‘á»“ng bá»™ trá»±c tiáº¿p Live Pool vÃ o MySQL
+		// (SyncAllAccounts sáº½ tá»± Ä‘á»™ng xÃ³a sáº¡ch tÃ i khoáº£n rÃ¡c / tÃ i khoáº£n Ä‘Ã£ bá»‹ xÃ³a khá»i pool)
 		if len(currentNodes) > 0 {
 			if err := store.SyncAllAccounts(currentNodes); err != nil {
 				LogError("migrate-to-mysql SyncAllAccounts error: %v", err)
 			}
 		} else {
-			// Pool rỗng -> mới nạp từ legacy JSON để cứu dữ liệu
+			// Pool rá»—ng -> má»›i náº¡p tá»« legacy JSON Ä‘á»ƒ cá»©u dá»¯ liá»‡u
 			dataDir := a.pool.vaultPath
 			if dataDir != "" {
 				dataDir = filepath.Dir(dataDir)
@@ -912,7 +915,7 @@ func (a *ServerApp) Routes() http.Handler {
 			_ = a.pool.loadVault()
 		}
 
-		// 2. Đồng bộ các đoạn hội thoại (Threads)
+		// 2. Äá»“ng bá»™ cÃ¡c Ä‘oáº¡n há»™i thoáº¡i (Threads)
 		if len(currentThreads) > 0 {
 			for _, t := range currentThreads {
 				if t != nil && t.ID != "" {
@@ -927,7 +930,7 @@ func (a *ServerApp) Routes() http.Handler {
 
 		WriteJSONResponse(w, http.StatusOK, map[string]interface{}{
 			"status":    "ok",
-			"message":   "Đã di chuyển và đồng bộ toàn bộ dữ liệu vào MySQL / TiDB Cloud thành công",
+			"message":   "ÄÃ£ di chuyá»ƒn vÃ  Ä‘á»“ng bá»™ toÃ n bá»™ dá»¯ liá»‡u vÃ o MySQL / TiDB Cloud thÃ nh cÃ´ng",
 			"db_status": store.GetStatus(),
 		})
 	})
@@ -952,7 +955,7 @@ func (a *ServerApp) Routes() http.Handler {
 	mux.HandleFunc("/v2/pipeline", handleHranaPipeline)
 	mux.HandleFunc("/api/mysql/pipeline", handleHranaPipeline)
 
-	// 4.6. Tasks API — chạy batch task độc lập qua Token Pool
+	// 4.6. Tasks API â€” cháº¡y batch task Ä‘á»™c láº­p qua Token Pool
 	mux.HandleFunc("/api/tasks/run", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			WriteJSONError(w, http.StatusMethodNotAllowed, "ERR_METHOD_NOT_ALLOWED")
@@ -980,7 +983,7 @@ func (a *ServerApp) Routes() http.Handler {
 		ownerScope := actor.OwnerScope()
 		whereSQL, whereArgs := ownerWhereClause("owner_id", ownerScope)
 
-		// Cập nhật trạng thái running (chỉ cho phép trên task thuộc chủ sở hữu hiện tại)
+		// Cáº­p nháº­t tráº¡ng thÃ¡i running (chá»‰ cho phÃ©p trÃªn task thuá»™c chá»§ sá»Ÿ há»¯u hiá»‡n táº¡i)
 		taskID := strings.TrimSpace(req.TaskID)
 		if taskID != "" {
 			args := append([]interface{}{taskID}, whereArgs...)
@@ -989,12 +992,12 @@ func (a *ServerApp) Routes() http.Handler {
 				args,
 			)
 		}
-		// Thực thi chat thật qua Token Pool
+		// Thá»±c thi chat tháº­t qua Token Pool
 		idemKey := "task:" + taskID
 		res, err := a.pool.RouteAndExecuteChatForOwner(
 			r.Context(),
 			ownerScope,
-			"", // thread_id rỗng = tạo thread tạm
+			"", // thread_id rá»—ng = táº¡o thread táº¡m
 			"auto",
 			"",
 			"task",
@@ -1026,14 +1029,14 @@ func (a *ServerApp) Routes() http.Handler {
 			WriteJSONResponse(w, http.StatusOK, res)
 			return
 		}
-		// Lấy nội dung reply
+		// Láº¥y ná»™i dung reply
 		replyText := ""
 		if v, ok := res["reply"]; ok {
 			replyText = fmt.Sprintf("%v", v)
 		} else if v, ok := res["content"]; ok {
 			replyText = fmt.Sprintf("%v", v)
 		}
-		// Rút gọn result_summary tối đa 1000 ký tự
+		// RÃºt gá»n result_summary tá»‘i Ä‘a 1000 kÃ½ tá»±
 		summary := replyText
 		if len(summary) > 1000 {
 			summary = summary[:997] + "..."
@@ -1053,7 +1056,7 @@ func (a *ServerApp) Routes() http.Handler {
 		})
 	})
 
-	// /api/tasks/batch — chạy nhiều tasks song song bằng goroutines (tối đa 10 concurrent)
+	// /api/tasks/batch â€” cháº¡y nhiá»u tasks song song báº±ng goroutines (tá»‘i Ä‘a 10 concurrent)
 	mux.HandleFunc("/api/tasks/batch", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			WriteJSONError(w, http.StatusMethodNotAllowed, "ERR_METHOD_NOT_ALLOWED")
@@ -1092,7 +1095,7 @@ func (a *ServerApp) Routes() http.Handler {
 		}
 
 		results := make([]batchResult, len(req.Tasks))
-		sem := make(chan struct{}, 10) // giới hạn 10 goroutines concurrent
+		sem := make(chan struct{}, 10) // giá»›i háº¡n 10 goroutines concurrent
 
 		var wg sync.WaitGroup
 		for i, task := range req.Tasks {
@@ -1135,7 +1138,7 @@ func (a *ServerApp) Routes() http.Handler {
 					return
 				}
 				if a.pool.CancelIfBrowserRelay(res) {
-					msg := "Cần chạy qua trình duyệt có Tiện ích Chrome Mart AI v1.1"
+					msg := "Cáº§n cháº¡y qua trÃ¬nh duyá»‡t cÃ³ Tiá»‡n Ã­ch Chrome Mart AI v1.1"
 					if taskID != "" {
 						args := append([]interface{}{msg, taskID}, whereArgs...)
 						_, _ = store.ExecuteSQL("UPDATE muse_tasks SET status='error', result_summary=?, updated_at=NOW() WHERE id=? AND "+whereSQL, args)
@@ -1177,7 +1180,7 @@ func (a *ServerApp) Routes() http.Handler {
 		})
 	})
 
-	// 5. Cổng OpenAI-Compatible Gateway (/v1/chat/completions)
+	// 5. Cá»•ng OpenAI-Compatible Gateway (/v1/chat/completions)
 	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			WriteJSONError(w, http.StatusMethodNotAllowed, "ERR_METHOD_NOT_ALLOWED")
@@ -1240,7 +1243,7 @@ func (a *ServerApp) Routes() http.Handler {
 		}
 
 		if a.pool.CancelIfBrowserRelay(res) {
-			WriteJSONError(w, http.StatusServiceUnavailable, "Tài khoản Cookie muse.ai trên Cloud cần chạy qua trình duyệt có Tiện ích Chrome Mart AI (hoặc dùng API Key).")
+			WriteJSONError(w, http.StatusServiceUnavailable, "TÃ i khoáº£n Cookie muse.ai trÃªn Cloud cáº§n cháº¡y qua trÃ¬nh duyá»‡t cÃ³ Tiá»‡n Ã­ch Chrome Mart AI (hoáº·c dÃ¹ng API Key).")
 			return
 		}
 		tokensUsed, _ := res["tokens_used"].(int64)
@@ -1268,13 +1271,13 @@ func (a *ServerApp) Routes() http.Handler {
 		})
 	})
 
-	// 5.5. Xuất bản Web 1-click lên Apache XAMPP (htdocs) & Tải file ZIP
+	// 5.5. Xuáº¥t báº£n Web 1-click lÃªn Apache XAMPP (htdocs) & Táº£i file ZIP
 	mux.HandleFunc("/api/export/htdocs", a.handleExportToXamppHtdocs)
 	mux.HandleFunc("/api/export/zip", a.handleExportToZip)
 	mux.HandleFunc("/api/v1/export/htdocs", a.handleExportToXamppHtdocs)
 	mux.HandleFunc("/api/v1/export/zip", a.handleExportToZip)
 
-	// 6. Phục vụ giao diện Web UI chính gốc (L1 RAM Pre-compressed Static Cache + chống cache trình duyệt cũ)
+	// 6. Phá»¥c vá»¥ giao diá»‡n Web UI chÃ­nh gá»‘c (L1 RAM Pre-compressed Static Cache + chá»‘ng cache trÃ¬nh duyá»‡t cÅ©)
 	webRoot, err := fs.Sub(embeddedWebFS, "web")
 	if err != nil {
 		LogError("Failed to mount embedded web directory: %v", err)
@@ -1514,38 +1517,6 @@ func GzipMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func tryStartLocalPythonBridge(rootDir string) {
-	if os.Getenv("RENDER") != "" {
-		return
-	}
-	bridgeURL := os.Getenv("MUSE_AI_BRIDGE_URL")
-	if bridgeURL == "" {
-		bridgeURL = "http://127.0.0.1:18089"
-	}
-	client := &http.Client{Timeout: 800 * time.Millisecond}
-	if resp, err := client.Get(bridgeURL + "/internal/live-status"); err == nil {
-		resp.Body.Close()
-		return
-	}
-
-	scriptPath := filepath.Join(rootDir, "muse_router_ai", "bridge_service.py")
-	if _, err := os.Stat(scriptPath); err != nil {
-		return
-	}
-
-	for _, pyBin := range []string{"python3", "python"} {
-		if path, err := exec.LookPath(pyBin); err == nil {
-			cmd := exec.Command(path, scriptPath)
-			cmd.Dir = rootDir
-			cmd.Env = os.Environ()
-			if errStart := cmd.Start(); errStart == nil {
-				LogInfo("Auto-started AI Bridge sidecar (%s %s)", pyBin, scriptPath)
-				return
-			}
-		}
-	}
-}
-
 type ExportWebPayload struct {
 	ProjectName string `json:"project_name"`
 	HTML        string `json:"html"`
@@ -1618,13 +1589,13 @@ func (a *ServerApp) handleExportToXamppHtdocs(w http.ResponseWriter, r *http.Req
 	htdocs := findXamppHtdocsDir()
 	targetDir := filepath.Join(htdocs, projName)
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
-		WriteJSONError(w, http.StatusInternalServerError, fmt.Sprintf("Không thể tạo thư mục dự án: %v", err))
+		WriteJSONError(w, http.StatusInternalServerError, fmt.Sprintf("KhÃ´ng thá»ƒ táº¡o thÆ° má»¥c dá»± Ã¡n: %v", err))
 		return
 	}
 
 	indexPath := filepath.Join(targetDir, "index.html")
 	if err := os.WriteFile(indexPath, []byte(req.HTML), 0644); err != nil {
-		WriteJSONError(w, http.StatusInternalServerError, fmt.Sprintf("Không thể ghi index.html: %v", err))
+		WriteJSONError(w, http.StatusInternalServerError, fmt.Sprintf("KhÃ´ng thá»ƒ ghi index.html: %v", err))
 		return
 	}
 
@@ -1671,7 +1642,7 @@ func (a *ServerApp) handleExportToXamppHtdocs(w http.ResponseWriter, r *http.Req
 		"folder_path":  targetDir,
 		"local_url":    localURL,
 		"tunnel_url":   tunnelURL,
-		"message":      fmt.Sprintf("Đã xuất bản dự án '%s' thành công vào Apache XAMPP!", projName),
+		"message":      fmt.Sprintf("ÄÃ£ xuáº¥t báº£n dá»± Ã¡n '%s' thÃ nh cÃ´ng vÃ o Apache XAMPP!", projName),
 	})
 }
 
@@ -1715,7 +1686,7 @@ func (a *ServerApp) handleExportToZip(w http.ResponseWriter, r *http.Request) {
 
 	fReadme, err := zw.Create("README.txt")
 	if err == nil {
-		readmeText := fmt.Sprintf("Dự án: %s\nĐược xuất bản tự động bởi Mart AI Studio & MuseRouter\nNgày tạo: %s\n\nHướng dẫn chạy:\n1. Mở file index.html trên trình duyệt bất kỳ.\n2. Hoặc copy toàn bộ thư mục này vào C:\\xampp\\htdocs\\ để chạy bằng Apache.", projName, time.Now().Format("2006-01-02 15:04:05"))
+		readmeText := fmt.Sprintf("Dá»± Ã¡n: %s\nÄÆ°á»£c xuáº¥t báº£n tá»± Ä‘á»™ng bá»Ÿi Mart AI Studio & MuseRouter\nNgÃ y táº¡o: %s\n\nHÆ°á»›ng dáº«n cháº¡y:\n1. Má»Ÿ file index.html trÃªn trÃ¬nh duyá»‡t báº¥t ká»³.\n2. Hoáº·c copy toÃ n bá»™ thÆ° má»¥c nÃ y vÃ o C:\\xampp\\htdocs\\ Ä‘á»ƒ cháº¡y báº±ng Apache.", projName, time.Now().Format("2006-01-02 15:04:05"))
 		_, _ = fReadme.Write([]byte(readmeText))
 	}
 
@@ -1731,7 +1702,7 @@ func (a *ServerApp) handleExportToZip(w http.ResponseWriter, r *http.Request) {
 func main() {
 	memLimitEnv := os.Getenv("GOMEMLIMIT")
 	if memLimitEnv == "" && (os.Getenv("PORT") != "" || os.Getenv("RENDER") != "") {
-		debug.SetMemoryLimit(220 * 1024 * 1024) // 220MiB cho Go Engine, nhường 290MiB cho Chromium + OS trên Render 512MB
+		debug.SetMemoryLimit(220 * 1024 * 1024) // 220MiB cho Go Engine, nhÆ°á»ng 290MiB cho Chromium + OS trÃªn Render 512MB
 	}
 	debug.SetGCPercent(40)
 
@@ -1757,14 +1728,22 @@ func main() {
 		baseDir = "."
 	}
 	rootDir := baseDir
-	dataDir := filepath.Join(baseDir, "data")
+	dataDir := strings.TrimSpace(os.Getenv("MUSE_DATA_DIR"))
+	if dataDir == "" {
+		dataDir = filepath.Join(baseDir, "data")
+	}
 	if filepath.Base(baseDir) == "muse_router_engine" {
 		rootDir = filepath.Dir(baseDir)
-		dataDir = filepath.Join(rootDir, "data")
+		if strings.TrimSpace(os.Getenv("MUSE_DATA_DIR")) == "" {
+			dataDir = filepath.Join(rootDir, "data")
+		}
+	}
+	if absDataDir, errAbs := filepath.Abs(dataDir); errAbs == nil {
+		dataDir = absDataDir
 	}
 
 	_, _, _ = ensureRuntimeBridgeSecrets()
-	tryStartLocalPythonBridge(rootDir)
+	LogInfo("Go-native mode enabled: Python AI Bridge auto-start is disabled")
 
 	app, err := NewServerApp(dataDir)
 	if err != nil {
@@ -1782,7 +1761,7 @@ func main() {
 			LogWarn("MART_ADMIN_PASSWORD chua duoc dat: hien dang chay khong xac thuc. Dat bien nay de bao ve.")
 		}
 		// block cu khong ap dung nua
-		LogWarn("MART_ADMIN_PASSWORD chưa được đặt: web đang mở công khai và API /api/accounts/ingest bị tắt")
+		LogWarn("MART_ADMIN_PASSWORD chÆ°a Ä‘Æ°á»£c Ä‘áº·t: web Ä‘ang má»Ÿ cÃ´ng khai vÃ  API /api/accounts/ingest bá»‹ táº¯t")
 	}
 	LogInfo("MuseRouter Engine & Web Studio started at http://%s", addr)
 

@@ -9,8 +9,8 @@ import (
 	"time"
 )
 
-// oauthNativeSessions lưu cookie PKCE sinh ra ở bước tạo Link Đăng Nhập (key = state)
-// để bước dán Link Callback có thể đổi sang cookie hatch_sess mà không cần Python Bridge.
+// oauthNativeSessions lÆ°u cookie PKCE sinh ra á»Ÿ bÆ°á»›c táº¡o Link ÄÄƒng Nháº­p (key = state)
+// Ä‘á»ƒ bÆ°á»›c dÃ¡n Link Callback cÃ³ thá»ƒ Ä‘á»•i sang cookie hatch_sess mÃ  khÃ´ng cáº§n Python Bridge.
 var (
 	oauthNativeMu       sync.Mutex
 	oauthNativeSessions = map[string]map[string]string{}
@@ -65,8 +65,8 @@ func isOAuthCallbackURL(s string) bool {
 		strings.HasPrefix(t, "https://auth.muse.ai/oidc/muse")
 }
 
-// resolveOAuthCallbackNative đổi Link Callback sang chuỗi Cookie có hatch_sess bằng Go thuần.
-// Trả về (cookie, true) nếu thành công.
+// resolveOAuthCallbackNative Ä‘á»•i Link Callback sang chuá»—i Cookie cÃ³ hatch_sess báº±ng Go thuáº§n.
+// Tráº£ vá» (cookie, true) náº¿u thÃ nh cÃ´ng.
 func resolveOAuthCallbackNative(ctx context.Context, raw string) (string, bool) {
 	trimmed := strings.TrimSpace(raw)
 	if !isOAuthCallbackURL(trimmed) {
@@ -104,7 +104,7 @@ func resolveOAuthCallbackNative(ctx context.Context, raw string) (string, bool) 
 	}
 	sess := loadOAuthNativeSession(state)
 	if sess == nil {
-		LogWarn("OAuth callback: không tìm thấy phiên PKCE (server có thể vừa khởi động lại) — hãy tạo lại Link Đăng Nhập")
+		LogWarn("OAuth callback: khÃ´ng tÃ¬m tháº¥y phiÃªn PKCE (server cÃ³ thá»ƒ vá»«a khá»Ÿi Ä‘á»™ng láº¡i) â€” hÃ£y táº¡o láº¡i Link ÄÄƒng Nháº­p")
 		return raw, false
 	}
 
@@ -132,7 +132,7 @@ func resolveOAuthCallbackNative(ctx context.Context, raw string) (string, bool) 
 		}
 	}
 	if merged["hatch_sess"] == "" {
-		LogWarn("OAuth callback: máy chủ không trả hatch_sess (HTTP %d) — link có thể đã dùng rồi hoặc hết hạn", resp.StatusCode)
+		LogWarn("OAuth callback: mÃ¡y chá»§ khÃ´ng tráº£ hatch_sess (HTTP %d) â€” link cÃ³ thá»ƒ Ä‘Ã£ dÃ¹ng rá»“i hoáº·c háº¿t háº¡n", resp.StatusCode)
 		return raw, false
 	}
 	return cookiesToHeader(merged), true
