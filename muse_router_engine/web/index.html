@@ -1320,24 +1320,16 @@ button{-webkit-tap-highlight-color:transparent;touch-action:manipulation}
             </div>
           </div>
 
-          <!-- Lựa chọn 2: Bắt phiên qua Chrome Extension (Tuỳ chọn phụ trợ) -->
+          <!-- Lựa chọn 2: Tiếp nhận tự động bằng Chrome thật (1 Click không cần cài tiện ích) -->
           <div style="margin-top:10px;padding:14px;border:1px solid #c7d2fe;border-radius:12px;background:#f5f7ff">
-            <div style="font-weight:800;font-size:13.5px;color:var(--ink)">Cách 2: Bắt phiên bằng Chrome Extension (Tuỳ chọn cho máy tính)</div>
-            <p class="admin-sec-d" style="margin:4px 0 8px">Nếu bạn đang dùng máy tính cá nhân và đã đăng nhập sẵn tab Muse.ai, bạn có thể bấm bắt phiên nhanh.</p>
+            <div style="font-weight:800;font-size:13.5px;color:var(--ink)">⚡ Tiếp nhận tự động bằng Chrome máy thật (Không cần cài tiện ích)</div>
+            <p class="admin-sec-d" style="margin:4px 0 8px">Bấm nút bên dưới, hệ thống sẽ tự động bật cửa sổ Chrome thật trên máy tính của bạn. Bạn chỉ cần chọn tài khoản Google để đăng nhập, hệ thống sẽ <b>tự động thu nhận phiên, tự động lưu vào Pool và tự động đóng cửa sổ</b> trong 5 giây!</p>
             <div style="display:flex;gap:9px;flex-wrap:wrap;align-items:center">
-              <button type="button" class="btn-admin-solid" id="btnCaptureMuseChrome">Đăng nhập &amp; bắt phiên bằng Chrome</button>
-              <a class="btn-admin-ghost" href="/api/accounts/extension.zip" download>Tải tiện ích Chrome</a>
-              <span id="chromeCaptureStatus" role="status" aria-live="polite" style="font-size:12px;color:var(--ink-2)"></span>
+              <button type="button" class="btn-admin-solid" id="btnCaptureMuseChrome">🚀 Đăng nhập &amp; Bắt phiên Tự động bằng Chrome</button>
+              <button type="button" class="btn-admin-ghost" id="btnPurgeBroken" style="color:#ef4444;border-color:#fca5a5" title="Quét và xóa sạch các node bị lỗi mã hóa hoặc hết hạn">🧹 Dọn dẹp node lỗi</button>
+              <a class="btn-admin-ghost" href="/api/accounts/extension.zip" download>Tải tiện ích Chrome (tuỳ chọn)</a>
+              <span id="chromeCaptureStatus" role="status" aria-live="polite" style="font-size:12px;color:var(--ink-2);font-weight:600"></span>
             </div>
-            <details style="margin-top:8px;font-size:12px;color:var(--ink-2)">
-              <summary style="cursor:pointer;font-weight:700">Hướng dẫn cài tiện ích</summary>
-              <ol style="margin:7px 0 0;padding-left:20px;line-height:1.7">
-                <li>Tải và giải nén tiện ích Chrome.</li>
-                <li>Mở <b>chrome://extensions</b>, bật <b>Developer mode</b>.</li>
-                <li>Chọn <b>Load unpacked</b> và mở thư mục <b>mart_ai_extension</b> đã giải nén.</li>
-                <li>Quay lại đây, bấm bắt phiên và đăng nhập Muse.ai trong tab Chrome vừa mở.</li>
-              </ol>
-            </details>
           </div>
           <form id="addNodeForm" style="margin-top:12px">
             <div class="form-grid">

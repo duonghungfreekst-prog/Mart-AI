@@ -458,6 +458,20 @@ func (a *ServerApp) Routes() http.Handler {
 		WriteJSONResponse(w, http.StatusOK, a.pool.GetSummary())
 	})
 
+	// Xóa sạch tất cả các node lỗi giải mã do khóa cũ hoặc hỏng dữ liệu
+	mux.HandleFunc("/api/accounts/purge-broken", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			WriteJSONError(w, http.StatusMethodNotAllowed, "ERR_METHOD_NOT_ALLOWED")
+			return
+		}
+		purged := a.pool.PurgeBrokenNodes()
+		LogInfo("API /api/accounts/purge-broken: đã dọn dẹp %d node lỗi", purged)
+		WriteJSONResponse(w, http.StatusOK, map[string]interface{}{
+			"purged":  purged,
+			"summary": a.pool.GetSummary(),
+		})
+	})
+
 	mux.HandleFunc("/api/accounts/wake", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			WriteJSONError(w, http.StatusMethodNotAllowed, "ERR_METHOD_NOT_ALLOWED")

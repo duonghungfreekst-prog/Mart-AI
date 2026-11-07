@@ -959,18 +959,58 @@ func (p *MuseRouterPool) generateOAuthLoginLinkDirect(ctx context.Context) (map[
 	}, nil
 }
 
+// PurgeBrokenNodes quét và tự động loại bỏ tất cả các node không thể giải mã thông tin xác thực
+// (ví dụ bị mã hóa bởi khóa cũ, hoặc lỗi ERR_RUST_DECRYPT_FAILED) khỏi Database và Vault.
+func (p *MuseRouterPool) PurgeBrokenNodes() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	purged := 0
+	var kept []*MuseAccountNode
+	for _, n := range p.nodes {
+		_, errDec := p.rustBridge.DecryptSecret(n.EncryptedCredential)
+		if errDec != nil {
+			purged++
+			if p.mysqlStore != nil {
+				_ = p.mysqlStore.DeleteAccount(n.ID, n.Fingerprint)
+			}
+			LogInfo("Đã tự động loại bỏ node lỗi giải mã khỏi Database: ID=%s Label=%s (%v)", n.ID, n.Label, errDec)
+		} else {
+			kept = append(kept, n)
+		}
+	}
+	if purged > 0 {
+		p.nodes = kept
+		_ = p.saveVaultLocked()
+	}
+	return purged
+}
+
 // InteractiveBrowserLogin mở cửa sổ trình duyệt thực để người dùng đăng nhập muse.ai và tự động bắt Cookie thật
 func (p *MuseRouterPool) InteractiveBrowserLogin(parentCtx context.Context, label string, tokensRemaining int64, sessionID string, proxyURL ...string) (*MuseAccountNode, error) {
-	if !p.shouldTryPythonBridge() {
-		return nil, errors.New("ERR_AI_BRIDGE_UNREACHABLE: cloud mode uses inline remote browser login")
-	}
-	ctx, cancel := context.WithTimeout(parentCtx, 190*time.Second)
-	defer cancel()
-
 	cleanProxy := ""
 	if len(proxyURL) > 0 {
 		cleanProxy = strings.TrimSpace(proxyURL[0])
 	}
+
+	// 1. Ưu tiên Pure Go CDP Browser Manager mở trình duyệt thật trên máy tính người dùng
+	if p.cdpManager != nil {
+		node, err := p.cdpManager.InteractiveDesktopLoginCapture(parentCtx, label, cleanProxy)
+		if err == nil && node != nil {
+			return node, nil
+		}
+		LogWarn("InteractiveDesktopLoginCapture thông báo: %v", err)
+		if strings.Contains(err.Error(), "ERR_DESKTOP_BROWSER_NOT_SUPPORTED_ON_CLOUD") {
+			return nil, err
+		}
+	}
+
+	// 2. Fallback sang Python AI Bridge nếu có cấu hình
+	if !p.shouldTryPythonBridge() {
+		return nil, errors.New("Không thể mở trình duyệt tự động trên máy này. Hãy kiểm tra Google Chrome / Microsoft Edge đã được cài đặt chưa.")
+	}
+	ctx, cancel := context.WithTimeout(parentCtx, 190*time.Second)
+	defer cancel()
 
 	reqBody, _ := json.Marshal(map[string]interface{}{
 		"timeout_sec": 180,
@@ -1185,6 +1225,9 @@ func (p *MuseRouterPool) getOrderedCandidateNodes(preferredNodeID string) ([]*Mu
 	candidates := make([]*MuseAccountNode, 0, len(p.nodes))
 	for _, n := range p.nodes {
 		if n.Status != "unavailable" {
+			if _, errDec := p.rustBridge.DecryptSecret(n.EncryptedCredential); errDec != nil {
+				continue
+			}
 			c := *n
 			candidates = append(candidates, &c)
 		}
@@ -1192,6 +1235,9 @@ func (p *MuseRouterPool) getOrderedCandidateNodes(preferredNodeID string) ([]*Mu
 
 	if len(candidates) == 0 {
 		for _, n := range p.nodes {
+			if _, errDec := p.rustBridge.DecryptSecret(n.EncryptedCredential); errDec != nil {
+				continue
+			}
 			c := *n
 			candidates = append(candidates, &c)
 		}

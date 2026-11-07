@@ -1662,36 +1662,80 @@ $("#btnCaptureMuseChrome").addEventListener("click", async function(){
   var btn = this;
   var status = $("#chromeCaptureStatus");
   btn.disabled = true;
-  status.textContent = "Đang mở Muse.ai trong Chrome; hãy hoàn tất đăng nhập…";
+  status.textContent = "🚀 Đang mở Chrome... Hãy đăng nhập Muse.ai trên cửa sổ vừa bật...";
   try {
-    var captured = await requestChromeExtension({ action: "login_and_capture" }, 185000);
-    if(!captured || !captured.ok || !captured.cookie) throw new Error((captured && captured.error) || "Chrome chưa trả về phiên đăng nhập Muse.ai.");
-    status.textContent = "Đã bắt phiên. Đang xác thực và lưu vào Pool…";
-    var res = await authedFetch("/api/accounts/add", {
+    var res = await authedFetch("/api/accounts/browser-login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        label: $("#accLabel").value.trim(),
-        plan_tier: "Muse.ai",
-        auth_type: "cookie",
-        upstream_url: "https://muse.ai",
-        proxy_url: $("#accProxy").value.trim(),
-        credential: captured.cookie,
-        tokens_remaining: 0
+        label: ($("#accLabel") && $("#accLabel").value.trim()) || "Muse.ai Tự Động",
+        proxy_url: ($("#accProxy") && $("#accProxy").value.trim()) || ""
       })
     });
     var data = await res.json().catch(function(){ return {}; });
-    if(!res.ok) throw new Error(data.error || "Không lưu được phiên Muse.ai vào Pool (HTTP " + res.status + ").");
+    if (!res.ok || data.error) {
+      // Nếu server báo lỗi extension/cloud thì thử fallback qua Chrome Extension nếu có cài
+      if (typeof requestChromeExtension === "function") {
+        try {
+          var captured = await requestChromeExtension({ action: "login_and_capture" }, 185000);
+          if (captured && captured.ok && captured.cookie) {
+            var resExt = await authedFetch("/api/accounts/add", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                label: $("#accLabel").value.trim() || "Muse.ai",
+                plan_tier: "Muse.ai",
+                auth_type: "cookie",
+                upstream_url: "https://muse.ai",
+                proxy_url: $("#accProxy").value.trim(),
+                credential: captured.cookie,
+                tokens_remaining: 0
+              })
+            });
+            var dataExt = await resExt.json().catch(function(){ return {}; });
+            if (resExt.ok) {
+              await fetchPoolReal();
+              status.textContent = "✅ Đã bắt phiên qua tiện ích Chrome!";
+              toast("✅ Đã tiếp nhận phiên Muse.ai thành công!");
+              return;
+            }
+          }
+        } catch(extErr) {}
+      }
+      throw new Error(data.error || "Không tiếp nhận được phiên Muse.ai.");
+    }
+    status.textContent = "✅ Đã tiếp nhận phiên tự động thành công!";
+    toast("✅ Đã tiếp nhận phiên Muse.ai tự động vào hệ thống!");
     await fetchPoolReal();
-    status.textContent = data.status_detail || "Đã bắt phiên và đồng bộ tài khoản Muse.ai.";
-    toast("Đã bắt phiên Chrome và cập nhật Pool.");
   } catch(err){
-    status.textContent = err.message || "Không bắt được phiên Chrome.";
+    status.textContent = err.message || "Lỗi tiếp nhận phiên.";
     toast(status.textContent);
   } finally {
     btn.disabled = false;
   }
 });
+
+var btnPurgeBroken = $("#btnPurgeBroken");
+if (btnPurgeBroken) {
+  btnPurgeBroken.addEventListener("click", async function(){
+    var btn = this;
+    btn.disabled = true;
+    try {
+      var res = await authedFetch("/api/accounts/purge-broken", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" }
+      });
+      var data = await res.json().catch(function(){ return {}; });
+      var count = data.purged || 0;
+      toast("🧹 Đã dọn dẹp " + count + " node lỗi khỏi hệ thống!");
+      await fetchPoolReal();
+    } catch(err) {
+      toast("Lỗi khi dọn dẹp: " + (err.message || "Không xác định"));
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
 $("#addNodeForm").addEventListener("submit", async function(e){
   e.preventDefault();
   var cred = $("#accCred").value.trim();

@@ -89,6 +89,7 @@ echo   - Web Chat Mart AI Studio : http://127.0.0.1:8088 (hoac http://localhost:
 echo   - Trang Cai Dat va Node   : http://127.0.0.1:8088/cai-dat
 echo   - Quan Tri phpMyAdmin     : http://localhost/phpmyadmin
 echo   - Web Thiet Ke (htdocs)   : http://localhost/
+echo   - Tiep Nhan Muse Tu Dong  : Chay file TIEP_NHAN_PHIEN_TU_DONG.bat
 if exist "%~dp0LINK_KHACH_TRUY_CAP.txt" (
     echo.
     type "%~dp0LINK_KHACH_TRUY_CAP.txt"
@@ -100,6 +101,7 @@ start "" "http://127.0.0.1:8088"
 
 echo.
 echo [Luu y] He thong dang chay ngam on dinh. Ban co the dong cua so nay bat ky luc nao.
+echo         De tiep nhan phien Muse.ai tu dong 100%%, chay TIEP_NHAN_PHIEN_TU_DONG.bat
 echo         De dung tat ca dich vu khi khong dung nua, hay chay file DUNG_TAT_CA.bat.
 echo.
 ping 127.0.0.1 -n 6 >nul

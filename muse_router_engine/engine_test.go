@@ -1178,3 +1178,54 @@ func TestSSEChatSendNeverCorruptedByGzipAndCleansPendingTurn(t *testing.T) {
 }
 
 
+
+
+func TestPurgeBrokenNodesAndAutoCaptureEndpoints(t *testing.T) {
+	tmpDir := t.TempDir()
+	app, err := NewServerApp(tmpDir)
+	if err != nil {
+		t.Fatalf("NewServerApp: %v", err)
+	}
+	defer app.pool.GetMySQLStore().Close()
+	handler := app.Routes()
+
+	// Thêm 1 node giả bị hỏng mã hóa (encrypted credential không hợp lệ)
+	app.pool.mu.Lock()
+	brokenNode := &MuseAccountNode{
+		ID:                  "broken-test-node-1",
+		Label:               "Broken Node",
+		EncryptedCredential: "v1:010203040506070809101112:deadbeef:badtag0000000000000000000000000000000000000000000000000000000000",
+		Status:              "ready",
+	}
+	app.pool.nodes = append(app.pool.nodes, brokenNode)
+	app.pool.mu.Unlock()
+
+	// Gọi API /api/accounts/purge-broken
+	reqPurge := httptest.NewRequest(http.MethodPost, "/api/accounts/purge-broken", nil)
+	recPurge := httptest.NewRecorder()
+	handler.ServeHTTP(recPurge, reqPurge)
+
+	if recPurge.Code != http.StatusOK {
+		t.Fatalf("POST /api/accounts/purge-broken status=%d body=%s", recPurge.Code, recPurge.Body.String())
+	}
+
+	var purgeRes map[string]interface{}
+	if err := json.Unmarshal(recPurge.Body.Bytes(), &purgeRes); err != nil {
+		t.Fatalf("Invalid json response: %v", err)
+	}
+	purgedVal, _ := purgeRes["purged"].(float64)
+	if purgedVal < 1 {
+		t.Fatalf("Expected at least 1 purged node, got %v", purgedVal)
+	}
+
+	// Xác nhận broken node đã bị xóa sạch khỏi pool
+	app.pool.mu.RLock()
+	for _, n := range app.pool.nodes {
+		if n.ID == "broken-test-node-1" {
+			app.pool.mu.RUnlock()
+			t.Fatalf("Expected broken-test-node-1 to be purged from pool!")
+		}
+	}
+	app.pool.mu.RUnlock()
+	t.Logf("PASS: PurgeBrokenNodes test succeeded, cleaned %v broken node(s)", purgedVal)
+}

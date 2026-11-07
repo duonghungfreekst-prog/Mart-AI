@@ -1075,6 +1075,192 @@ func (m *CDPBrowserManager) monitorRemoteLoginLoop(ctx context.Context, sess *Re
 	sess.mu.Unlock()
 }
 
+// InteractiveDesktopLoginCapture mở trực tiếp cửa sổ trình duyệt Chrome / Edge thật trên máy tính của người dùng
+// để đăng nhập Muse.ai (Google / Email không bị chặn bot) và tự động bắt cookie hatch_sess về hệ thống.
+func (m *CDPBrowserManager) InteractiveDesktopLoginCapture(parentCtx context.Context, label string, proxyURL string) (*MuseAccountNode, error) {
+	if runtime.GOOS != "windows" && os.Getenv("RENDER") == "true" {
+		return nil, errors.New("ERR_DESKTOP_BROWSER_NOT_SUPPORTED_ON_CLOUD: Server Render không có giao diện đồ họa. Vui lòng sử dụng tính năng [Mở đăng nhập Server] để đăng nhập qua màn hình ảo hoặc chạy Mart AI trên máy tính của bạn.")
+	}
+
+	binPath, _ := findChromeBinary()
+	if binPath == "" {
+		if localApp := os.Getenv("LOCALAPPDATA"); localApp != "" {
+			candUser := []string{
+				filepath.Join(localApp, "Google", "Chrome", "Application", "chrome.exe"),
+				filepath.Join(localApp, "Microsoft", "Edge", "Application", "msedge.exe"),
+			}
+			for _, c := range candUser {
+				if st, err := os.Stat(c); err == nil && !st.IsDir() {
+					binPath = c
+					break
+				}
+			}
+		}
+	}
+	if binPath == "" {
+		return nil, errors.New("Không tìm thấy trình duyệt Google Chrome hoặc Microsoft Edge trên máy tính để tiếp nhận tự động.")
+	}
+
+	port, err := pickFreeLocalPort()
+	if err != nil {
+		return nil, fmt.Errorf("không thể cấp phát cổng gỡ lỗi cục bộ: %w", err)
+	}
+
+	profileDir, err := os.MkdirTemp("", "mart_ai_desktop_login_*")
+	if err != nil {
+		return nil, fmt.Errorf("không thể tạo hồ sơ trình duyệt tạm: %w", err)
+	}
+	defer func() {
+		go func(p string) {
+			time.Sleep(3 * time.Second)
+			_ = os.RemoveAll(p)
+		}(profileDir)
+	}()
+
+	startURL := "https://muse.ai/api/oidc/start?return_to=%2F"
+	args := []string{
+		fmt.Sprintf("--remote-debugging-port=%d", port),
+		"--remote-allow-origins=*",
+		"--user-data-dir=" + profileDir,
+		"--no-first-run",
+		"--no-default-browser-check",
+		"--disable-sync",
+		"--disable-translate",
+		"--window-size=1024,768",
+		startURL,
+	}
+	if proxyURL != "" {
+		args = append(args, "--proxy-server="+proxyURL)
+	}
+
+	cmd := exec.Command(binPath, args...)
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("không thể khởi chạy trình duyệt %s: %w", filepath.Base(binPath), err)
+	}
+	defer func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	}()
+
+	LogInfo("Đã mở cửa sổ trình duyệt thật (%s) trên cổng CDP %d để tiếp nhận phiên Muse.ai tự động", filepath.Base(binPath), port)
+
+	// Chờ WebSocket Debugger URL xuất hiện
+	wsVersionURL := fmt.Sprintf("http://127.0.0.1:%d/json/version", port)
+	var wsDebuggerURL string
+	client := &http.Client{Timeout: 900 * time.Millisecond}
+	deadline := time.Now().Add(15 * time.Second)
+
+	for time.Now().Before(deadline) {
+		select {
+		case <-parentCtx.Done():
+			return nil, parentCtx.Err()
+		default:
+		}
+		resp, errGet := client.Get(wsVersionURL)
+		if errGet == nil {
+			var verRes struct {
+				WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
+			}
+			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if json.Unmarshal(body, &verRes) == nil && verRes.WebSocketDebuggerURL != "" {
+				wsDebuggerURL = verRes.WebSocketDebuggerURL
+				break
+			}
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+
+	if wsDebuggerURL == "" {
+		return nil, errors.New("Trình duyệt không phản hồi cổng gỡ lỗi CDP sau 15 giây.")
+	}
+
+	bClient, err := dialCDPClient(parentCtx, wsDebuggerURL)
+	if err != nil {
+		return nil, fmt.Errorf("không thể kết nối CDP trình duyệt: %w", err)
+	}
+	defer bClient.Close()
+
+	// Vòng lặp chờ người dùng đăng nhập Muse.ai (tối đa 180 giây)
+	loginDeadline := time.Now().Add(180 * time.Second)
+	ticker := time.NewTicker(1000 * time.Millisecond)
+	defer ticker.Stop()
+
+	for time.Now().Before(loginDeadline) {
+		select {
+		case <-parentCtx.Done():
+			return nil, parentCtx.Err()
+		case <-ticker.C:
+		}
+
+		if cmd.Process == nil {
+			return nil, errors.New("Cửa sổ trình duyệt đã bị đóng trước khi hoàn tất đăng nhập.")
+		}
+
+		var targetsRes struct {
+			TargetInfos []struct {
+				TargetID string `json:"targetId"`
+				Type     string `json:"type"`
+				URL      string `json:"url"`
+			} `json:"targetInfos"`
+		}
+		if err := bClient.Call(parentCtx, "Target.getTargets", nil, &targetsRes); err != nil {
+			continue
+		}
+
+		for _, tInfo := range targetsRes.TargetInfos {
+			if tInfo.Type != "page" {
+				continue
+			}
+			pageWSURL := fmt.Sprintf("ws://127.0.0.1:%d/devtools/page/%s", port, tInfo.TargetID)
+			pageClient, errPage := dialCDPClient(parentCtx, pageWSURL)
+			if errPage != nil {
+				continue
+			}
+
+			stepCtx, stepCancel := context.WithTimeout(parentCtx, 2*time.Second)
+			cookies, sessVal := readMuseCookiesFromCDP(stepCtx, pageClient, "")
+			stepCancel()
+			pageClient.Close()
+
+			if sessVal != "" {
+				LogInfo("Phát hiện phiên hatch_sess trên trình duyệt thật! Đang hoàn tất tiếp nhận tự động...")
+				time.Sleep(600 * time.Millisecond)
+
+				var parts []string
+				for _, c := range cookies {
+					parts = append(parts, c.Name+"="+c.Value)
+				}
+				cookieHdr := strings.Join(parts, "; ")
+
+				// Tự động dọn dẹp các node lỗi decrypt cũ khỏi hệ thống
+				if m.pool != nil {
+					purgedCount := m.pool.PurgeBrokenNodes()
+					if purgedCount > 0 {
+						LogInfo("Đã tự động loại bỏ %d node lỗi decrypt cũ để làm sạch Pool", purgedCount)
+					}
+				}
+
+				lbl := strings.TrimSpace(label)
+				if lbl == "" {
+					lbl = "Muse.ai Tự Động"
+				}
+				savedNode, _, saveErr := m.pool.IngestAccountCookie(parentCtx, lbl, cookieHdr, proxyURL)
+				if saveErr != nil {
+					return nil, fmt.Errorf("lỗi khi lưu tài khoản vào Pool: %w", saveErr)
+				}
+
+				LogInfo("Tiep nhan phien Muse.ai tu dong thanh cong hoan toan! Node ID: %s, Label: %s", savedNode.ID, savedNode.Label)
+				return savedNode, nil
+			}
+		}
+	}
+
+	return nil, errors.New("Quá thời gian chờ đăng nhập Muse.ai (3 phút). Vui lòng thử lại.")
+}
+
 func (m *CDPBrowserManager) GetRemoteLoginSnapshot(sessionID string, afterSeq ...uint64) (map[string]interface{}, error) {
 	m.sessionsMu.RLock()
 	sess, ok := m.sessions[sessionID]
