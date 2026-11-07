@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -1253,6 +1254,12 @@ func (a *ServerApp) Routes() http.Handler {
 		})
 	})
 
+	// 5.5. Xuất bản Web 1-click lên Apache XAMPP (htdocs) & Tải file ZIP
+	mux.HandleFunc("/api/export/htdocs", a.handleExportToXamppHtdocs)
+	mux.HandleFunc("/api/export/zip", a.handleExportToZip)
+	mux.HandleFunc("/api/v1/export/htdocs", a.handleExportToXamppHtdocs)
+	mux.HandleFunc("/api/v1/export/zip", a.handleExportToZip)
+
 	// 6. Phục vụ giao diện Web UI chính gốc (L1 RAM Pre-compressed Static Cache + chống cache trình duyệt cũ)
 	webRoot, err := fs.Sub(embeddedWebFS, "web")
 	if err != nil {
@@ -1523,6 +1530,188 @@ func tryStartLocalPythonBridge(rootDir string) {
 			}
 		}
 	}
+}
+
+type ExportWebPayload struct {
+	ProjectName string `json:"project_name"`
+	HTML        string `json:"html"`
+	CSS         string `json:"css"`
+	JS          string `json:"js"`
+}
+
+func sanitizeProjectName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Sprintf("web-du-an-%d", time.Now().Unix())
+	}
+	var b strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			b.WriteRune(r)
+		} else if r == ' ' {
+			b.WriteRune('-')
+		}
+	}
+	res := strings.Trim(b.String(), "-_")
+	if res == "" {
+		res = fmt.Sprintf("web-du-an-%d", time.Now().Unix())
+	}
+	if len(res) > 50 {
+		res = res[:50]
+	}
+	return strings.ToLower(res)
+}
+
+func findXamppHtdocsDir() string {
+	if custom := strings.TrimSpace(os.Getenv("XAMPP_HTDOCS")); custom != "" {
+		if fi, err := os.Stat(custom); err == nil && fi.IsDir() {
+			return custom
+		}
+	}
+	candidates := []string{
+		`C:\xampp\htdocs`,
+		`D:\xampp\htdocs`,
+		`E:\xampp\htdocs`,
+		`F:\xampp\htdocs`,
+		filepath.Join(".", "xampp", "htdocs"),
+		filepath.Join("..", "xampp", "htdocs"),
+	}
+	for _, c := range candidates {
+		if fi, err := os.Stat(c); err == nil && fi.IsDir() {
+			return c
+		}
+	}
+	fallback := filepath.Join(".", "htdocs")
+	_ = os.MkdirAll(fallback, 0755)
+	return fallback
+}
+
+func (a *ServerApp) handleExportToXamppHtdocs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		WriteJSONError(w, http.StatusMethodNotAllowed, "ERR_METHOD_NOT_ALLOWED")
+		return
+	}
+	var req ExportWebPayload
+	if err := a.readJSONBody(r, &req); err != nil {
+		WriteJSONError(w, http.StatusBadRequest, "ERR_INVALID_PAYLOAD")
+		return
+	}
+	if strings.TrimSpace(req.HTML) == "" {
+		WriteJSONError(w, http.StatusBadRequest, "ERR_EMPTY_HTML")
+		return
+	}
+	projName := sanitizeProjectName(req.ProjectName)
+	htdocs := findXamppHtdocsDir()
+	targetDir := filepath.Join(htdocs, projName)
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		WriteJSONError(w, http.StatusInternalServerError, fmt.Sprintf("Không thể tạo thư mục dự án: %v", err))
+		return
+	}
+
+	indexPath := filepath.Join(targetDir, "index.html")
+	if err := os.WriteFile(indexPath, []byte(req.HTML), 0644); err != nil {
+		WriteJSONError(w, http.StatusInternalServerError, fmt.Sprintf("Không thể ghi index.html: %v", err))
+		return
+	}
+
+	if strings.TrimSpace(req.CSS) != "" {
+		_ = os.WriteFile(filepath.Join(targetDir, "style.css"), []byte(req.CSS), 0644)
+	}
+
+	if strings.TrimSpace(req.JS) != "" {
+		_ = os.WriteFile(filepath.Join(targetDir, "script.js"), []byte(req.JS), 0644)
+	}
+
+	localURL := fmt.Sprintf("http://localhost/%s/", projName)
+	tunnelURL := ""
+	for _, linkPath := range []string{
+		"LINK_KHACH_TRUY_CAP.txt",
+		filepath.Join("..", "LINK_KHACH_TRUY_CAP.txt"),
+	} {
+		if content, err := os.ReadFile(linkPath); err == nil {
+			lines := strings.Split(string(content), "\n")
+			for _, line := range lines {
+				line = strings.TrimSpace(line)
+				if strings.Contains(line, ".trycloudflare.com") {
+					parts := strings.Fields(line)
+					for _, p := range parts {
+						if strings.HasPrefix(p, "https://") && strings.Contains(p, ".trycloudflare.com") {
+							tunnelURL = p
+							break
+						}
+					}
+				}
+				if tunnelURL != "" {
+					break
+				}
+			}
+		}
+		if tunnelURL != "" {
+			break
+		}
+	}
+
+	WriteJSONResponse(w, http.StatusOK, map[string]interface{}{
+		"success":      true,
+		"project_name": projName,
+		"folder_path":  targetDir,
+		"local_url":    localURL,
+		"tunnel_url":   tunnelURL,
+		"message":      fmt.Sprintf("Đã xuất bản dự án '%s' thành công vào Apache XAMPP!", projName),
+	})
+}
+
+func (a *ServerApp) handleExportToZip(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		WriteJSONError(w, http.StatusMethodNotAllowed, "ERR_METHOD_NOT_ALLOWED")
+		return
+	}
+	var req ExportWebPayload
+	if err := a.readJSONBody(r, &req); err != nil {
+		WriteJSONError(w, http.StatusBadRequest, "ERR_INVALID_PAYLOAD")
+		return
+	}
+	if strings.TrimSpace(req.HTML) == "" {
+		WriteJSONError(w, http.StatusBadRequest, "ERR_EMPTY_HTML")
+		return
+	}
+	projName := sanitizeProjectName(req.ProjectName)
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+
+	fIndex, err := zw.Create("index.html")
+	if err == nil {
+		_, _ = fIndex.Write([]byte(req.HTML))
+	}
+
+	if strings.TrimSpace(req.CSS) != "" {
+		fCSS, err := zw.Create("style.css")
+		if err == nil {
+			_, _ = fCSS.Write([]byte(req.CSS))
+		}
+	}
+
+	if strings.TrimSpace(req.JS) != "" {
+		fJS, err := zw.Create("script.js")
+		if err == nil {
+			_, _ = fJS.Write([]byte(req.JS))
+		}
+	}
+
+	fReadme, err := zw.Create("README.txt")
+	if err == nil {
+		readmeText := fmt.Sprintf("Dự án: %s\nĐược xuất bản tự động bởi Mart AI Studio & MuseRouter\nNgày tạo: %s\n\nHướng dẫn chạy:\n1. Mở file index.html trên trình duyệt bất kỳ.\n2. Hoặc copy toàn bộ thư mục này vào C:\\xampp\\htdocs\\ để chạy bằng Apache.", projName, time.Now().Format("2006-01-02 15:04:05"))
+		_, _ = fReadme.Write([]byte(readmeText))
+	}
+
+	_ = zw.Close()
+
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.zip"`, projName))
+	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(buf.Bytes())
 }
 
 func main() {

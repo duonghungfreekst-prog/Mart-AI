@@ -356,12 +356,101 @@ stopBtn.addEventListener("click", function(){
   }
 });
 
-/* ===== LOGIC KẾT NỐI THẬT VỚI MART AI BACKEND (100% CHAT STREAMING & THREADS THẬT) ===== */
+/* ===== LOGIC KẾT NỐI THẬT VỚI MART AI BACKEND & GIAO DIỆN STUDIO ĐỈNH CAO ===== */
+
+var activeWebCode = "";
+var activeWebProjectName = "web-du-an";
+
+function openLiveWebPreview(code, defaultTitle){
+  activeWebCode = code;
+  activeWebProjectName = (defaultTitle || "web-du-an").replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase();
+  var modal = $("#liveWebPreviewModal");
+  if(!modal) return;
+  var iframe = $("#liveWebPreviewIframe");
+  if(iframe){
+    iframe.srcdoc = code;
+  }
+  modal.classList.add("open");
+}
+
+function closeLiveWebPreview(){
+  var modal = $("#liveWebPreviewModal");
+  if(modal) modal.classList.remove("open");
+}
+
+function publishWebToXampp(code, projName){
+  if(!code) { toast("Không có mã nguồn để xuất bản"); return; }
+  var defaultName = projName || activeWebProjectName || ("web-" + Date.now());
+  var name = prompt("Nhập tên thư mục dự án trên Apache XAMPP (C:\\xampp\\htdocs\\...):", defaultName);
+  if(!name || !name.trim()) return;
+  name = name.trim().replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase();
+
+  toast("Đang xuất bản lên Apache XAMPP...");
+  fetch("/api/v1/export/htdocs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      project_name: name,
+      html: code,
+      css: "",
+      js: ""
+    })
+  })
+  .then(function(res){ return res.json(); })
+  .then(function(data){
+    if(data.success){
+      toast("Đã xuất bản lên XAMPP thành công! Đang mở trang web...");
+      setTimeout(function(){
+        window.open(data.local_url, "_blank");
+      }, 600);
+    } else {
+      toast("Lỗi xuất bản: " + (data.error || "Không thể lưu vào htdocs"));
+    }
+  })
+  .catch(function(err){
+    toast("Lỗi kết nối máy chủ: " + err.message);
+  });
+}
+
+function downloadWebZip(code, projName){
+  if(!code) { toast("Không có mã nguồn để tải"); return; }
+  var name = (projName || activeWebProjectName || "web-project").replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase();
+  toast("Đang tạo gói ZIP tải xuống...");
+  fetch("/api/v1/export/zip", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      project_name: name,
+      html: code,
+      css: "",
+      js: ""
+    })
+  })
+  .then(function(res){
+    if(!res.ok) throw new Error("Server error " + res.status);
+    return res.blob();
+  })
+  .then(function(blob){
+    var url = window.URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = name + ".zip";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+    toast("Đã tải tệp " + name + ".zip về máy!");
+  })
+  .catch(function(err){
+    toast("Lỗi tải zip: " + err.message);
+  });
+}
 
 function wireCodeCopy(scope){
-  $$( ".copy-code-btn", scope).forEach(function(btn){
+  $$( ".copy-code-btn, .code-copy", scope).forEach(function(btn){
     btn.onclick = function(){
-      var pre = btn.closest(".code-wrap").querySelector("pre");
+      var wrap = btn.closest(".code-wrap, .code-block");
+      var pre = wrap ? wrap.querySelector("pre code, pre, code") : null;
       if(!pre) return;
       navigator.clipboard.writeText(pre.textContent).then(function(){
         btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Đã sao chép';
@@ -373,6 +462,33 @@ function wireCodeCopy(scope){
       });
     };
   });
+
+  $$( ".btn-live-preview", scope).forEach(function(btn){
+    btn.onclick = function(){
+      var wrap = btn.closest(".code-wrap, .code-block");
+      var pre = wrap ? wrap.querySelector("pre code, pre, code") : null;
+      if(!pre) return;
+      openLiveWebPreview(pre.textContent, "web-" + Date.now());
+    };
+  });
+
+  $$( ".btn-publish-xampp", scope).forEach(function(btn){
+    btn.onclick = function(){
+      var wrap = btn.closest(".code-wrap, .code-block");
+      var pre = wrap ? wrap.querySelector("pre code, pre, code") : null;
+      if(!pre) return;
+      publishWebToXampp(pre.textContent, "web-" + Date.now());
+    };
+  });
+
+  $$( ".btn-download-zip", scope).forEach(function(btn){
+    btn.onclick = function(){
+      var wrap = btn.closest(".code-wrap, .code-block");
+      var pre = wrap ? wrap.querySelector("pre code, pre, code") : null;
+      if(!pre) return;
+      downloadWebZip(pre.textContent, "web-" + Date.now());
+    };
+  });
 }
 
 function renderMarkdown(raw){
@@ -382,10 +498,48 @@ function renderMarkdown(raw){
   // Code blocks: ```lang ... ```
   out = out.replace(/```([a-zA-Z0-9_+-]*)\n([\s\S]*?)```/g, function(_, lang, code){
     var l = (lang || "code").toLowerCase();
+    var isHtml = l === "html" || l === "htm" || code.indexOf("<!DOCTYPE html") > -1 || code.indexOf("<html") > -1;
+    var extraButtons = "";
+    if (isHtml) {
+      extraButtons = 
+        '<button type="button" class="btn-live-preview" style="display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:6px;font-size:12px;font-weight:700;background:var(--brand-soft);color:var(--brand);border:1px solid var(--brand);cursor:pointer" title="Xem trước giao diện trang web trực tiếp"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg> Xem trước</button>' +
+        '<button type="button" class="btn-publish-xampp" style="display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:6px;font-size:12px;font-weight:700;background:#2563eb;color:#fff;border:0;cursor:pointer" title="Xuất bản trực tiếp vào C:\\xampp\\htdocs\\ để chạy bằng Apache"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> Xuất bản Apache</button>' +
+        '<button type="button" class="btn-download-zip" style="display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:6px;font-size:12px;font-weight:700;background:var(--surface);color:var(--ink);border:1px solid var(--line);cursor:pointer" title="Tải file .ZIP chứa mã nguồn"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg> Tải ZIP</button>';
+    }
+
     return '<div class="code-wrap">' +
-      '<div class="code-bar"><span class="code-lang">' + esc(l) + '</span>' +
-      '<button type="button" class="copy-code-btn"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Sao chép</button></div>' +
+      '<div class="code-bar" style="display:flex;align-items:center;justify-content:space-between;padding:7px 12px;background:var(--surface-2);border-bottom:1px solid var(--line)">' +
+        '<span class="code-lang" style="font-weight:700;font-size:12px;color:var(--ink-2)">' + esc(l.toUpperCase()) + '</span>' +
+        '<div class="code-actions" style="display:inline-flex;gap:6px;align-items:center">' +
+          extraButtons +
+          '<button type="button" class="copy-code-btn"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Sao chép</button>' +
+        '</div>' +
+      '</div>' +
       '<pre><code>' + esc(code.replace(/\n$/, "")) + '</code></pre></div>';
+  });
+
+  // Nhúng Video Muse AI hoặc MP4/WebM trực tiếp
+  out = out.replace(/(https?:\/\/muse\.ai\/(?:v|embed)\/([a-zA-Z0-9_-]+))/gi, function(match, fullUrl, vidId){
+    var embedUrl = "https://muse.ai/embed/" + vidId;
+    return '<div class="chat-media-video-wrap" style="margin:12px 0;border-radius:12px;overflow:hidden;border:1px solid var(--line);background:#0f172a">' +
+      '<div style="position:relative;padding-top:56.25%"><iframe src="' + embedUrl + '" allowfullscreen frameborder="0" style="position:absolute;inset:0;width:100%;height:100%;border:0"></iframe></div>' +
+      '<div class="chat-media-meta" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:var(--surface);font-size:12.5px">' +
+        '<span style="font-weight:700;color:var(--brand)">🎥 Video Muse AI</span>' +
+        '<div style="display:flex;gap:8px">' +
+          '<a href="' + fullUrl + '" target="_blank" rel="noopener noreferrer" style="color:var(--brand);text-decoration:none;font-weight:600">🔗 Toàn màn hình</a>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  });
+
+  out = out.replace(/(https?:\/\/[^\s"'<>]+\.(?:mp4|webm|mov|m4v)(?:\?[^\s"'<>]*)?)/gi, function(match, vUrl){
+    return '<div class="chat-media-video-wrap" style="margin:12px 0;border-radius:12px;overflow:hidden;border:1px solid var(--line);background:#0f172a">' +
+      '<video controls preload="metadata" playsinline style="width:100%;max-height:480px;display:block" src="' + esc(vUrl) + '"></video>' +
+      '<div class="chat-media-meta" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:var(--surface);font-size:12.5px">' +
+        '<span style="font-weight:700;color:var(--brand)">🎬 Video Media</span>' +
+        '<a href="' + esc(vUrl) + '" download style="background:var(--brand-soft);color:var(--brand);padding:4px 8px;border-radius:6px;text-decoration:none;font-weight:700">📥 Tải MP4</a>' +
+      '</div>' +
+    '</div>';
   });
 
   // Inline code: `...`
@@ -407,7 +561,7 @@ function renderMarkdown(raw){
   var paras = out.split(/\n\n+/);
   return paras.map(function(p){
     p = p.trim();
-    if(p.startsWith("<div class=\"code-wrap\"") || p.startsWith("<h") || p.startsWith("<blockquote")) return p;
+    if(p.startsWith("<div class=\"code-wrap\"") || p.startsWith("<div class=\"chat-media-video-wrap\"") || p.startsWith("<h") || p.startsWith("<blockquote")) return p;
     return "<p>" + p.replace(/\n/g, "<br>") + "</p>";
   }).join("");
 }
@@ -1958,6 +2112,91 @@ if(remoteBrowserTextInput){
     }
   });
 }
+
+/* Sự kiện Studio Video & Prompt Enhancer */
+var btnQuickTikTok = $("#btnQuickTikTok");
+if(btnQuickTikTok){
+  btnQuickTikTok.addEventListener("click", function(){
+    if(!inputEl) return;
+    var prefix = "[Tạo video TikTok tỷ lệ dọc 9:16] ";
+    if(inputEl.value.indexOf(prefix) < 0){
+      inputEl.value = prefix + inputEl.value;
+    }
+    inputEl.focus();
+    autoGrow();
+    toast("Đã đặt tỷ lệ dọc 9:16 cho TikTok / Shorts");
+  });
+}
+
+var btnQuickYoutube = $("#btnQuickYoutube");
+if(btnQuickYoutube){
+  btnQuickYoutube.addEventListener("click", function(){
+    if(!inputEl) return;
+    var prefix = "[Tạo video Cinematic 4K tỷ lệ ngang 16:9] ";
+    if(inputEl.value.indexOf(prefix) < 0){
+      inputEl.value = prefix + inputEl.value;
+    }
+    inputEl.focus();
+    autoGrow();
+    toast("Đã đặt tỷ lệ ngang 16:9 cho Youtube 4K");
+  });
+}
+
+var btnEnhancePrompt = $("#btnEnhancePrompt");
+if(btnEnhancePrompt){
+  btnEnhancePrompt.addEventListener("click", function(){
+    if(!inputEl || !inputEl.value.trim()){
+      toast("Vui lòng gõ một vài từ khóa trước khi tối ưu!");
+      return;
+    }
+    var suffix = ", phong cách Cinematic 8K đỉnh cao, ánh sáng nghệ thuật studio, góc máy điện ảnh mượt mà, siêu chi tiết và chân thực";
+    if(inputEl.value.indexOf("Cinematic") < 0){
+      inputEl.value = inputEl.value.trim() + suffix;
+    }
+    inputEl.focus();
+    autoGrow();
+    toast("Đã tối ưu hóa prompt chuyên nghiệp!");
+  });
+}
+
+/* Sự kiện Live Web Preview Modal */
+var btnCloseLiveWebPreview = $("#btnCloseLiveWebPreview");
+if(btnCloseLiveWebPreview) btnCloseLiveWebPreview.addEventListener("click", closeLiveWebPreview);
+
+var closeLiveWebPreviewBg = $("#closeLiveWebPreviewBg");
+if(closeLiveWebPreviewBg) closeLiveWebPreviewBg.addEventListener("click", closeLiveWebPreview);
+
+var btnPreviewNewTab = $("#btnPreviewNewTab");
+if(btnPreviewNewTab){
+  btnPreviewNewTab.addEventListener("click", function(){
+    if(!activeWebCode) return;
+    var win = window.open("about:blank", "_blank");
+    if(win){
+      win.document.open();
+      win.document.write(activeWebCode);
+      win.document.close();
+    }
+  });
+}
+
+var btnPreviewPublishHtdocs = $("#btnPreviewPublishHtdocs");
+if(btnPreviewPublishHtdocs){
+  btnPreviewPublishHtdocs.addEventListener("click", function(){
+    publishWebToXampp(activeWebCode, activeWebProjectName);
+  });
+}
+
+$$("#previewDeviceSeg button").forEach(function(btn){
+  btn.addEventListener("click", function(){
+    $$("#previewDeviceSeg button").forEach(function(b){ b.classList.remove("on"); });
+    btn.classList.add("on");
+    var w = btn.getAttribute("data-device") || "100%";
+    var iframe = $("#liveWebPreviewIframe");
+    if(iframe){
+      iframe.style.width = w;
+    }
+  });
+});
 
 /* Khởi động toàn diện hệ thống Web */
 async function initApp(){

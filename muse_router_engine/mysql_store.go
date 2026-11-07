@@ -338,6 +338,19 @@ func NewMySQLStore(dataDir string, customURL string, authToken string) (*MySQLSt
 	}
 
 	if err := store.connectInternal(targetURL, authToken); err != nil {
+		localXamppURL := "mysql://root:@127.0.0.1:3306/muse_router"
+		if targetURL != localXamppURL {
+			LogWarn("Ket noi MySQL / TiDB Cloud (%s) chua thanh cong (%v). Dang thu chuyen sang XAMPP MySQL localhost:3306...", targetURL, err)
+			if errLocal := store.connectInternal(localXamppURL, ""); errLocal == nil {
+				LogInfo("Da tu dong chuyen ket noi sang XAMPP MySQL cuc bo (3306) thanh cong!")
+				targetURL = localXamppURL
+				if errSchema := store.initSchema(); errSchema != nil {
+					_ = store.Close()
+					return nil, errSchema
+				}
+				return store, nil
+			}
+		}
 		LogWarn("Ket noi MySQL / TiDB Cloud chua thanh cong (%v). He thong chay o che do cho cau hinh.", err)
 		return store, nil
 	}

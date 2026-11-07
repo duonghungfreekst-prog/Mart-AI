@@ -1219,6 +1219,11 @@ button{-webkit-tap-highlight-color:transparent;touch-action:manipulation}
             <button type="button" data-mode="agent">Agent</button>
             <button type="button" data-mode="code">Code</button>
           </div>
+          <div style="display:inline-flex;align-items:center;gap:4px;background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:2px 6px">
+            <button type="button" id="btnQuickTikTok" style="padding:4px 8px;font-size:12px;font-weight:700;border-radius:999px;color:var(--ink)" title="Chèn yêu cầu tỷ lệ dọc TikTok/Shorts">📱 9:16 TikTok</button>
+            <button type="button" id="btnQuickYoutube" style="padding:4px 8px;font-size:12px;font-weight:700;border-radius:999px;color:var(--ink)" title="Chèn yêu cầu tỷ lệ ngang Youtube 4K">🖥️ 16:9 Youtube</button>
+            <button type="button" id="btnEnhancePrompt" style="padding:4px 9px;font-size:12px;font-weight:700;border-radius:999px;background:var(--brand-soft);color:var(--brand)" title="Tự động tối ưu mô tả prompt sắc nét, cinematic">🪄 Tối ưu Prompt</button>
+          </div>
           <span class="mode-hint" id="modeHint">Trả lời tự nhiên, cân bằng tốc độ và chi tiết.</span>
         </div>
         <div class="attach-menu" id="attachMenu" role="menu">
@@ -1525,6 +1530,34 @@ button{-webkit-tap-highlight-color:transparent;touch-action:manipulation}
 <div class="scrim" id="scrim"></div>
 <div class="toast" id="toast" role="status"></div>
 
-<script src="/mart_preview.js?v=20261106_02" defer></script>
+<!-- Modal Xem trước Giao diện Web (Live Sandbox) & Xuất bản XAMPP -->
+<div class="modal-wrap" id="liveWebPreviewModal" role="dialog" aria-modal="true" aria-label="Xem trước Web">
+  <div class="modal-bg" id="closeLiveWebPreviewBg"></div>
+  <div class="modal" style="width:min(1100px,96vw);padding:16px;height:92dvh;display:flex;flex-direction:column;gap:10px">
+    <div style="display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);padding-bottom:10px;flex-wrap:wrap;gap:8px">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="font-weight:800;font-size:16px;display:flex;align-items:center;gap:6px">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>
+          Xem trước Giao diện Web
+        </span>
+        <div class="seg" id="previewDeviceSeg" style="display:flex;gap:3px;background:var(--surface-2);border-radius:8px;padding:2px">
+          <button type="button" class="on" data-device="100%" title="Máy tính">🖥️ Desktop</button>
+          <button type="button" data-device="768px" title="Máy tính bảng">📱 Tablet</button>
+          <button type="button" data-device="375px" title="Điện thoại">📲 Mobile</button>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <button type="button" class="btn-ghost" id="btnPreviewNewTab" title="Mở trong tab mới" style="padding:6px 12px;font-size:13px">🔗 Mở tab mới</button>
+        <button type="button" class="btn-solid" id="btnPreviewPublishHtdocs" style="background:#2563eb;color:#fff;padding:7px 14px;font-size:13px;border-radius:8px;font-weight:700" title="Xuất bản trực tiếp vào C:\xampp\htdocs">⚡ Xuất bản Apache</button>
+        <button type="button" class="btn-ghost" id="btnCloseLiveWebPreview" style="padding:6px 12px;font-size:13px">✖ Đóng</button>
+      </div>
+    </div>
+    <div id="previewFrameContainer" style="flex:1;background:#fff;border-radius:10px;border:1px solid var(--line);display:flex;justify-content:center;align-items:stretch;overflow:hidden">
+      <iframe id="liveWebPreviewIframe" sandbox="allow-scripts allow-forms allow-same-origin allow-modals" style="width:100%;height:100%;border:0;transition:width 0.25s ease"></iframe>
+    </div>
+  </div>
+</div>
+
+<script src="/mart_preview.js?v=20261107_01" defer></script>
 </body>
 </html>
